@@ -87,23 +87,23 @@ void test_Scenario1_BalancedBook(void) {
     };
     
     const char* expected[] = {
-        "A, 1, 1",
-        "B, B, 10, 100",
-        "A, 1, 2",
-        "B, S, 12, 100",
-        "A, 2, 101",
-        "A, 2, 102",
-        "B, S, 11, 100",
-        "A, 1, 3",
-        "T, 1, 3, 2, 102, 11, 100",
-        "B, S, 12, 100",
-        "A, 2, 103",
-        "T, 1, 1, 2, 103, 10, 100",
-        "B, B, 9, 100",
-        "A, 1, 4",
-        "B, B, 10, 100",
-        "A, 2, 104",
-        "B, S, 11, 100"
+        "A, IBM, 1, 1",
+        "B, IBM, B, 10, 100",
+        "A, IBM, 1, 2",
+        "B, IBM, S, 12, 100",
+        "A, IBM, 2, 101",
+        "A, IBM, 2, 102",
+        "B, IBM, S, 11, 100",
+        "A, IBM, 1, 3",
+        "T, IBM, 1, 3, 2, 102, 11, 100",
+        "B, IBM, S, 12, 100",
+        "A, IBM, 2, 103",
+        "T, IBM, 1, 1, 2, 103, 10, 100",
+        "B, IBM, B, 9, 100",
+        "A, IBM, 1, 4",
+        "B, IBM, B, 10, 100",
+        "A, IBM, 2, 104",
+        "B, IBM, S, 11, 100"
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -126,16 +126,16 @@ void test_Scenario3_ShallowAsk(void) {
     };
     
     const char* expected[] = {
-        "A, 1, 1",
-        "B, B, 10, 100",
-        "A, 2, 101",
-        "A, 2, 102",
-        "B, S, 11, 100",
-        "A, 1, 2",
-        "T, 1, 2, 2, 102, 11, 100",
-        "B, S, -, -",
-        "A, 2, 103",
-        "B, S, 11, 100"
+        "A, VAL, 1, 1",
+        "B, VAL, B, 10, 100",
+        "A, VAL, 2, 101",
+        "A, VAL, 2, 102",
+        "B, VAL, S, 11, 100",
+        "A, VAL, 1, 2",
+        "T, VAL, 1, 2, 2, 102, 11, 100",
+        "B, VAL, S, -, -",
+        "A, VAL, 2, 103",
+        "B, VAL, S, 11, 100"
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -158,16 +158,16 @@ void test_Scenario9_MarketSellPartial(void) {
     };
     
     const char* expected[] = {
-        "A, 1, 1",
-        "B, B, 10, 100",
-        "A, 1, 2",
-        "B, S, 12, 100",
-        "A, 2, 101",
-        "A, 2, 102",
-        "B, S, 11, 100",
-        "A, 2, 103",
-        "T, 1, 1, 2, 103, 10, 20",
-        "B, B, 10, 80"
+        "A, IBM, 1, 1",
+        "B, IBM, B, 10, 100",
+        "A, IBM, 1, 2",
+        "B, IBM, S, 12, 100",
+        "A, IBM, 2, 101",
+        "A, IBM, 2, 102",
+        "B, IBM, S, 11, 100",
+        "A, IBM, 2, 103",
+        "T, IBM, 1, 1, 2, 103, 10, 20",
+        "B, IBM, B, 10, 80"
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -190,16 +190,16 @@ void test_Scenario11_LimitSellPartial(void) {
     };
     
     const char* expected[] = {
-        "A, 1, 1",
-        "B, B, 10, 100",
-        "A, 1, 2",
-        "B, S, 12, 100",
-        "A, 2, 101",
-        "A, 2, 102",
-        "B, S, 11, 100",
-        "A, 2, 103",
-        "T, 1, 1, 2, 103, 10, 20",
-        "B, B, 10, 80"
+        "A, IBM, 1, 1",
+        "B, IBM, B, 10, 100",
+        "A, IBM, 1, 2",
+        "B, IBM, S, 12, 100",
+        "A, IBM, 2, 101",
+        "A, IBM, 2, 102",
+        "B, IBM, S, 11, 100",
+        "A, IBM, 2, 103",
+        "T, IBM, 1, 1, 2, 103, 10, 20",
+        "B, IBM, B, 10, 80"
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -225,23 +225,23 @@ void test_Scenario13_MultipleOrdersAtBestPrice(void) {
     };
     
     const char* expected[] = {
-        "A, 1, 1",
-        "B, B, 10, 100",
-        "A, 1, 2",
-        "B, S, 12, 100",
-        "A, 2, 101",
-        "A, 2, 102",
-        "B, S, 11, 100",
-        "A, 2, 103",
-        "B, B, 10, 150",
-        "A, 1, 3",
-        "B, S, 11, 150",
-        "A, 1, 4",
-        "T, 1, 4, 2, 102, 11, 100",
-        "B, S, 11, 50",
-        "A, 2, 104",
-        "T, 1, 1, 2, 104, 10, 100",
-        "B, B, 10, 50"
+        "A, IBM, 1, 1",
+        "B, IBM, B, 10, 100",
+        "A, IBM, 1, 2",
+        "B, IBM, S, 12, 100",
+        "A, IBM, 2, 101",
+        "A, IBM, 2, 102",
+        "B, IBM, S, 11, 100",
+        "A, IBM, 2, 103",
+        "B, IBM, B, 10, 150",
+        "A, IBM, 1, 3",
+        "B, IBM, S, 11, 150",
+        "A, IBM, 1, 4",
+        "T, IBM, 1, 4, 2, 102, 11, 100",
+        "B, IBM, S, 11, 50",
+        "A, IBM, 2, 104",
+        "T, IBM, 1, 1, 2, 104, 10, 100",
+        "B, IBM, B, 10, 50"
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -265,15 +265,15 @@ void test_Scenario15_CancelBehindBest(void) {
     };
     
     const char* expected[] = {
-        "A, 1, 1",
-        "B, B, 10, 100",
-        "A, 1, 2",
-        "B, S, 12, 100",
-        "A, 2, 101",
-        "A, 2, 102",
-        "B, S, 11, 100",
-        "C, 1, 2",
-        "C, 2, 101"
+        "A, IBM, 1, 1",
+        "B, IBM, B, 10, 100",
+        "A, IBM, 1, 2",
+        "B, IBM, S, 12, 100",
+        "A, IBM, 2, 101",
+        "A, IBM, 2, 102",
+        "B, IBM, S, 11, 100",
+        "C, IBM, 1, 2",
+        "C, IBM, 2, 101"
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));

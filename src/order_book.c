@@ -332,8 +332,11 @@ static void match_order(order_book_t* book, order_t* order, output_buffer_t* out
                 
                 // Generate trade message
                 output_msg_t trade_msg = make_trade_msg(
-                    order->user_id, order->user_order_id,
-                    passive_order->user_id, passive_order->user_order_id,
+                    book->symbol,
+                    order->user_id, 
+                    order->user_order_id,
+                    passive_order->user_id, 
+                    passive_order->user_order_id,
                     best_ask_level->price,  // Trade at passive order price
                     trade_qty
                 );
@@ -446,22 +449,31 @@ static void add_to_book(order_book_t* book, order_t* order) {
 /**
  * Check for top-of-book changes and generate TOB messages
  */
+
 static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
     uint32_t current_best_bid_price = order_book_get_best_bid_price(book);
     uint32_t current_best_bid_qty = order_book_get_best_bid_quantity(book);
     uint32_t current_best_ask_price = order_book_get_best_ask_price(book);
     uint32_t current_best_ask_qty = order_book_get_best_ask_quantity(book);
     
-    // Check bid side changes
+    /* Track if sides ever become active */
+    if (current_best_bid_price > 0) {
+        book->bid_side_ever_active = true;
+    }
+    if (current_best_ask_price > 0) {
+        book->ask_side_ever_active = true;
+    }
+    
+    /* Check bid side changes */
     if (current_best_bid_price != book->prev_best_bid_price || 
         current_best_bid_qty != book->prev_best_bid_qty) {
         
-        if (current_best_bid_price == 0) {
-            // Bid side eliminated
-            output_msg_t msg = make_top_of_book_eliminated_msg(SIDE_BUY);
+        if (current_best_bid_price == 0 && book->bid_side_ever_active) {
+            /* Bid side eliminated */
+            output_msg_t msg = make_top_of_book_eliminated_msg(book->symbol, SIDE_BUY);
             output_buffer_add(output, &msg);
-        } else {
-            output_msg_t msg = make_top_of_book_msg(SIDE_BUY, current_best_bid_price, current_best_bid_qty);
+        } else if (current_best_bid_price > 0) {
+            output_msg_t msg = make_top_of_book_msg(book->symbol, SIDE_BUY, current_best_bid_price, current_best_bid_qty);
             output_buffer_add(output, &msg);
         }
         
@@ -469,16 +481,16 @@ static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
         book->prev_best_bid_qty = current_best_bid_qty;
     }
     
-    // Check ask side changes
+    /* Check ask side changes */
     if (current_best_ask_price != book->prev_best_ask_price || 
         current_best_ask_qty != book->prev_best_ask_qty) {
         
-        if (current_best_ask_price == 0) {
-            // Ask side eliminated
-            output_msg_t msg = make_top_of_book_eliminated_msg(SIDE_SELL);
+        if (current_best_ask_price == 0 && book->ask_side_ever_active) {
+            /* Ask side eliminated */
+            output_msg_t msg = make_top_of_book_eliminated_msg(book->symbol, SIDE_SELL);
             output_buffer_add(output, &msg);
-        } else {
-            output_msg_t msg = make_top_of_book_msg(SIDE_SELL, current_best_ask_price, current_best_ask_qty);
+        } else if (current_best_ask_price > 0) {
+            output_msg_t msg = make_top_of_book_msg(book->symbol, SIDE_SELL, current_best_ask_price, current_best_ask_qty);
             output_buffer_add(output, &msg);
         }
         
@@ -497,7 +509,7 @@ void order_book_add_order(order_book_t* book, const new_order_msg_t* msg, output
     order_init(order, msg, timestamp);
     
     // Send acknowledgement
-    output_msg_t ack = make_ack_msg(order->user_id, order->user_order_id);
+    output_msg_t ack = make_ack_msg(book->symbol, order->user_id, order->user_order_id);
     output_buffer_add(output, &ack);
     
     // Try to match the order
@@ -525,7 +537,7 @@ void order_book_cancel_order(order_book_t* book, uint32_t user_id, uint32_t user
     
     if (entry == NULL) {
         // Order not found - still send cancel ack
-        output_msg_t msg = make_cancel_ack_msg(user_id, user_order_id);
+        output_msg_t msg = make_cancel_ack_msg(book->symbol, user_id, user_order_id);
         output_buffer_add(output, &msg);
         return;
     }
@@ -573,7 +585,7 @@ void order_book_cancel_order(order_book_t* book, uint32_t user_id, uint32_t user
     order_map_remove(&book->order_map, key);
     
     // Send cancel acknowledgement
-    output_msg_t msg = make_cancel_ack_msg(user_id, user_order_id);
+    output_msg_t msg = make_cancel_ack_msg(book->symbol, user_id, user_order_id);
     output_buffer_add(output, &msg);
     
     // Check for top-of-book changes

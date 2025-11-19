@@ -17,10 +17,10 @@ static void tearDown(void) {
 void test_FormatAck(void) {
     setUp();
     
-    output_msg_t msg = make_ack_msg(1, 42);
+    output_msg_t msg = make_ack_msg("IBM", 1, 42);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("A, 1, 42", output);
+    TEST_ASSERT_EQUAL_STRING("A, IBM, 1, 42", output);
     
     tearDown();
 }
@@ -29,10 +29,10 @@ void test_FormatAck(void) {
 void test_FormatCancelAck(void) {
     setUp();
     
-    output_msg_t msg = make_cancel_ack_msg(2, 100);
+    output_msg_t msg = make_cancel_ack_msg("IBM", 2, 100);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("C, 2, 100", output);
+    TEST_ASSERT_EQUAL_STRING("C, IBM, 2, 100", output);
     
     tearDown();
 }
@@ -41,10 +41,10 @@ void test_FormatCancelAck(void) {
 void test_FormatTrade(void) {
     setUp();
     
-    output_msg_t msg = make_trade_msg(1, 10, 2, 20, 150, 100);
+    output_msg_t msg = make_trade_msg("IBM", 1, 10, 2, 20, 150, 100);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("T, 1, 10, 2, 20, 150, 100", output);
+    TEST_ASSERT_EQUAL_STRING("T, IBM, 1, 10, 2, 20, 150, 100", output);
     
     tearDown();
 }
@@ -53,10 +53,10 @@ void test_FormatTrade(void) {
 void test_FormatTopOfBookBid(void) {
     setUp();
     
-    output_msg_t msg = make_top_of_book_msg(SIDE_BUY, 100, 500);
+    output_msg_t msg = make_top_of_book_msg("IBM", SIDE_BUY, 100, 500);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("B, B, 100, 500", output);
+    TEST_ASSERT_EQUAL_STRING("B, IBM, B, 100, 500", output);
     
     tearDown();
 }
@@ -65,10 +65,10 @@ void test_FormatTopOfBookBid(void) {
 void test_FormatTopOfBookAsk(void) {
     setUp();
     
-    output_msg_t msg = make_top_of_book_msg(SIDE_SELL, 105, 300);
+    output_msg_t msg = make_top_of_book_msg("IBM", SIDE_SELL, 105, 300);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("B, S, 105, 300", output);
+    TEST_ASSERT_EQUAL_STRING("B, IBM, S, 105, 300", output);
     
     tearDown();
 }
@@ -77,10 +77,10 @@ void test_FormatTopOfBookAsk(void) {
 void test_FormatTopOfBookEliminatedBid(void) {
     setUp();
     
-    output_msg_t msg = make_top_of_book_eliminated_msg(SIDE_BUY);
+    output_msg_t msg = make_top_of_book_eliminated_msg("IBM", SIDE_BUY);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("B, B, -, -", output);
+    TEST_ASSERT_EQUAL_STRING("B, IBM, B, -, -", output);
     
     tearDown();
 }
@@ -89,10 +89,10 @@ void test_FormatTopOfBookEliminatedBid(void) {
 void test_FormatTopOfBookEliminatedAsk(void) {
     setUp();
     
-    output_msg_t msg = make_top_of_book_eliminated_msg(SIDE_SELL);
+    output_msg_t msg = make_top_of_book_eliminated_msg("IBM", SIDE_SELL);
     const char* output = message_formatter_format(&formatter, &msg);
     
-    TEST_ASSERT_EQUAL_STRING("B, S, -, -", output);
+    TEST_ASSERT_EQUAL_STRING("B, IBM, S, -, -", output);
     
     tearDown();
 }
