@@ -39,7 +39,8 @@ TEST_SOURCES = $(TESTDIR)/test_order_book.c \
                $(TESTDIR)/test_message_parser.c \
                $(TESTDIR)/test_message_formatter.c \
                $(TESTDIR)/test_matching_engine.c \
-               $(TESTDIR)/test_scenarios.c \
+               $(TESTDIR)/test_scenarios_odd.c \
+               $(TESTDIR)/test_scenarios_even.c \
                $(TESTDIR)/test_runner.c
 
 # Object files
