@@ -18,14 +18,14 @@ static message_formatter_t formatter;
 static char actual_outputs[MAX_OUTPUT_LINES][MAX_OUTPUT_LINE_LENGTH];
 static int actual_output_count;
 
-void setUp(void) {
+static void setUp(void) {
     matching_engine_init(&engine);
     message_parser_init(&parser);
     message_formatter_init(&formatter);
     actual_output_count = 0;
 }
 
-void tearDown(void) {
+static void tearDown(void) {
     matching_engine_destroy(&engine);
 }
 
@@ -72,6 +72,8 @@ static void verify_outputs(const char* expected[], int expected_count) {
 
 /* Test: Scenario 1 - Balanced Book */
 void test_Scenario1_BalancedBook(void) {
+    setUp();
+    
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -106,10 +108,14 @@ void test_Scenario1_BalancedBook(void) {
     
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
+    
+    tearDown();
 }
 
 /* Test: Scenario 3 - Shallow Ask */
 void test_Scenario3_ShallowAsk(void) {
+    setUp();
+    
     const char* input[] = {
         "N, 1, VAL, 10, 100, B, 1",
         "N, 2, VAL, 9, 100, B, 101",
@@ -134,10 +140,14 @@ void test_Scenario3_ShallowAsk(void) {
     
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
+    
+    tearDown();
 }
 
 /* Test: Scenario 9 - Market Sell Partial */
 void test_Scenario9_MarketSellPartial(void) {
+    setUp();
+    
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -162,10 +172,14 @@ void test_Scenario9_MarketSellPartial(void) {
     
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
+    
+    tearDown();
 }
 
 /* Test: Scenario 11 - Limit Sell Partial */
 void test_Scenario11_LimitSellPartial(void) {
+    setUp();
+    
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -190,10 +204,14 @@ void test_Scenario11_LimitSellPartial(void) {
     
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
+    
+    tearDown();
 }
 
 /* Test: Scenario 13 - Multiple Orders at Best Price */
 void test_Scenario13_MultipleOrdersAtBestPrice(void) {
+    setUp();
+    
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -228,10 +246,14 @@ void test_Scenario13_MultipleOrdersAtBestPrice(void) {
     
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
+    
+    tearDown();
 }
 
 /* Test: Scenario 15 - Cancel Behind Best */
 void test_Scenario15_CancelBehindBest(void) {
+    setUp();
+    
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -256,4 +278,6 @@ void test_Scenario15_CancelBehindBest(void) {
     
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
+    
+    tearDown();
 }

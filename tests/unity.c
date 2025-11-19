@@ -10,10 +10,6 @@ static int unity_test_ignores = 0;
 
 int unity_result = 0;
 
-/* Setup/Teardown function pointers */
-void (*setUp)(void) = NULL;
-void (*tearDown)(void) = NULL;
-
 /* Begin Unity Test Suite */
 void UnityBegin(const char* filename) {
     unity_test_count = 0;
@@ -47,24 +43,16 @@ int UnityEnd(void) {
 
 /* Run a single test */
 void UnityDefaultTestRun(void (*Func)(void), const char* FuncName, const int FuncLineNum) {
+    (void)FuncLineNum; // Suppress unused parameter warning
+    
     current_test_name = FuncName;
     unity_test_count++;
     
     printf("Running %s... ", FuncName);
     fflush(stdout);
     
-    /* Call setUp if defined */
-    if (setUp) {
-        setUp();
-    }
-    
-    /* Run the test */
+    /* Run the test directly */
     Func();
-    
-    /* Call tearDown if defined */
-    if (tearDown) {
-        tearDown();
-    }
     
     printf("PASS\n");
 }

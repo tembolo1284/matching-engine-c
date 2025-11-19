@@ -5,16 +5,18 @@
 /* Test fixture */
 static order_book_t book;
 
-void setUp(void) {
+static void setUp(void) {
     order_book_init(&book, "TEST");
 }
 
-void tearDown(void) {
+static void tearDown(void) {
     order_book_destroy(&book);
 }
 
 /* Test: Add Single Buy Order */
 void test_AddSingleBuyOrder(void) {
+    setUp();
+    
     new_order_msg_t msg = {
         .user_id = 1,
         .symbol = "TEST",
@@ -44,10 +46,14 @@ void test_AddSingleBuyOrder(void) {
     /* Verify book state */
     TEST_ASSERT_EQUAL(100, order_book_get_best_bid_price(&book));
     TEST_ASSERT_EQUAL(50, order_book_get_best_bid_quantity(&book));
+    
+    tearDown();
 }
 
 /* Test: Add Single Sell Order */
 void test_AddSingleSellOrder(void) {
+    setUp();
+    
     new_order_msg_t msg = {1, "TEST", 105, 30, SIDE_SELL, 1};
     
     output_buffer_t output;
@@ -57,10 +63,14 @@ void test_AddSingleSellOrder(void) {
     TEST_ASSERT_EQUAL(2, output.count);
     TEST_ASSERT_EQUAL(105, order_book_get_best_ask_price(&book));
     TEST_ASSERT_EQUAL(30, order_book_get_best_ask_quantity(&book));
+    
+    tearDown();
 }
 
 /* Test: Matching Buy and Sell */
 void test_MatchingBuyAndSell(void) {
+    setUp();
+    
     /* Add sell order at 100 */
     new_order_msg_t sell = {1, "TEST", 100, 50, SIDE_SELL, 1};
     output_buffer_t output1;
@@ -95,10 +105,14 @@ void test_MatchingBuyAndSell(void) {
     /* Book should be empty */
     TEST_ASSERT_EQUAL(0, order_book_get_best_bid_price(&book));
     TEST_ASSERT_EQUAL(0, order_book_get_best_ask_price(&book));
+    
+    tearDown();
 }
 
 /* Test: Partial Fill */
 void test_PartialFill(void) {
+    setUp();
+    
     /* Add sell order at 100 for 100 shares */
     new_order_msg_t sell = {1, "TEST", 100, 100, SIDE_SELL, 1};
     output_buffer_t output1;
@@ -123,10 +137,14 @@ void test_PartialFill(void) {
     
     /* Sell order should have 70 remaining */
     TEST_ASSERT_EQUAL(70, order_book_get_best_ask_quantity(&book));
+    
+    tearDown();
 }
 
 /* Test: Market Order Buy */
 void test_MarketOrderBuy(void) {
+    setUp();
+    
     /* Add sell order at 100 */
     new_order_msg_t sell = {1, "TEST", 100, 50, SIDE_SELL, 1};
     output_buffer_t output1;
@@ -149,10 +167,14 @@ void test_MarketOrderBuy(void) {
         }
     }
     TEST_ASSERT_TRUE(found_trade);
+    
+    tearDown();
 }
 
 /* Test: Market Order Sell */
 void test_MarketOrderSell(void) {
+    setUp();
+    
     /* Add buy order at 100 */
     new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
     output_buffer_t output1;
@@ -174,10 +196,14 @@ void test_MarketOrderSell(void) {
         }
     }
     TEST_ASSERT_TRUE(found_trade);
+    
+    tearDown();
 }
 
 /* Test: Price-Time Priority */
 void test_PriceTimePriority(void) {
+    setUp();
+    
     /* Add three buy orders at same price */
     new_order_msg_t buy1 = {1, "TEST", 100, 10, SIDE_BUY, 1};
     new_order_msg_t buy2 = {2, "TEST", 100, 20, SIDE_BUY, 2};
@@ -222,10 +248,14 @@ void test_PriceTimePriority(void) {
     
     /* Order 3 should have 25 remaining (30 - 5) */
     TEST_ASSERT_EQUAL(25, order_book_get_best_bid_quantity(&book));
+    
+    tearDown();
 }
 
 /* Test: Cancel Order */
 void test_CancelOrder(void) {
+    setUp();
+    
     /* Add order */
     new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
     output_buffer_t output1;
@@ -243,10 +273,14 @@ void test_CancelOrder(void) {
     
     /* Book should be empty */
     TEST_ASSERT_EQUAL(0, order_book_get_best_bid_price(&book));
+    
+    tearDown();
 }
 
 /* Test: Cancel Non-Existent Order */
 void test_CancelNonExistentOrder(void) {
+    setUp();
+    
     /* Try to cancel order that doesn't exist */
     output_buffer_t output;
     output_buffer_init(&output);
@@ -255,10 +289,14 @@ void test_CancelNonExistentOrder(void) {
     /* Should still get cancel ack */
     TEST_ASSERT_EQUAL(1, output.count);
     TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, output.messages[0].type);
+    
+    tearDown();
 }
 
 /* Test: Flush Order Book */
 void test_FlushOrderBook(void) {
+    setUp();
+    
     /* Add some orders */
     new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
     new_order_msg_t sell = {2, "TEST", 105, 30, SIDE_SELL, 2};
@@ -275,10 +313,14 @@ void test_FlushOrderBook(void) {
     /* Book should be empty */
     TEST_ASSERT_EQUAL(0, order_book_get_best_bid_price(&book));
     TEST_ASSERT_EQUAL(0, order_book_get_best_ask_price(&book));
+    
+    tearDown();
 }
 
 /* Test: Multiple Orders at Different Prices */
 void test_MultipleOrdersAtDifferentPrices(void) {
+    setUp();
+    
     /* Build a book with depth */
     new_order_msg_t buy1 = {1, "TEST", 100, 50, SIDE_BUY, 1};
     new_order_msg_t buy2 = {1, "TEST", 99, 50, SIDE_BUY, 2};
@@ -299,4 +341,6 @@ void test_MultipleOrdersAtDifferentPrices(void) {
     /* Verify best prices */
     TEST_ASSERT_EQUAL(100, order_book_get_best_bid_price(&book));
     TEST_ASSERT_EQUAL(101, order_book_get_best_ask_price(&book));
+    
+    tearDown();
 }

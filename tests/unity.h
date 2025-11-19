@@ -56,8 +56,4 @@ void UNITY_TEST_ASSERT_GREATER_THAN_INT(const int threshold, const int actual, c
 /* Test result */
 extern int unity_result;
 
-/* Setup/Teardown */
-extern void (*setUp)(void);
-extern void (*tearDown)(void);
-
 #endif /* UNITY_FRAMEWORK_H */
