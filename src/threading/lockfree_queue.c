@@ -1,4 +1,4 @@
-#include "queues.h"
+#include "threading/queues.h"
 
 /* Implement the lock-free queues */
 IMPLEMENT_LOCKFREE_QUEUE(input_msg_t, input_queue)

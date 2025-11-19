@@ -1,4 +1,4 @@
-#include "binary_message_formatter.h"
+#include "protocol/binary/binary_message_formatter.h"
 #include <string.h>
 #include <arpa/inet.h>
 

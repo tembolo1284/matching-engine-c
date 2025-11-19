@@ -1,6 +1,6 @@
-#include "output_publisher.h"
-#include "binary_message_formatter.h"
-#include "binary_protocol.h"
+#include "threading/output_publisher.h"
+#include "protocol/binary/binary_message_formatter.h"
+#include "protocol/binary/binary_protocol.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>

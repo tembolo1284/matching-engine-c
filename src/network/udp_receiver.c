@@ -1,6 +1,6 @@
-#include "udp_receiver.h"
-#include "binary_protocol.h"
-#include "binary_message_parser.h"
+#include "network/udp_receiver.h"
+#include "protocol/binary/binary_protocol.h"
+#include "protocol/binary/binary_message_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -1,7 +1,7 @@
 #ifndef MATCHING_ENGINE_ORDER_H
 #define MATCHING_ENGINE_ORDER_H
 
-#include "message_types.h"
+#include "protocol/message_types.h"
 #include <time.h>
 #include <string.h>
 #include <stdint.h>

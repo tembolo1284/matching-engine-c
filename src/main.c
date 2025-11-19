@@ -3,10 +3,10 @@
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
-#include "udp_receiver.h"
-#include "processor.h"
-#include "output_publisher.h"
-#include "queues.h"
+#include "network/udp_receiver.h"
+#include "threading/processor.h"
+#include "threading/output_publisher.h"
+#include "threading/queues.h"
 
 /* Global components for signal handler */
 static udp_receiver_t* g_udp_receiver = NULL;

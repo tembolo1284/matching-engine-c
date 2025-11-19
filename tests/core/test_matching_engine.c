@@ -1,5 +1,5 @@
 #include "unity.h"
-#include "matching_engine.h"
+#include "core/matching_engine.h"
 #include <string.h>
 
 /* Test fixture */

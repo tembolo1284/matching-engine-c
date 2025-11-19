@@ -1,7 +1,7 @@
 #include "unity.h"
-#include "matching_engine.h"
-#include "message_parser.h"
-#include "message_formatter.h"
+#include "core/matching_engine.h"
+#include "protocol/csv/message_parser.h"
+#include "protocol/csv/message_formatter.h"
 #include <string.h>
 #include <stdio.h>
 

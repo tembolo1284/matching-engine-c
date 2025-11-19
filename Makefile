@@ -24,16 +24,16 @@ BINARY_CLIENT = $(BUILDDIR)/binary_client
 BINARY_DECODER = $(BUILDDIR)/binary_decoder
 
 # Source files (excluding main.c for library)
-LIB_SOURCES = $(SRCDIR)/order_book.c \
-              $(SRCDIR)/matching_engine.c \
-              $(SRCDIR)/message_parser.c \
-              $(SRCDIR)/message_formatter.c \
-              $(SRCDIR)/binary_message_parser.c \
-              $(SRCDIR)/binary_message_formatter.c \
-              $(SRCDIR)/lockfree_queue.c \
-              $(SRCDIR)/udp_receiver.c \
-              $(SRCDIR)/processor.c \
-              $(SRCDIR)/output_publisher.c
+LIB_SOURCES = $(SRCDIR)/core/order_book.c \
+              $(SRCDIR)/core/matching_engine.c \
+              $(SRCDIR)/protocol/csv/message_parser.c \
+              $(SRCDIR)/protocol/csv/message_formatter.c \
+              $(SRCDIR)/protocol/binary/binary_message_parser.c \
+              $(SRCDIR)/protocol/binary/binary_message_formatter.c \
+              $(SRCDIR)/threading/lockfree_queue.c \
+              $(SRCDIR)/network/udp_receiver.c \
+              $(SRCDIR)/threading/processor.c \
+              $(SRCDIR)/threading/output_publisher.c
 
 # Main source
 MAIN_SOURCE = $(SRCDIR)/main.c
@@ -42,12 +42,12 @@ MAIN_SOURCE = $(SRCDIR)/main.c
 UNITY_SOURCES = $(TESTDIR)/unity.c
 
 # Test sources
-TEST_SOURCES = $(TESTDIR)/test_order_book.c \
-               $(TESTDIR)/test_message_parser.c \
-               $(TESTDIR)/test_message_formatter.c \
-               $(TESTDIR)/test_matching_engine.c \
-               $(TESTDIR)/test_scenarios_odd.c \
-               $(TESTDIR)/test_scenarios_even.c \
+TEST_SOURCES = $(TESTDIR)/core/test_order_book.c \
+               $(TESTDIR)/protocol/test_message_parser.c \
+               $(TESTDIR)/protocol/test_message_formatter.c \
+               $(TESTDIR)/protocol/test_matching_engine.c \
+               $(TESTDIR)/scenarios/test_scenarios_odd.c \
+               $(TESTDIR)/scenarios/test_scenarios_even.c \
                $(TESTDIR)/test_runner.c
 
 # Object files
@@ -57,7 +57,7 @@ UNITY_OBJECTS = $(UNITY_SOURCES:$(TESTDIR)/%.c=$(BUILDDIR)/obj/tests/%.o)
 TEST_OBJECTS = $(TEST_SOURCES:$(TESTDIR)/%.c=$(BUILDDIR)/obj/tests/%.o)
 
 # Header dependencies
-HEADERS = $(wildcard $(INCDIR)/*.h)
+HEADERS = $(wildcard $(INCDIR)/*.h) $(wildcard $(INCDIR)/*/*.h)
 
 # Default target - build everything including binary tools
 all: directories $(TARGET) binary-tools
@@ -68,7 +68,14 @@ all: directories $(TARGET) binary-tools
 
 # Create necessary directories
 directories:
-	@mkdir -p $(BUILDDIR)/obj $(BUILDDIR)/obj/tests
+	@mkdir -p $(BUILDDIR)/obj/core \
+	          $(BUILDDIR)/obj/protocol/csv \
+	          $(BUILDDIR)/obj/protocol/binary \
+	          $(BUILDDIR)/obj/network \
+	          $(BUILDDIR)/obj/threading \
+	          $(BUILDDIR)/obj/tests/core \
+	          $(BUILDDIR)/obj/tests/protocol \
+	          $(BUILDDIR)/obj/tests/scenarios
 
 # Link object files to create executable
 $(TARGET): $(LIB_OBJECTS) $(MAIN_OBJECT)
@@ -78,6 +85,7 @@ $(TARGET): $(LIB_OBJECTS) $(MAIN_OBJECT)
 # Compile source files to object files
 $(BUILDDIR)/obj/%.o: $(SRCDIR)/%.c $(HEADERS)
 	@echo "Compiling $<..."
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCDIR) -c $< -o $@
 
 # Build binary tools
@@ -108,7 +116,8 @@ $(TEST_TARGET): $(LIB_OBJECTS) $(UNITY_OBJECTS) $(TEST_OBJECTS)
 # Compile test files
 $(BUILDDIR)/obj/tests/%.o: $(TESTDIR)/%.c $(HEADERS) $(TESTDIR)/unity.h
 	@echo "Compiling test $<..."
-	@$(CC) $(CFLAGS_DEBUG) -I$(INCDIR) -I$(TESTDIR) -c $< -o $@
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS_DEBUG) -I$(INCDIR) -I$(TESTDIR) -c $< -o $@
 
 # Binary protocol tests
 test-binary: $(TARGET) $(BINARY_CLIENT)
@@ -245,4 +254,3 @@ help:
 .PHONY: all clean run run-binary run-binary-decoded run-port run-binary-port \
         debug valgrind valgrind-test info help directories test test-binary \
         test-binary-full test-all binary-tools
-

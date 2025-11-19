@@ -1,5 +1,5 @@
 #include "unity.h"
-#include "message_formatter.h"
+#include "protocol/csv/message_formatter.h"
 #include <string.h>
 
 /* Test fixture */
