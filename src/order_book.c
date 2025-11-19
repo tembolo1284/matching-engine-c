@@ -264,6 +264,9 @@ void order_book_init(order_book_t* book, const char* symbol) {
     book->prev_best_bid_qty = 0;
     book->prev_best_ask_price = 0;
     book->prev_best_ask_qty = 0;
+
+    book->bid_side_ever_active = false;
+    book->ask_side_ever_active = false;
 }
 
 /**
@@ -388,8 +391,11 @@ static void match_order(order_book_t* book, order_t* order, output_buffer_t* out
                 
                 // Generate trade message
                 output_msg_t trade_msg = make_trade_msg(
-                    passive_order->user_id, passive_order->user_order_id,
-                    order->user_id, order->user_order_id,
+                    book->symbol,
+                    passive_order->user_id, 
+                    passive_order->user_order_id,
+                    order->user_id, 
+                    order->user_order_id,
                     best_bid_level->price,  // Trade at passive order price
                     trade_qty
                 );

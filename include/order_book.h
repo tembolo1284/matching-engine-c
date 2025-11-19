@@ -94,6 +94,11 @@ typedef struct {
     uint32_t prev_best_bid_qty;
     uint32_t prev_best_ask_price;
     uint32_t prev_best_ask_qty;
+
+    /* Track if sides ever had orders (for elimination messages) */
+    bool bid_side_ever_active;
+    bool ask_side_ever_active;
+
 } order_book_t;
 
 /**
