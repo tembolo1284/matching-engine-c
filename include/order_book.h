@@ -138,7 +138,7 @@ void order_book_cancel_order(order_book_t* book, uint32_t user_id,
 /**
  * Flush/clear the entire order book
  */
-void order_book_flush(order_book_t* book);
+void order_book_flush(order_book_t* book, output_buffer_t* output);
 
 /**
  * Get best bid/ask prices (0 if none)

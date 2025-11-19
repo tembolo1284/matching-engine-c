@@ -296,24 +296,33 @@ void test_CancelNonExistentOrder(void) {
 /* Test: Flush Order Book */
 void test_FlushOrderBook(void) {
     setUp();
-    
+
     /* Add some orders */
     new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
     new_order_msg_t sell = {2, "TEST", 105, 30, SIDE_SELL, 2};
-    
-    output_buffer_t out1, out2;
+
+    output_buffer_t out1, out2, flush_out;
     output_buffer_init(&out1);
     output_buffer_init(&out2);
+    output_buffer_init(&flush_out);
+    
     order_book_add_order(&book, &buy, &out1);
     order_book_add_order(&book, &sell, &out2);
-    
-    /* Flush */
-    order_book_flush(&book);
-    
+
+    /* Flush - should generate cancel acks */
+    order_book_flush(&book, &flush_out);
+
+    /* Verify cancel acks were generated */
+    TEST_ASSERT_EQUAL(4, flush_out.count);  // 2 cancel acks + 2 TOB eliminated messages
+    TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, flush_out.messages[0].type);
+    TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, flush_out.messages[1].type);
+    TEST_ASSERT_EQUAL(OUTPUT_MSG_TOP_OF_BOOK, flush_out.messages[2].type);  // Bid eliminated
+    TEST_ASSERT_EQUAL(OUTPUT_MSG_TOP_OF_BOOK, flush_out.messages[3].type);  // Ask eliminated
+
     /* Book should be empty */
     TEST_ASSERT_EQUAL(0, order_book_get_best_bid_price(&book));
     TEST_ASSERT_EQUAL(0, order_book_get_best_ask_price(&book));
-    
+
     tearDown();
 }
 

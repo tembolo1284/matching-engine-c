@@ -243,11 +243,9 @@ void matching_engine_process_cancel_order(matching_engine_t* engine, const cance
  * Process flush - clears all order books
  */
 void matching_engine_process_flush(matching_engine_t* engine, output_buffer_t* output) {
-    (void)output;  // Unused parameter
-    
     // Flush all order books
     for (int i = 0; i < engine->num_books; i++) {
-        order_book_flush(&engine->books[i]);
+        order_book_flush(&engine->books[i], output);
     }
     
     // Clear order->symbol map

@@ -601,7 +601,30 @@ void order_book_cancel_order(order_book_t* book, uint32_t user_id, uint32_t user
 /**
  * Flush/clear the entire order book
  */
-void order_book_flush(order_book_t* book) {
+
+void order_book_flush(order_book_t* book, output_buffer_t* output) {
+    // Generate cancel acks for all bid orders
+    for (int i = 0; i < book->num_bid_levels; i++) {
+        order_t* order = book->bids[i].orders_head;
+        while (order != NULL) {
+            // Generate cancel acknowledgement
+            output_msg_t msg = make_cancel_ack_msg(book->symbol, order->user_id, order->user_order_id);
+            output_buffer_add(output, &msg);
+            order = order->next;
+        }
+    }
+
+    // Generate cancel acks for all ask orders
+    for (int i = 0; i < book->num_ask_levels; i++) {
+        order_t* order = book->asks[i].orders_head;
+        while (order != NULL) {
+            // Generate cancel acknowledgement
+            output_msg_t msg = make_cancel_ack_msg(book->symbol, order->user_id, order->user_order_id);
+            output_buffer_add(output, &msg);
+            order = order->next;
+        }
+    }
+
     // Free all bid levels
     for (int i = 0; i < book->num_bid_levels; i++) {
         list_free_all(book->bids[i].orders_head);
@@ -610,7 +633,7 @@ void order_book_flush(order_book_t* book) {
         book->bids[i].total_quantity = 0;
     }
     book->num_bid_levels = 0;
-    
+
     // Free all ask levels
     for (int i = 0; i < book->num_ask_levels; i++) {
         list_free_all(book->asks[i].orders_head);
@@ -619,15 +642,20 @@ void order_book_flush(order_book_t* book) {
         book->asks[i].total_quantity = 0;
     }
     book->num_ask_levels = 0;
-    
+
     // Clear order map
     order_map_clear(&book->order_map);
-    
+
+    // Check for TOB changes before flush (should show eliminated messages)
+    check_tob_changes(book, output);
+
     // Reset TOB tracking
     book->prev_best_bid_price = 0;
     book->prev_best_bid_qty = 0;
     book->prev_best_ask_price = 0;
     book->prev_best_ask_qty = 0;
+
+    check_tob_changes(book, output);
 }
 
 /**
