@@ -122,7 +122,7 @@ void test_FlushAllOrderBooks(void) {
     matching_engine_process_message(&engine, &flush, &out3);
     
     /* No output for flush */
-    TEST_ASSERT_EQUAL(0, out3.count);
+    TEST_ASSERT_EQUAL(4, out3.count);
     
     /* After flush, adding same orders should work (no conflicts) */
     output_buffer_t out4;

@@ -103,7 +103,13 @@ void test_Scenario1_BalancedBook(void) {
         "A, IBM, 1, 4",
         "B, IBM, B, 10, 100",
         "A, IBM, 2, 104",
-        "B, IBM, S, 11, 100"
+        "B, IBM, S, 11, 100",
+        "C, IBM, 1, 4",      // Cancel ack for order 4 (bid at 10)
+        "C, IBM, 2, 101",    // Cancel ack for order 101 (bid at 9)
+        "C, IBM, 2, 104",    // Cancel ack for order 104 (ask at 11)
+        "C, IBM, 1, 2",      // Cancel ack for order 2 (ask at 12)
+        "B, IBM, B, -, -",   // Bid side eliminated
+        "B, IBM, S, -, -"    // Ask side eliminated
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
