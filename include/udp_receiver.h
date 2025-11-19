@@ -3,6 +3,7 @@
 
 #include "message_types.h"
 #include "message_parser.h"
+#include "binary_message_parser.h"
 #include "queues.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -27,6 +28,7 @@ extern "C" {
 
 #define MAX_UDP_PACKET_SIZE 65507
 #define UDP_RECV_BUFFER_SIZE (10 * 1024 * 1024)  /* 10MB socket buffer */
+#define MAX_INPUT_LINE_LENGTH 256
 
 /**
  * UDP receiver state
@@ -39,9 +41,6 @@ typedef struct {
     uint16_t port;
     int sockfd;  /* Socket file descriptor */
     
-    /* Message parser */
-    message_parser_t parser;
-    
     /* Receive buffer */
     char recv_buffer[MAX_UDP_PACKET_SIZE];
     
@@ -53,6 +52,11 @@ typedef struct {
     /* Statistics (optional) */
     atomic_uint_fast64_t packets_received;
     atomic_uint_fast64_t messages_parsed;
+    atomic_uint_fast64_t messages_dropped;
+
+    message_parser_t csv_parser;
+    binary_message_parser_t binary_parser;
+
 } udp_receiver_t;
 
 /* ============================================================================
@@ -109,6 +113,11 @@ void udp_receiver_handle_packet(udp_receiver_t* receiver, const char* data, size
  * Setup UDP socket
  */
 bool udp_receiver_setup_socket(udp_receiver_t* receiver);
+
+/**
+ * Get messages dropped count
+ */
+uint64_t udp_receiver_get_messages_dropped(const udp_receiver_t* receiver);
 
 #ifdef __cplusplus
 }

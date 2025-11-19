@@ -1,223 +1,180 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+#include <unistd.h>
+#include <string.h>
 #include "udp_receiver.h"
 #include "processor.h"
 #include "output_publisher.h"
 #include "queues.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <signal.h>
-#include <stdatomic.h>
-#include <unistd.h>
-#include <time.h>
 
-/* ============================================================================
- * Global shutdown flag
- * ============================================================================ */
-
-static atomic_bool shutdown_requested = ATOMIC_VAR_INIT(false);
+/* Global components for signal handler */
+static udp_receiver_t* g_udp_receiver = NULL;
+static processor_t* g_processor = NULL;
+static output_publisher_t* g_output_publisher = NULL;
 
 /**
  * Signal handler for graceful shutdown
  */
-void signal_handler(int signal) {
-    if (signal == SIGINT || signal == SIGTERM) {
-        fprintf(stderr, "\nShutdown signal received...\n");
-        atomic_store(&shutdown_requested, true);
+void signal_handler(int signum) {
+    fprintf(stderr, "\nReceived signal %d, shutting down gracefully...\n", signum);
+
+    if (g_udp_receiver) {
+        udp_receiver_stop(g_udp_receiver);
+    }
+    if (g_processor) {
+        processor_stop(g_processor);
+    }
+    if (g_output_publisher) {
+        output_publisher_stop(g_output_publisher);
     }
 }
 
 /**
- * Sleep for milliseconds
+ * Print usage information
  */
-static void msleep(unsigned int msec) {
-    struct timespec ts;
-    ts.tv_sec = msec / 1000;
-    ts.tv_nsec = (msec % 1000) * 1000000;
-    nanosleep(&ts, NULL);
+void print_usage(const char* program_name) {
+    fprintf(stderr, "Usage: %s [port] [--binary]\n", program_name);
+    fprintf(stderr, "  port      : UDP port to listen on (default: 1234)\n");
+    fprintf(stderr, "  --binary  : Use binary protocol for output (default: CSV)\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Examples:\n");
+    fprintf(stderr, "  %s              # Listen on port 1234, CSV output\n", program_name);
+    fprintf(stderr, "  %s 5000         # Listen on port 5000, CSV output\n", program_name);
+    fprintf(stderr, "  %s 1234 --binary # Listen on port 1234, binary output\n", program_name);
+    fprintf(stderr, "\n");
 }
 
-/* ============================================================================
- * Main entry point
- * ============================================================================ */
-
 int main(int argc, char* argv[]) {
-    fprintf(stderr, "DEBUG: Entering main\n");
-    fflush(stderr);
-    
-    // Register signal handlers for graceful shutdown
-    fprintf(stderr, "DEBUG: Registering signal handlers\n");
-    fflush(stderr);
+    fprintf(stderr, "=== Matching Engine Starting ===\n");
 
-    // Register signal handlers for graceful shutdown
+    /* Parse command line arguments */
+    int port = 1234;  // Default port
+    bool use_binary = false;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--binary") == 0) {
+            use_binary = true;
+        } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            // Try to parse as port number
+            int parsed_port = atoi(argv[i]);
+            if (parsed_port > 0 && parsed_port <= 65535) {
+                port = parsed_port;
+            } else {
+                fprintf(stderr, "ERROR: Invalid port number: %s\n", argv[i]);
+                print_usage(argv[0]);
+                return 1;
+            }
+        }
+    }
+
+    fprintf(stderr, "Configuration:\n");
+    fprintf(stderr, "  Port: %d\n", port);
+    fprintf(stderr, "  Protocol: %s (input auto-detects both CSV and binary)\n", 
+            use_binary ? "BINARY" : "CSV");
+    fprintf(stderr, "\n");
+
+    /* Setup signal handlers for graceful shutdown */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    fprintf(stderr, "DEBUG: Parsing arguments\n");
-    fflush(stderr);
-    
-    // Parse command line arguments (optional: port number)
-    uint16_t port = 1234;
-    if (argc > 1) {
-        long parsed_port = strtol(argv[1], NULL, 10);
-        if (parsed_port > 0 && parsed_port <= 65535) {
-            port = (uint16_t)parsed_port;
-        } else {
-            fprintf(stderr, "Invalid port number, using default: 1234\n");
-        }
-    }
+    /* Allocate queues */
+    input_queue_t* input_queue = (input_queue_t*)malloc(sizeof(input_queue_t));
+    output_queue_t* output_queue = (output_queue_t*)malloc(sizeof(output_queue_t));
 
-    fprintf(stderr, "DEBUG: About to print banner\n");
-    fflush(stderr);
-    
-    fprintf(stderr, "==============================================================\n");
-    fprintf(stderr, "Matching Engine - Multi-threaded Matching Engine (C Port)\n");
-    fprintf(stderr, "==============================================================\n");
-    fprintf(stderr, "UDP Port: %u\n", port);
-    fprintf(stderr, "==============================================================\n");
-    fprintf(stderr, "DEBUG: About to allocate queues\n");
-    fflush(stderr);    
-
-    // Create lock-free queues
-    input_queue_t* input_queue = malloc(sizeof(input_queue_t));
-    output_queue_t* output_queue = malloc(sizeof(output_queue_t));
-    
     if (!input_queue || !output_queue) {
         fprintf(stderr, "ERROR: Failed to allocate queues\n");
+        free(input_queue);
+        free(output_queue);
         return 1;
     }
 
+    /* Initialize queues */
     input_queue_init(input_queue);
     output_queue_init(output_queue);
-    
-    fprintf(stderr, "Queue Configuration:\n");
-    fprintf(stderr, "  Input queue capacity:  %zu messages\n", input_queue_capacity(input_queue));
-    fprintf(stderr, "  Output queue capacity: %zu messages\n", output_queue_capacity(output_queue));
-    fprintf(stderr, "==============================================================\n");
-    
-    // Create thread components
-    fprintf(stderr, "DEBUG: Allocating thread components (heap)\n");
-    fflush(stderr);
-    
-    // HEAP ALLOCATE - Components are too large for stack
-    udp_receiver_t* receiver = malloc(sizeof(udp_receiver_t));
-    processor_t* processor = malloc(sizeof(processor_t));
-    output_publisher_t* publisher = malloc(sizeof(output_publisher_t));
-    
-    if (!receiver || !processor || !publisher) {
-        fprintf(stderr, "ERROR: Failed to allocate thread components\n");
-        free(input_queue);
-        free(output_queue);
-        return 1;
-    }
-    
-    fprintf(stderr, "DEBUG: Initializing components\n");
-    fflush(stderr);
-    
-    udp_receiver_init(receiver, input_queue, port);
-    processor_init(processor, input_queue, output_queue);
-    output_publisher_init(publisher, output_queue);
-    
-    // Start all threads
+
+    /* Allocate and initialize components */
+    udp_receiver_t udp_receiver;
+    processor_t processor;
+    output_publisher_t output_publisher;
+
+    udp_receiver_init(&udp_receiver, input_queue, port);
+    processor_init(&processor, input_queue, output_queue);
+    output_publisher_init(&output_publisher, output_queue, use_binary);
+
+    /* Set global pointers for signal handler */
+    g_udp_receiver = &udp_receiver;
+    g_processor = &processor;
+    g_output_publisher = &output_publisher;
+
+    /* Start all threads */
     fprintf(stderr, "Starting threads...\n");
 
-    if (!udp_receiver_start(receiver)) {
+    if (!udp_receiver_start(&udp_receiver)) {
         fprintf(stderr, "ERROR: Failed to start UDP receiver\n");
-        free(receiver);
-        free(processor);
-        free(publisher);
-        free(input_queue);
-        free(output_queue);
-        return 1;
+        goto cleanup;
     }
-    
-    if (!processor_start(processor)) {
+
+    if (!processor_start(&processor)) {
         fprintf(stderr, "ERROR: Failed to start processor\n");
-        udp_receiver_stop(receiver);
-        free(receiver);
-        free(processor);
-        free(publisher);
-        free(input_queue);
-        free(output_queue);
-        return 1;
+        udp_receiver_stop(&udp_receiver);
+        goto cleanup;
     }
-    
-    if (!output_publisher_start(publisher)) {
+
+    if (!output_publisher_start(&output_publisher)) {
         fprintf(stderr, "ERROR: Failed to start output publisher\n");
-        processor_stop(processor);
-        udp_receiver_stop(receiver);
-        free(receiver);
-        free(processor);
-        free(publisher);
-        free(input_queue);
-        free(output_queue);
-        return 1;
-    }   
- 
-    fprintf(stderr, "All threads started. System is running.\n");
-    fprintf(stderr, "Press Ctrl+C to shutdown gracefully.\n");
-    fprintf(stderr, "==============================================================\n");
-    
-    // Main thread waits for shutdown signal
-    while (!atomic_load(&shutdown_requested)) {
-        msleep(50);
-        
-        // Optional: Monitor queue depths (useful for debugging)
-        // Uncomment to see queue usage in real-time
-        /*
-        size_t input_size = input_queue_size(&input_queue);
-        size_t output_size = output_queue_size(&output_queue);
-        if (input_size > 1000 || output_size > 1000) {
-            fprintf(stderr, "Queue depths - Input: %zu, Output: %zu\n", 
-                    input_size, output_size);
-        }
-        */
+        udp_receiver_stop(&udp_receiver);
+        processor_stop(&processor);
+        goto cleanup;
     }
-    
-    // Graceful shutdown
-    fprintf(stderr, "==============================================================\n");
-    fprintf(stderr, "Initiating graceful shutdown...\n");
-    
-    // Stop receiver first (no more input)
-    fprintf(stderr, "Stopping UDP receiver...\n");
-    udp_receiver_stop(receiver);
-    
-    // Give processor time to drain input queue
-    fprintf(stderr, "Draining input queue (size: %zu)...\n", input_queue_size(input_queue));
-    msleep(200);
-    
-    // Stop processor (no more processing)
-    fprintf(stderr, "Stopping processor...\n");
-    processor_stop(processor);
-    
-    // Give publisher time to drain output queue
-    fprintf(stderr, "Draining output queue (size: %zu)...\n", output_queue_size(output_queue));
-    msleep(200);
-    
-    // Stop publisher (no more output)
-    fprintf(stderr, "Stopping output publisher...\n");
-    output_publisher_stop(publisher);
-    
-    // Print statistics
-    fprintf(stderr, "==============================================================\n");
-    fprintf(stderr, "Final Statistics:\n");
-    fprintf(stderr, "  Packets received:    %lu\n", udp_receiver_get_packets_received(receiver));
-    fprintf(stderr, "  Messages parsed:     %lu\n", udp_receiver_get_messages_parsed(receiver));
-    fprintf(stderr, "  Messages processed:  %lu\n", processor_get_messages_processed(processor));
-    fprintf(stderr, "  Batches processed:   %lu\n", processor_get_batches_processed(processor));
-    fprintf(stderr, "  Messages published:  %lu\n", output_publisher_get_messages_published(publisher));
-    fprintf(stderr, "==============================================================\n");
-    
-    // Cleanup
-    udp_receiver_destroy(receiver);
-    processor_destroy(processor);
-    output_publisher_destroy(publisher);
-    free(receiver);
-    free(processor);
-    free(publisher);
+
+    fprintf(stderr, "All threads started successfully!\n");
+    fprintf(stderr, "Listening for orders on UDP port %d...\n", port);
+    fprintf(stderr, "Press Ctrl+C to stop.\n");
+    fprintf(stderr, "\n");
+
+    /* Wait for threads to complete (will happen on signal) */
+    while (udp_receiver_is_running(&udp_receiver) ||
+           processor_is_running(&processor) ||
+           output_publisher_is_running(&output_publisher)) {
+        sleep(1);
+    }
+
+    fprintf(stderr, "\n=== Final Statistics ===\n");
+    fprintf(stderr, "UDP Receiver:\n");
+    fprintf(stderr, "  Packets received: %lu\n", udp_receiver_get_packets_received(&udp_receiver));
+    fprintf(stderr, "  Messages parsed:  %lu\n", udp_receiver_get_messages_parsed(&udp_receiver));
+    fprintf(stderr, "  Messages dropped: %lu\n", udp_receiver_get_messages_dropped(&udp_receiver));
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Processor:\n");
+    fprintf(stderr, "  Messages processed: %lu\n", processor_get_messages_processed(&processor));
+    fprintf(stderr, "  Batches processed:  %lu\n", processor_get_batches_processed(&processor));
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Output Publisher:\n");
+    fprintf(stderr, "  Messages published: %lu\n", output_publisher_get_messages_published(&output_publisher));
+    fprintf(stderr, "\n");
+
+cleanup:
+    /* Clean up components */
+    udp_receiver_destroy(&udp_receiver);
+    processor_destroy(&processor);
+    output_publisher_destroy(&output_publisher);
+
+    /* Free queues */
+    // input_queue_destroy(input_queue);
+    // output_queue_destroy(output_queue);
     free(input_queue);
     free(output_queue);
 
-    fprintf(stderr, "Shutdown complete. Goodbye!\n");
-    fprintf(stderr, "==============================================================\n");
-    
+    /* Clear global pointers */
+    g_udp_receiver = NULL;
+    g_processor = NULL;
+    g_output_publisher = NULL;
+
+    fprintf(stderr, "=== Matching Engine Stopped ===\n");
+
     return 0;
 }

@@ -1,4 +1,6 @@
 #include "udp_receiver.h"
+#include "binary_protocol.h"
+#include "binary_message_parser.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +11,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <sched.h>
 
 /**
  * Initialize UDP receiver
@@ -18,7 +21,7 @@ void udp_receiver_init(udp_receiver_t* receiver, input_queue_t* output_queue, ui
     receiver->port = port;
     receiver->sockfd = -1;
     
-    message_parser_init(&receiver->parser);
+    message_parser_init(&receiver->csv_parser);
     
     memset(receiver->recv_buffer, 0, MAX_UDP_PACKET_SIZE);
     
@@ -26,6 +29,8 @@ void udp_receiver_init(udp_receiver_t* receiver, input_queue_t* output_queue, ui
     atomic_init(&receiver->started, false);
     atomic_init(&receiver->packets_received, 0);
     atomic_init(&receiver->messages_parsed, 0);
+    message_parser_init(&receiver->csv_parser);
+    binary_message_parser_init(&receiver->binary_parser);
 }
 
 /**
@@ -120,7 +125,7 @@ void udp_receiver_handle_packet(udp_receiver_t* receiver, const char* data, size
                 
                 // Parse the message
                 input_msg_t msg;
-                if (message_parser_parse(&receiver->parser, line_buffer, &msg)) {
+                if (message_parser_parse(&receiver->csv_parser, line_buffer, &msg)) {
                     // Try to push to queue (non-blocking with retry)
                     int retry_count = 0;
                     const int MAX_RETRIES = 100;
@@ -161,7 +166,7 @@ void udp_receiver_handle_packet(udp_receiver_t* receiver, const char* data, size
         line_buffer[line_len] = '\0';
         
         input_msg_t msg;
-        if (message_parser_parse(&receiver->parser, line_buffer, &msg)) {
+        if (message_parser_parse(&receiver->csv_parser, line_buffer, &msg)) {
             int retry_count = 0;
             const int MAX_RETRIES = 100;
             
@@ -182,62 +187,138 @@ void udp_receiver_handle_packet(udp_receiver_t* receiver, const char* data, size
 }
 
 /**
- * Thread entry point
+ * Thread entry point for UDP receiver
  */
 void* udp_receiver_thread_func(void* arg) {
     udp_receiver_t* receiver = (udp_receiver_t*)arg;
-    
-    fprintf(stderr, "UDP Receiver thread started\n");
-    
-    // Setup socket
-    if (!udp_receiver_setup_socket(receiver)) {
-        atomic_store_explicit(&receiver->running, false, memory_order_release);
-        return NULL;
-    }
-    
-    // Main receive loop
+
+    fprintf(stderr, "UDP Receiver thread started on port %d\n", receiver->port);
+
+    char buffer[MAX_UDP_PACKET_SIZE];
+    struct sockaddr_in client_addr;
+    socklen_t client_len = sizeof(client_addr);
+
     while (atomic_load_explicit(&receiver->running, memory_order_acquire)) {
-        struct sockaddr_in remote_addr;
-        socklen_t addr_len = sizeof(remote_addr);
-        
-        // Receive UDP packet (blocking with timeout)
-        ssize_t bytes_received = recvfrom(receiver->sockfd, 
-                                          receiver->recv_buffer, 
-                                          MAX_UDP_PACKET_SIZE - 1,
-                                          0,
-                                          (struct sockaddr*)&remote_addr,
-                                          &addr_len);
-        
+        // Receive UDP packet
+        ssize_t bytes_received = recvfrom(receiver->sockfd,
+                                         buffer,
+                                         MAX_UDP_PACKET_SIZE - 1,
+                                         0,
+                                         (struct sockaddr*)&client_addr,
+                                         &client_len);
+
         if (bytes_received < 0) {
-            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-                // Interrupted or would block - continue
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Timeout - check running flag and continue
                 continue;
             }
             fprintf(stderr, "ERROR: recvfrom failed: %s\n", strerror(errno));
-            break;
+            continue;
         }
-        
-        if (bytes_received > 0) {
-            atomic_fetch_add_explicit(&receiver->packets_received, 1, memory_order_relaxed);
-            
-            // Null-terminate for safety
-            receiver->recv_buffer[bytes_received] = '\0';
-            
-            // Handle the packet
-            udp_receiver_handle_packet(receiver, receiver->recv_buffer, bytes_received);
+
+        if (bytes_received == 0) {
+            continue;
+        }
+
+        // Null-terminate for CSV parsing
+        buffer[bytes_received] = '\0';
+
+        atomic_fetch_add_explicit(&receiver->packets_received, 1, memory_order_relaxed);
+
+        // Split buffer by newlines for multi-line packets
+        char* line_start = buffer;
+        char* line_end;
+
+        while (line_start < buffer + bytes_received) {
+            // Find end of line
+            line_end = line_start;
+            while (line_end < buffer + bytes_received && *line_end != '\n' && *line_end != '\r') {
+                line_end++;
+            }
+
+            // Calculate line length
+            size_t line_len = line_end - line_start;
+
+            if (line_len > 0) {
+                input_msg_t msg;
+                bool parse_success = false;
+
+                /* Auto-detect message format */
+                if (is_binary_message(line_start, line_len)) {
+                    /* Binary protocol */
+                    parse_success = binary_message_parser_parse(
+                        &receiver->binary_parser,
+                        line_start,
+                        line_len,
+                        &msg
+                    );
+                    if (parse_success) {
+                        fprintf(stderr, "Parsed binary message (type 0x%02X, %zu bytes)\n", 
+                                (unsigned char)line_start[1], line_len);
+                    }
+                } else {
+                    /* CSV protocol - need to null-terminate this line */
+                    char line_buffer[MAX_INPUT_LINE_LENGTH];
+                    if (line_len < MAX_INPUT_LINE_LENGTH) {
+                        memcpy(line_buffer, line_start, line_len);
+                        line_buffer[line_len] = '\0';
+                        
+                        parse_success = message_parser_parse(
+                            &receiver->csv_parser,
+                            line_buffer,
+                            &msg
+                        );
+                        if (parse_success) {
+                            fprintf(stderr, "Parsed CSV message: %.*s\n", 
+                                    (int)line_len, line_start);
+                        }
+                    } else {
+                        fprintf(stderr, "ERROR: CSV line too long (%zu bytes)\n", line_len);
+                    }
+                }
+
+                if (parse_success) {
+                    // Push message to input queue with retry logic
+                    int retry_count = 0;
+                    const int MAX_RETRIES = 1000;
+
+                    while (!input_queue_push(receiver->output_queue, &msg)) {
+                        retry_count++;
+                        if (retry_count >= MAX_RETRIES) {
+                            fprintf(stderr, "WARNING: Input queue full, dropping message!\n");
+                            atomic_fetch_add(&receiver->messages_dropped, 1);
+                            break;
+                        }
+                        // Very brief wait
+                        sched_yield();
+                    }
+
+                    if (retry_count < MAX_RETRIES) {
+                        atomic_fetch_add_explicit(&receiver->messages_parsed, 1, memory_order_relaxed);
+                    }
+                } else {
+                    fprintf(stderr, "ERROR: Failed to parse message\n");
+                }
+            }
+
+            // Move to next line
+            line_start = line_end;
+            // Skip newline characters
+            while (line_start < buffer + bytes_received && 
+                   (*line_start == '\n' || *line_start == '\r')) {
+                line_start++;
+            }
         }
     }
-    
-    // Cleanup
-    close(receiver->sockfd);
-    receiver->sockfd = -1;
-    
-    fprintf(stderr, "UDP Receiver thread stopped. Packets: %lu, Messages: %lu\n",
+
+    fprintf(stderr, "UDP Receiver thread stopped. Packets: %lu, Parsed: %lu, Dropped: %lu\n",
             atomic_load(&receiver->packets_received),
-            atomic_load(&receiver->messages_parsed));
-    
+            atomic_load(&receiver->messages_parsed),
+            atomic_load(&receiver->messages_dropped));
+
     return NULL;
 }
+
 
 /**
  * Start receiving (spawns thread)
@@ -297,4 +378,11 @@ uint64_t udp_receiver_get_packets_received(const udp_receiver_t* receiver) {
 
 uint64_t udp_receiver_get_messages_parsed(const udp_receiver_t* receiver) {
     return atomic_load(&receiver->messages_parsed);
+}
+
+/**
+ * Get messages dropped count
+ */
+uint64_t udp_receiver_get_messages_dropped(const udp_receiver_t* receiver) {
+    return atomic_load(&receiver->messages_dropped);
 }

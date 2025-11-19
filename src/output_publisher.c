@@ -1,4 +1,6 @@
 #include "output_publisher.h"
+#include "binary_message_formatter.h"
+#include "binary_protocol.h"
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
@@ -17,9 +19,14 @@ static void usleep_safe(unsigned int usec) {
 /**
  * Initialize output publisher
  */
-void output_publisher_init(output_publisher_t* publisher, output_queue_t* input_queue) {
-    publisher->input_queue = input_queue;
-    
+void output_publisher_init(output_publisher_t* publisher, 
+                           output_queue_t* output_queue,
+                           bool use_binary) {
+    publisher->output_queue = output_queue;
+    message_formatter_init(&publisher->csv_formatter);
+    binary_message_formatter_init(&publisher->binary_formatter);
+    publisher->use_binary = use_binary;
+
     message_formatter_init(&publisher->formatter);
     
     atomic_init(&publisher->running, false);
@@ -49,48 +56,115 @@ void output_publisher_publish_message(output_publisher_t* publisher, const outpu
 }
 
 /**
- * Thread entry point
+ * Thread entry point for output publisher
  */
 void* output_publisher_thread_func(void* arg) {
     output_publisher_t* publisher = (output_publisher_t*)arg;
-    
+
     fprintf(stderr, "Output Publisher thread started\n");
-    
+    if (publisher->use_binary) {
+        fprintf(stderr, "Output mode: BINARY\n");
+    } else {
+        fprintf(stderr, "Output mode: CSV\n");
+    }
+
+    size_t empty_iterations = 0;
+
     while (atomic_load_explicit(&publisher->running, memory_order_acquire)) {
         output_msg_t msg;
-        
-        if (output_queue_pop(publisher->input_queue, &msg)) {
+
+        if (output_queue_pop(publisher->output_queue, &msg)) {
             // Got a message - publish it
-            output_publisher_publish_message(publisher, &msg);
+            if (publisher->use_binary) {
+                /* Binary output */
+                size_t bin_len;
+                const void* bin_data = binary_message_formatter_format(
+                    &publisher->binary_formatter,
+                    &msg,
+                    &bin_len
+                );
+
+                if (bin_data && bin_len > 0) {
+                    /* Write binary data to stdout */
+                    size_t written = fwrite(bin_data, 1, bin_len, stdout);
+                    if (written != bin_len) {
+                        fprintf(stderr, "WARNING: Incomplete binary write: %zu/%zu bytes\n",
+                                written, bin_len);
+                    }
+                    fflush(stdout);
+                }
+            } else {
+                /* CSV output */
+                const char* formatted = message_formatter_format(
+                    &publisher->csv_formatter,
+                    &msg
+                );
+                printf("%s\n", formatted);
+                fflush(stdout);
+            }
+
             atomic_fetch_add_explicit(&publisher->messages_published, 1, memory_order_relaxed);
+            empty_iterations = 0;  // Reset counter
         } else {
-            // Queue empty - brief sleep to avoid busy-waiting
-            usleep_safe(OUTPUT_SLEEP_US);
+            // Queue was empty
+            empty_iterations++;
+
+            // Adaptive sleep - sleep longer if consistently empty
+            if (empty_iterations > OUTPUT_IDLE_THRESHOLD) {
+                // Been empty for a while, sleep a bit longer
+                usleep_safe(OUTPUT_IDLE_SLEEP_US);
+            } else {
+                // Just became empty, use very short sleep
+                usleep_safe(OUTPUT_ACTIVE_SLEEP_US);
+            }
         }
     }
-    
+
     // Drain remaining messages in queue before exiting
     fprintf(stderr, "Draining remaining output messages...\n");
     size_t drained = 0;
-    
+
     while (true) {
         output_msg_t msg;
-        if (!output_queue_pop(publisher->input_queue, &msg)) {
+        if (!output_queue_pop(publisher->output_queue, &msg)) {
             break;
         }
-        
-        output_publisher_publish_message(publisher, &msg);
+
+        // Publish the message
+        if (publisher->use_binary) {
+            /* Binary output */
+            size_t bin_len;
+            const void* bin_data = binary_message_formatter_format(
+                &publisher->binary_formatter,
+                &msg,
+                &bin_len
+            );
+
+            if (bin_data && bin_len > 0) {
+                fwrite(bin_data, 1, bin_len, stdout);
+                fflush(stdout);
+            }
+        } else {
+            /* CSV output */
+            const char* formatted = message_formatter_format(
+                &publisher->csv_formatter,
+                &msg
+            );
+            printf("%s\n", formatted);
+            fflush(stdout);
+        }
+
         drained++;
     }
-    
+
     if (drained > 0) {
         fprintf(stderr, "Drained %zu messages from output queue\n", drained);
         atomic_fetch_add(&publisher->messages_published, drained);
     }
-    
+
     fprintf(stderr, "Output Publisher thread stopped. Messages published: %lu\n",
             atomic_load(&publisher->messages_published));
-    
+
     return NULL;
 }
 

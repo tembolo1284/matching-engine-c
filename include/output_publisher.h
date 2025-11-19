@@ -3,6 +3,7 @@
 
 #include "message_types.h"
 #include "message_formatter.h"
+#include "binary_message_formatter.h"
 #include "queues.h"
 #include <pthread.h>
 #include <stdatomic.h>
@@ -25,14 +26,17 @@ extern "C" {
  * - Brief sleep (10μs) when queue is empty to avoid busy-waiting
  */
 
-#define OUTPUT_SLEEP_US 10
+#define OUTPUT_SLEEP_US 1000
+#define OUTPUT_IDLE_THRESHOLD 100
+#define OUTPUT_IDLE_SLEEP_US 10000
+#define OUTPUT_ACTIVE_SLEEP_US 100
 
 /**
  * Output publisher state
  */
 typedef struct {
     /* Input queue */
-    output_queue_t* input_queue;
+    output_queue_t* output_queue;
     
     /* Message formatter */
     message_formatter_t formatter;
@@ -44,6 +48,10 @@ typedef struct {
     
     /* Statistics */
     atomic_uint_fast64_t messages_published;
+
+    message_formatter_t csv_formatter;
+    binary_message_formatter_t binary_formatter;
+    bool use_binary;  /* Output format flag */
 } output_publisher_t;
 
 /* ============================================================================
@@ -53,7 +61,9 @@ typedef struct {
 /**
  * Initialize output publisher
  */
-void output_publisher_init(output_publisher_t* publisher, output_queue_t* input_queue);
+void output_publisher_init(output_publisher_t* publisher, 
+                           output_queue_t* queue, 
+                           bool use_binary);
 
 /**
  * Destroy output publisher and cleanup resources
