@@ -3,7 +3,7 @@
 
 #include "message_types.h"
 #include "matching_engine.h"
-#include "lockfree_queue.h"
+#include "queues.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>

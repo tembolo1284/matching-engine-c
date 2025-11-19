@@ -46,21 +46,6 @@ static void list_remove(order_t** head, order_t** tail, order_t* order) {
 }
 
 /**
- * Calculate total quantity in a list of orders
- */
-static uint32_t list_total_quantity(const order_t* head) {
-    uint32_t total = 0;
-    const order_t* current = head;
-    
-    while (current != NULL) {
-        total += current->remaining_qty;
-        current = current->next;
-    }
-    
-    return total;
-}
-
-/**
  * Free all orders in a list
  */
 static void list_free_all(order_t* head) {

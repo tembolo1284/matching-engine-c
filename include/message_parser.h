@@ -90,4 +90,4 @@ bool parse_flush(message_parser_t* parser, input_msg_t* msg);
 }
 #endif
 
-#endif /* MATCHING_ENGINE_MESSAGE_PARSER_H */i
+#endif /* MATCHING_ENGINE_MESSAGE_PARSER_H */

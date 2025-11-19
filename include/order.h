@@ -20,7 +20,7 @@ extern "C" {
  * - Stores both user_id and user_order_id for cancel operations
  * - Fixed-size symbol array (no dynamic allocation)
  */
-typedef struct {
+typedef struct order {
     /* Order identification */
     uint32_t user_id;
     uint32_t user_order_id;

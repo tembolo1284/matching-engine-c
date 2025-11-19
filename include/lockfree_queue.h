@@ -2,6 +2,7 @@
 #define MATCHING_ENGINE_LOCKFREE_QUEUE_H
 
 #include <stdatomic.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -53,13 +54,13 @@ extern "C" {
 #define DECLARE_LOCKFREE_QUEUE(TYPE, NAME) \
     typedef struct NAME##_t { \
         /* Head index (consumer side) - aligned to cache line */ \
-        alignas(CACHE_LINE_SIZE) atomic_size_t head; \
+        _Alignas(CACHE_LINE_SIZE) atomic_size_t head; \
         \
         /* Padding to prevent false sharing between head and tail */ \
         CACHE_LINE_PAD(1); \
         \
         /* Tail index (producer side) - aligned to cache line */ \
-        alignas(CACHE_LINE_SIZE) atomic_size_t tail; \
+        _Alignas(CACHE_LINE_SIZE) atomic_size_t tail; \
         \
         /* Padding after tail */ \
         CACHE_LINE_PAD(2); \
@@ -137,20 +138,8 @@ extern "C" {
     size_t NAME##_capacity(const NAME##_t* queue) { \
         return queue->capacity; \
     }
-
-/* ============================================================================
- * Pre-defined queue types for this application
- * ============================================================================ */
-
-#include "message_types.h"
-
-/* Declare input message queue type */
-DECLARE_LOCKFREE_QUEUE(input_msg_t, input_queue)
-
-/* Declare output message queue type */
-DECLARE_LOCKFREE_QUEUE(output_msg_t, output_queue)
-
 #ifdef __cplusplus
+
 }
 #endif
 

@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
@@ -66,6 +67,13 @@ bool udp_receiver_setup_socket(udp_receiver_t* receiver) {
     socklen_t optlen = sizeof(buffer_size);
     if (getsockopt(receiver->sockfd, SOL_SOCKET, SO_RCVBUF, &buffer_size, &optlen) == 0) {
         fprintf(stderr, "UDP socket receive buffer size: %d bytes\n", buffer_size);
+    }
+
+    struct timeval timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 100000; // 100ms
+    if (setsockopt(receiver->sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
+        fprintf(stderr, "WARNING: Failed to set receive timeout: %s\n", strerror(errno));
     }
     
     // Bind to port
