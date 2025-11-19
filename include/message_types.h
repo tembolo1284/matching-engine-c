@@ -79,16 +79,19 @@ typedef struct {
  * ============================================================================ */
 
 typedef struct {
+    char symbol[MAX_SYMBOL_LENGTH];
     uint32_t user_id;
     uint32_t user_order_id;
 } ack_msg_t;
 
 typedef struct {
+    char symbol[MAX_SYMBOL_LENGTH];
     uint32_t user_id;
     uint32_t user_order_id;
 } cancel_ack_msg_t;
 
 typedef struct {
+    char symbol[MAX_SYMBOL_LENGTH];
     uint32_t user_id_buy;
     uint32_t user_order_id_buy;
     uint32_t user_id_sell;
@@ -98,6 +101,7 @@ typedef struct {
 } trade_msg_t;
 
 typedef struct {
+    char symbol[MAX_SYMBOL_LENGTH];
     side_t side;
     uint32_t price;          /* 0 means no price (eliminated) */
     uint32_t total_quantity; /* 0 means eliminated */
