@@ -1,9 +1,9 @@
 #ifndef MATCHING_ENGINE_PROCESSOR_H
 #define MATCHING_ENGINE_PROCESSOR_H
 
-#include "message_types.h"
-#include "matching_engine.h"
-#include "queues.h"
+#include "protocol/message_types.h"
+#include "core/matching_engine.h"
+#include "threading/queues.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>

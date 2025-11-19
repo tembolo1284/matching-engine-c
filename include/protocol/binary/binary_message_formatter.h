@@ -1,8 +1,8 @@
 #ifndef BINARY_MESSAGE_FORMATTER_H
 #define BINARY_MESSAGE_FORMATTER_H
 
-#include "message_types.h"
-#include "binary_protocol.h"
+#include "protocol/message_types.h"
+#include "protocol/binary/binary_protocol.h"
 #include <stddef.h>
 
 /**

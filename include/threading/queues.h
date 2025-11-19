@@ -1,8 +1,8 @@
 #ifndef MATCHING_ENGINE_QUEUES_H
 #define MATCHING_ENGINE_QUEUES_H
 
-#include "lockfree_queue.h"
-#include "message_types.h"
+#include "threading/lockfree_queue.h"
+#include "protocol/message_types.h"
 
 #ifdef __cplusplus
 extern "C" {

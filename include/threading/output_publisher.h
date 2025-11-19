@@ -1,10 +1,10 @@
 #ifndef MATCHING_ENGINE_OUTPUT_PUBLISHER_H
 #define MATCHING_ENGINE_OUTPUT_PUBLISHER_H
 
-#include "message_types.h"
-#include "message_formatter.h"
-#include "binary_message_formatter.h"
-#include "queues.h"
+#include "protocol/message_types.h"
+#include "protocol/csv/message_formatter.h"
+#include "protocol/binary/binary_message_formatter.h"
+#include "threading/queues.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>

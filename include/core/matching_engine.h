@@ -1,8 +1,8 @@
 #ifndef MATCHING_ENGINE_MATCHING_ENGINE_H
 #define MATCHING_ENGINE_MATCHING_ENGINE_H
 
-#include "order_book.h"
-#include "message_types.h"
+#include "core/order_book.h"
+#include "protocol/message_types.h"
 #include <stdint.h>
 #include <stdbool.h>
 

@@ -1,10 +1,10 @@
 #ifndef MATCHING_ENGINE_UDP_RECEIVER_H
 #define MATCHING_ENGINE_UDP_RECEIVER_H
 
-#include "message_types.h"
-#include "message_parser.h"
-#include "binary_message_parser.h"
-#include "queues.h"
+#include "protocol/message_types.h"
+#include "protocol/csv/message_parser.h"
+#include "protocol/binary/binary_message_parser.h"
+#include "threading/queues.h"
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
