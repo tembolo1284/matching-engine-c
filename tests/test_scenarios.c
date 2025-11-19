@@ -141,7 +141,12 @@ void test_Scenario3_ShallowAsk(void) {
         "T, VAL, 1, 2, 2, 102, 11, 100",
         "B, VAL, S, -, -",
         "A, VAL, 2, 103",
-        "B, VAL, S, 11, 100"
+        "B, VAL, S, 11, 100",
+        "C, VAL, 1, 1",      // Cancel ack for order 1 (bid at 10)
+        "C, VAL, 2, 101",    // Cancel ack for order 101 (bid at 9)
+        "C, VAL, 2, 103",    // Cancel ack for order 103 (ask at 11)
+        "B, VAL, B, -, -",   // Bid side eliminated
+        "B, VAL, S, -, -"    // Ask side eliminated
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -173,7 +178,13 @@ void test_Scenario9_MarketSellPartial(void) {
         "B, IBM, S, 11, 100",
         "A, IBM, 2, 103",
         "T, IBM, 1, 1, 2, 103, 10, 20",
-        "B, IBM, B, 10, 80"
+        "B, IBM, B, 10, 80",
+        "C, IBM, 1, 1",      // Cancel ack for order 1 (bid at 10, 80 remaining)
+        "C, IBM, 2, 101",    // Cancel ack for order 101 (bid at 9)
+        "C, IBM, 2, 102",    // Cancel ack for order 102 (ask at 11)
+        "C, IBM, 1, 2",      // Cancel ack for order 2 (ask at 12)
+        "B, IBM, B, -, -",   // Bid side eliminated
+        "B, IBM, S, -, -"    // Ask side eliminated
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -205,7 +216,13 @@ void test_Scenario11_LimitSellPartial(void) {
         "B, IBM, S, 11, 100",
         "A, IBM, 2, 103",
         "T, IBM, 1, 1, 2, 103, 10, 20",
-        "B, IBM, B, 10, 80"
+        "B, IBM, B, 10, 80",
+        "C, IBM, 1, 1",      // Cancel ack for order 1 (bid at 10, 80 remaining)
+        "C, IBM, 2, 101",    // Cancel ack for order 101 (bid at 9)
+        "C, IBM, 2, 102",    // Cancel ack for order 102 (ask at 11)
+        "C, IBM, 1, 2",      // Cancel ack for order 2 (ask at 12)
+        "B, IBM, B, -, -",   // Bid side eliminated
+        "B, IBM, S, -, -"    // Ask side eliminated
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -247,7 +264,13 @@ void test_Scenario13_MultipleOrdersAtBestPrice(void) {
         "B, IBM, S, 11, 50",
         "A, IBM, 2, 104",
         "T, IBM, 1, 1, 2, 104, 10, 100",
-        "B, IBM, B, 10, 50"
+        "B, IBM, B, 10, 50",
+        "C, IBM, 2, 103",    // Cancel ack for order 103 (bid at 10, 50 remaining)
+        "C, IBM, 2, 101",    // Cancel ack for order 101 (bid at 9)
+        "C, IBM, 1, 3",      // Cancel ack for order 3 (ask at 11, 50 remaining)
+        "C, IBM, 1, 2",      // Cancel ack for order 2 (ask at 12)
+        "B, IBM, B, -, -",   // Bid side eliminated
+        "B, IBM, S, -, -"    // Ask side eliminated
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -279,7 +302,11 @@ void test_Scenario15_CancelBehindBest(void) {
         "A, IBM, 2, 102",
         "B, IBM, S, 11, 100",
         "C, IBM, 1, 2",
-        "C, IBM, 2, 101"
+        "C, IBM, 2, 101",
+        "C, IBM, 1, 1",      // Cancel ack for order 1 (bid at 10)
+        "C, IBM, 2, 102",    // Cancel ack for order 102 (ask at 11)
+        "B, IBM, B, -, -",   // Bid side eliminated
+        "B, IBM, S, -, -"    // Ask side eliminated
     };
     
     process_input(input, sizeof(input) / sizeof(input[0]));
