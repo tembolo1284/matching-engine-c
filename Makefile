@@ -180,7 +180,7 @@ run-binary: $(TARGET)
 # Run with binary output and decoder
 run-binary-decoded: $(TARGET) $(BINARY_DECODER)
 	@echo "Starting matching engine with binary output (decoded)..."
-	@./$(TARGET) --binary 2>&1 | ./$(BINARY_DECODER)
+	@./$(TARGET) --binary 2>/dev/null | ./$(BINARY_DECODER)
 
 # Run with custom port
 run-port: $(TARGET)
