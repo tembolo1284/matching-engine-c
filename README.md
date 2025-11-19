@@ -1,4 +1,4 @@
-# Kraken Order Book - C Implementation
+# Matching Engine - C Implementation
 
 A high-performance, multi-threaded order matching engine ported from C++ to pure C11. Implements price-time priority matching across multiple symbols with UDP input and real-time stdout output.
 
