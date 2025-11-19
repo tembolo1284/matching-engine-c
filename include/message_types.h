@@ -146,54 +146,63 @@ static inline input_msg_t make_flush_msg(void) {
 }
 
 /* Create output messages */
-static inline output_msg_t make_ack_msg(uint32_t user_id, uint32_t user_order_id) {
-    output_msg_t result;
-    result.type = OUTPUT_MSG_ACK;
-    result.data.ack.user_id = user_id;
-    result.data.ack.user_order_id = user_order_id;
-    return result;
+static inline output_msg_t make_ack_msg(const char* symbol, uint32_t user_id, uint32_t user_order_id) {
+    output_msg_t msg;
+    msg.type = OUTPUT_MSG_ACK;
+    strncpy(msg.data.ack.symbol, symbol, MAX_SYMBOL_LENGTH - 1);
+    msg.data.ack.symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
+    msg.data.ack.user_id = user_id;
+    msg.data.ack.user_order_id = user_order_id;
+    return msg;
 }
 
-static inline output_msg_t make_cancel_ack_msg(uint32_t user_id, uint32_t user_order_id) {
-    output_msg_t result;
-    result.type = OUTPUT_MSG_CANCEL_ACK;
-    result.data.cancel_ack.user_id = user_id;
-    result.data.cancel_ack.user_order_id = user_order_id;
-    return result;
+static inline output_msg_t make_cancel_ack_msg(const char* symbol, uint32_t user_id, uint32_t user_order_id) {
+    output_msg_t msg;
+    msg.type = OUTPUT_MSG_CANCEL_ACK;
+    strncpy(msg.data.cancel_ack.symbol, symbol, MAX_SYMBOL_LENGTH - 1);
+    msg.data.cancel_ack.symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
+    msg.data.cancel_ack.user_id = user_id;
+    msg.data.cancel_ack.user_order_id = user_order_id;
+    return msg;
 }
 
-static inline output_msg_t make_trade_msg(uint32_t user_id_buy, uint32_t user_order_id_buy,
+static inline output_msg_t make_trade_msg(const char* symbol,
+                                          uint32_t user_id_buy, uint32_t user_order_id_buy,
                                           uint32_t user_id_sell, uint32_t user_order_id_sell,
                                           uint32_t price, uint32_t quantity) {
-    output_msg_t result;
-    result.type = OUTPUT_MSG_TRADE;
-    result.data.trade.user_id_buy = user_id_buy;
-    result.data.trade.user_order_id_buy = user_order_id_buy;
-    result.data.trade.user_id_sell = user_id_sell;
-    result.data.trade.user_order_id_sell = user_order_id_sell;
-    result.data.trade.price = price;
-    result.data.trade.quantity = quantity;
-    return result;
+    output_msg_t msg;
+    msg.type = OUTPUT_MSG_TRADE;
+    strncpy(msg.data.trade.symbol, symbol, MAX_SYMBOL_LENGTH - 1);
+    msg.data.trade.symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
+    msg.data.trade.user_id_buy = user_id_buy;
+    msg.data.trade.user_order_id_buy = user_order_id_buy;
+    msg.data.trade.user_id_sell = user_id_sell;
+    msg.data.trade.user_order_id_sell = user_order_id_sell;
+    msg.data.trade.price = price;
+    msg.data.trade.quantity = quantity;
+    return msg;
 }
 
-static inline output_msg_t make_top_of_book_msg(side_t side, uint32_t price, uint32_t total_quantity) {
-    output_msg_t result;
-    result.type = OUTPUT_MSG_TOP_OF_BOOK;
-    result.data.top_of_book.side = side;
-    result.data.top_of_book.price = price;
-    result.data.top_of_book.total_quantity = total_quantity;
-    result.data.top_of_book.eliminated = false;
-    return result;
+static inline output_msg_t make_top_of_book_msg(const char* symbol, side_t side, uint32_t price, uint32_t total_quantity) {
+    output_msg_t msg;
+    msg.type = OUTPUT_MSG_TOP_OF_BOOK;
+    strncpy(msg.data.top_of_book.symbol, symbol, MAX_SYMBOL_LENGTH - 1);
+    msg.data.top_of_book.symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
+    msg.data.top_of_book.side = side;
+    msg.data.top_of_book.price = price;
+    msg.data.top_of_book.total_quantity = total_quantity;
+    return msg;
 }
 
-static inline output_msg_t make_top_of_book_eliminated_msg(side_t side) {
-    output_msg_t result;
-    result.type = OUTPUT_MSG_TOP_OF_BOOK;
-    result.data.top_of_book.side = side;
-    result.data.top_of_book.price = 0;
-    result.data.top_of_book.total_quantity = 0;
-    result.data.top_of_book.eliminated = true;
-    return result;
+static inline output_msg_t make_top_of_book_eliminated_msg(const char* symbol, side_t side) {
+    output_msg_t msg;
+    msg.type = OUTPUT_MSG_TOP_OF_BOOK;
+    strncpy(msg.data.top_of_book.symbol, symbol, MAX_SYMBOL_LENGTH - 1);
+    msg.data.top_of_book.symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
+    msg.data.top_of_book.side = side;
+    msg.data.top_of_book.price = 0;
+    msg.data.top_of_book.total_quantity = 0;
+    return msg;
 }
 
 #ifdef __cplusplus
