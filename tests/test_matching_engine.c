@@ -83,7 +83,7 @@ void test_CancelOrderAcrossSymbols(void) {
     matching_engine_process_message(&engine, &input1, &out1);
     
     /* Cancel the order (no symbol in cancel message) */
-    cancel_msg_t cancel = {1, 1};
+    cancel_msg_t cancel = {"IBM", 1, 1};
     input_msg_t input2 = make_cancel_msg(&cancel);
     
     output_buffer_t out2;
@@ -168,7 +168,7 @@ void test_CancelNonExistentOrderEngine(void) {
     setUp();
     
     /* Try to cancel order that was never added */
-    cancel_msg_t cancel = {1, 999};
+    cancel_msg_t cancel = {"IBM", 1, 99};
     input_msg_t input = make_cancel_msg(&cancel);
     
     output_buffer_t output;
