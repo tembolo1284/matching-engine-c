@@ -92,7 +92,7 @@ $(BUILDDIR)/obj/tests/%.o: $(TESTDIR)/%.c $(HEADERS) $(TESTDIR)/unity.h
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILDDIR)
-	@echo "✓ Clean complete"
+	@echo "Clean complete"
 
 # Run the program (default port 1234)
 run: $(TARGET)
