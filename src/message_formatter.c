@@ -16,23 +16,52 @@ void message_formatter_init(message_formatter_t* formatter) {
 const char* message_formatter_format(message_formatter_t* formatter, const output_msg_t* msg) {
     switch (msg->type) {
         case OUTPUT_MSG_ACK:
-            format_ack(formatter->buffer, MAX_OUTPUT_LINE_LENGTH, &msg->data.ack);
+            snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
+                    "A, %s, %u, %u",
+                    msg->data.ack.symbol,
+                    msg->data.ack.user_id,
+                    msg->data.ack.user_order_id);
             break;
-        
+            
         case OUTPUT_MSG_CANCEL_ACK:
-            format_cancel_ack(formatter->buffer, MAX_OUTPUT_LINE_LENGTH, &msg->data.cancel_ack);
+            snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
+                    "C, %s, %u, %u",
+                    msg->data.cancel_ack.symbol,
+                    msg->data.cancel_ack.user_id,
+                    msg->data.cancel_ack.user_order_id);
             break;
-        
+            
         case OUTPUT_MSG_TRADE:
-            format_trade(formatter->buffer, MAX_OUTPUT_LINE_LENGTH, &msg->data.trade);
+            snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
+                    "T, %s, %u, %u, %u, %u, %u, %u",
+                    msg->data.trade.symbol,
+                    msg->data.trade.user_id_buy,
+                    msg->data.trade.user_order_id_buy,
+                    msg->data.trade.user_id_sell,
+                    msg->data.trade.user_order_id_sell,
+                    msg->data.trade.price,
+                    msg->data.trade.quantity);
             break;
-        
+            
         case OUTPUT_MSG_TOP_OF_BOOK:
-            format_top_of_book(formatter->buffer, MAX_OUTPUT_LINE_LENGTH, &msg->data.top_of_book);
+            if (msg->data.top_of_book.price == 0) {
+                /* Top of book eliminated */
+                snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
+                        "B, %s, %s, -, -",
+                        msg->data.top_of_book.symbol,
+                        msg->data.top_of_book.side == SIDE_BUY ? "B" : "S");
+            } else {
+                snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
+                        "B, %s, %s, %u, %u",
+                        msg->data.top_of_book.symbol,
+                        msg->data.top_of_book.side == SIDE_BUY ? "B" : "S",
+                        msg->data.top_of_book.price,
+                        msg->data.top_of_book.total_quantity);
+            }
             break;
-        
+            
         default:
-            formatter->buffer[0] = '\0';
+            snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH, "UNKNOWN");
             break;
     }
     
