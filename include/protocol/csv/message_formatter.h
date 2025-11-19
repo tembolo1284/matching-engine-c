@@ -1,7 +1,7 @@
 #ifndef MATCHING_ENGINE_MESSAGE_FORMATTER_H
 #define MATCHING_ENGINE_MESSAGE_FORMATTER_H
 
-#include "message_types.h"
+#include "protocol/message_types.h"
 #include <stddef.h>
 
 #ifdef __cplusplus

@@ -1,7 +1,7 @@
 #ifndef MATCHING_ENGINE_MESSAGE_PARSER_H
 #define MATCHING_ENGINE_MESSAGE_PARSER_H
 
-#include "message_types.h"
+#include "protocol/message_types.h"
 #include <stdbool.h>
 #include <stddef.h>
 
