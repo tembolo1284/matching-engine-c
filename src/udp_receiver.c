@@ -329,18 +329,27 @@ bool udp_receiver_start(udp_receiver_t* receiver) {
     if (!atomic_compare_exchange_strong(&receiver->started, &expected, true)) {
         return false;  // Already started
     }
-    
+
+    // Setup socket BEFORE starting thread
+    if (!udp_receiver_setup_socket(receiver)) {
+        fprintf(stderr, "ERROR: Failed to setup UDP socket\n");
+        atomic_store(&receiver->started, false);
+        return false;
+    }
+
     atomic_store_explicit(&receiver->running, true, memory_order_release);
-    
+
     // Create thread
     int result = pthread_create(&receiver->thread, NULL, udp_receiver_thread_func, receiver);
     if (result != 0) {
         fprintf(stderr, "ERROR: Failed to create UDP receiver thread: %s\n", strerror(result));
         atomic_store(&receiver->running, false);
         atomic_store(&receiver->started, false);
+        close(receiver->sockfd);
+        receiver->sockfd = -1;
         return false;
     }
-    
+
     return true;
 }
 

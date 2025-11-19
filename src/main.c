@@ -96,38 +96,49 @@ int main(int argc, char* argv[]) {
     input_queue_init(input_queue);
     output_queue_init(output_queue);
 
-    /* Allocate and initialize components */
-    udp_receiver_t udp_receiver;
-    processor_t processor;
-    output_publisher_t output_publisher;
+    /* Allocate components on heap (they're too big for stack!) */
+    udp_receiver_t* udp_receiver = (udp_receiver_t*)calloc(1, sizeof(udp_receiver_t));
+    processor_t* processor = (processor_t*)calloc(1, sizeof(processor_t));
+    output_publisher_t* output_publisher = (output_publisher_t*)calloc(1, sizeof(output_publisher_t));
 
-    udp_receiver_init(&udp_receiver, input_queue, port);
-    processor_init(&processor, input_queue, output_queue);
-    output_publisher_init(&output_publisher, output_queue, use_binary);
+    if (!udp_receiver || !processor || !output_publisher) {
+        fprintf(stderr, "ERROR: Failed to allocate components\n");
+        free(udp_receiver);
+        free(processor);
+        free(output_publisher);
+        free(input_queue);
+        free(output_queue);
+        return 1;
+    }
+
+    /* Initialize components */
+    udp_receiver_init(udp_receiver, input_queue, port);
+    processor_init(processor, input_queue, output_queue);
+    output_publisher_init(output_publisher, output_queue, use_binary);
 
     /* Set global pointers for signal handler */
-    g_udp_receiver = &udp_receiver;
-    g_processor = &processor;
-    g_output_publisher = &output_publisher;
+    g_udp_receiver = udp_receiver;
+    g_processor = processor;
+    g_output_publisher = output_publisher;
 
     /* Start all threads */
     fprintf(stderr, "Starting threads...\n");
 
-    if (!udp_receiver_start(&udp_receiver)) {
+    if (!udp_receiver_start(udp_receiver)) {
         fprintf(stderr, "ERROR: Failed to start UDP receiver\n");
         goto cleanup;
     }
 
-    if (!processor_start(&processor)) {
+    if (!processor_start(processor)) {
         fprintf(stderr, "ERROR: Failed to start processor\n");
-        udp_receiver_stop(&udp_receiver);
+        udp_receiver_stop(udp_receiver);
         goto cleanup;
     }
 
-    if (!output_publisher_start(&output_publisher)) {
+    if (!output_publisher_start(output_publisher)) {
         fprintf(stderr, "ERROR: Failed to start output publisher\n");
-        udp_receiver_stop(&udp_receiver);
-        processor_stop(&processor);
+        udp_receiver_stop(udp_receiver);
+        processor_stop(processor);
         goto cleanup;
     }
 
@@ -137,35 +148,38 @@ int main(int argc, char* argv[]) {
     fprintf(stderr, "\n");
 
     /* Wait for threads to complete (will happen on signal) */
-    while (udp_receiver_is_running(&udp_receiver) ||
-           processor_is_running(&processor) ||
-           output_publisher_is_running(&output_publisher)) {
+    while (udp_receiver_is_running(udp_receiver) ||
+           processor_is_running(processor) ||
+           output_publisher_is_running(output_publisher)) {
         sleep(1);
     }
 
     fprintf(stderr, "\n=== Final Statistics ===\n");
     fprintf(stderr, "UDP Receiver:\n");
-    fprintf(stderr, "  Packets received: %lu\n", udp_receiver_get_packets_received(&udp_receiver));
-    fprintf(stderr, "  Messages parsed:  %lu\n", udp_receiver_get_messages_parsed(&udp_receiver));
-    fprintf(stderr, "  Messages dropped: %lu\n", udp_receiver_get_messages_dropped(&udp_receiver));
+    fprintf(stderr, "  Packets received: %lu\n", udp_receiver_get_packets_received(udp_receiver));
+    fprintf(stderr, "  Messages parsed:  %lu\n", udp_receiver_get_messages_parsed(udp_receiver));
+    fprintf(stderr, "  Messages dropped: %lu\n", udp_receiver_get_messages_dropped(udp_receiver));
     fprintf(stderr, "\n");
     fprintf(stderr, "Processor:\n");
-    fprintf(stderr, "  Messages processed: %lu\n", processor_get_messages_processed(&processor));
-    fprintf(stderr, "  Batches processed:  %lu\n", processor_get_batches_processed(&processor));
+    fprintf(stderr, "  Messages processed: %lu\n", processor_get_messages_processed(processor));
+    fprintf(stderr, "  Batches processed:  %lu\n", processor_get_batches_processed(processor));
     fprintf(stderr, "\n");
     fprintf(stderr, "Output Publisher:\n");
-    fprintf(stderr, "  Messages published: %lu\n", output_publisher_get_messages_published(&output_publisher));
+    fprintf(stderr, "  Messages published: %lu\n", output_publisher_get_messages_published(output_publisher));
     fprintf(stderr, "\n");
 
 cleanup:
     /* Clean up components */
-    udp_receiver_destroy(&udp_receiver);
-    processor_destroy(&processor);
-    output_publisher_destroy(&output_publisher);
+    udp_receiver_destroy(udp_receiver);
+    processor_destroy(processor);
+    output_publisher_destroy(output_publisher);
+
+    /* Free components */
+    free(udp_receiver);
+    free(processor);
+    free(output_publisher);
 
     /* Free queues */
-    // input_queue_destroy(input_queue);
-    // output_queue_destroy(output_queue);
     free(input_queue);
     free(output_queue);
 
