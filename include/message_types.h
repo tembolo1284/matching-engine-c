@@ -56,6 +56,7 @@ typedef struct {
 } new_order_msg_t;
 
 typedef struct {
+    char symbol[MAX_SYMBOL_LENGTH];
     uint32_t user_id;
     uint32_t user_order_id;
 } cancel_msg_t;

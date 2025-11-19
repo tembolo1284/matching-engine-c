@@ -192,7 +192,7 @@ void matching_engine_process_new_order(matching_engine_t* engine, const new_orde
     
     if (book == NULL) {
         // Failed to get/create order book - just send ack
-        output_msg_t ack = make_ack_msg(msg->user_id, msg->user_order_id);
+        output_msg_t ack = make_ack_msg(msg->symbol, msg->user_id, msg->user_order_id);
         output_buffer_add(output, &ack);
         return;
     }
@@ -216,7 +216,7 @@ void matching_engine_process_cancel_order(matching_engine_t* engine, const cance
     
     if (entry == NULL) {
         // Order not found - send cancel ack anyway
-        output_msg_t cancel_ack = make_cancel_ack_msg(msg->user_id, msg->user_order_id);
+        output_msg_t cancel_ack = make_cancel_ack_msg(msg->symbol, msg->user_id, msg->user_order_id);
         output_buffer_add(output, &cancel_ack);
         return;
     }
@@ -226,7 +226,7 @@ void matching_engine_process_cancel_order(matching_engine_t* engine, const cance
     
     if (book_entry == NULL) {
         // Order book doesn't exist - send cancel ack anyway
-        output_msg_t cancel_ack = make_cancel_ack_msg(msg->user_id, msg->user_order_id);
+        output_msg_t cancel_ack = make_cancel_ack_msg(msg->symbol, msg->user_id, msg->user_order_id);
         output_buffer_add(output, &cancel_ack);
         order_symbol_map_remove(engine, order_key);
         return;
