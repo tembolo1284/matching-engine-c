@@ -1,8 +1,12 @@
 #ifndef MESSAGE_TYPES_EXTENDED_H
 #define MESSAGE_TYPES_EXTENDED_H
 
-#include "message_types.h"
+#include "protocol/message_types.h"
 #include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * Extended Message Types for TCP Multi-Client Support
@@ -34,7 +38,7 @@ typedef struct {
 typedef struct {
     output_msg_t msg;          // The actual ack/trade/TOB message
     uint32_t client_id;        // Which client should receive this (1-based)
-                               // (always the client that sent the order)
+    uint64_t sequence          // (always the client that sent the order)
 } output_msg_envelope_t;
 
 /**
@@ -56,11 +60,17 @@ create_input_envelope(const input_msg_t* msg,
  */
 static inline output_msg_envelope_t
 create_output_envelope(const output_msg_t* msg,
-                       uint32_t client_id) {
+                       uint32_t client_id,
+                       uint64_t sequence) {
     output_msg_envelope_t envelope;
     envelope.msg = *msg;
     envelope.client_id = client_id;
+    envelope.sequence = sequence;
     return envelope;
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // MESSAGE_TYPES_EXTENDED_H
