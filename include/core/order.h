@@ -36,6 +36,8 @@ typedef struct order {
     /* Time priority (nanoseconds since epoch) */
     uint64_t timestamp;
     
+    uint32_t client_id;  // 0 for UDP mode, client_id for TCP mode
+
     /* For linked list (utlist) - will add these */
     struct order *next;
     struct order *prev;

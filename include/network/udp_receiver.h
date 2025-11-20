@@ -1,7 +1,7 @@
 #ifndef MATCHING_ENGINE_UDP_RECEIVER_H
 #define MATCHING_ENGINE_UDP_RECEIVER_H
 
-#include "protocol/message_types.h"
+#include "message_types_extended.h"
 #include "protocol/csv/message_parser.h"
 #include "protocol/binary/binary_message_parser.h"
 #include "threading/queues.h"
@@ -16,12 +16,17 @@ extern "C" {
 
 /**
  * UdpReceiver - Thread 1: Receive UDP messages and parse them
- * 
+ *
+ * Updated for unified envelope architecture:
+ * - Now outputs input_msg_envelope_t with client_id = 0
+ * - Compatible with TCP multi-client processor
+ * - Maintains backward compatibility with existing UDP tests
+ *
  * Design decisions:
  * - Uses raw POSIX sockets (replaces boost::asio)
  * - Runs in separate pthread
- * - Parses incoming CSV messages
- * - Pushes parsed messages to lock-free queue
+ * - Parses incoming CSV/binary messages (auto-detect)
+ * - Pushes parsed messages wrapped in envelopes to lock-free queue
  * - Graceful shutdown via atomic flag
  * - Large receive buffer (10MB) to handle bursts
  */
@@ -34,8 +39,8 @@ extern "C" {
  * UDP receiver state
  */
 typedef struct {
-    /* Output queue */
-    input_queue_t* output_queue;
+    /* Output queue - NOW USES ENVELOPES */
+    input_envelope_queue_t* output_queue;
     
     /* Network configuration */
     uint16_t port;
@@ -49,14 +54,18 @@ typedef struct {
     atomic_bool running;
     atomic_bool started;
     
-    /* Statistics (optional) */
+    /* Statistics */
     atomic_uint_fast64_t packets_received;
     atomic_uint_fast64_t messages_parsed;
     atomic_uint_fast64_t messages_dropped;
-
+    
+    /* Message sequence number */
+    atomic_uint_fast64_t sequence;
+    
+    /* Parsers */
     message_parser_t csv_parser;
     binary_message_parser_t binary_parser;
-
+    
 } udp_receiver_t;
 
 /* ============================================================================
@@ -66,7 +75,9 @@ typedef struct {
 /**
  * Initialize UDP receiver
  */
-void udp_receiver_init(udp_receiver_t* receiver, input_queue_t* output_queue, uint16_t port);
+void udp_receiver_init(udp_receiver_t* receiver, 
+                      input_envelope_queue_t* output_queue, 
+                      uint16_t port);
 
 /**
  * Destroy UDP receiver and cleanup resources
@@ -94,6 +105,7 @@ bool udp_receiver_is_running(const udp_receiver_t* receiver);
  */
 uint64_t udp_receiver_get_packets_received(const udp_receiver_t* receiver);
 uint64_t udp_receiver_get_messages_parsed(const udp_receiver_t* receiver);
+uint64_t udp_receiver_get_messages_dropped(const udp_receiver_t* receiver);
 
 /* ============================================================================
  * Internal Functions (used by thread)
@@ -107,17 +119,14 @@ void* udp_receiver_thread_func(void* arg);
 /**
  * Handle received UDP packet
  */
-void udp_receiver_handle_packet(udp_receiver_t* receiver, const char* data, size_t length);
+void udp_receiver_handle_packet(udp_receiver_t* receiver, 
+                                const char* data, 
+                                size_t length);
 
 /**
  * Setup UDP socket
  */
 bool udp_receiver_setup_socket(udp_receiver_t* receiver);
-
-/**
- * Get messages dropped count
- */
-uint64_t udp_receiver_get_messages_dropped(const udp_receiver_t* receiver);
 
 #ifdef __cplusplus
 }

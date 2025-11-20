@@ -1,4 +1,4 @@
-# Makefile for Order Book - Matching Engine (Pure C)
+# Makefile for Order Book - Matching Engine (Pure C with TCP Support)
 
 # Compiler and flags
 CC = gcc
@@ -22,6 +22,7 @@ TEST_TARGET = $(BUILDDIR)/matching_engine_tests
 # Binary tools (now in build directory)
 BINARY_CLIENT = $(BUILDDIR)/binary_client
 BINARY_DECODER = $(BUILDDIR)/binary_decoder
+TCP_CLIENT = $(BUILDDIR)/tcp_client
 
 # Source files (excluding main.c for library)
 LIB_SOURCES = $(SRCDIR)/core/order_book.c \
@@ -30,10 +31,14 @@ LIB_SOURCES = $(SRCDIR)/core/order_book.c \
               $(SRCDIR)/protocol/csv/message_formatter.c \
               $(SRCDIR)/protocol/binary/binary_message_parser.c \
               $(SRCDIR)/protocol/binary/binary_message_formatter.c \
-              $(SRCDIR)/threading/lockfree_queue.c \
+              $(SRCDIR)/network/message_framing.c \
+              $(SRCDIR)/network/tcp_connection.c \
+              $(SRCDIR)/network/tcp_listener.c \
               $(SRCDIR)/network/udp_receiver.c \
+              $(SRCDIR)/threading/lockfree_queue.c \
               $(SRCDIR)/threading/processor.c \
-              $(SRCDIR)/threading/output_publisher.c
+              $(SRCDIR)/threading/output_publisher.c \
+              $(SRCDIR)/threading/output_router.c
 
 # Main source
 MAIN_SOURCE = $(SRCDIR)/main.c
@@ -45,7 +50,7 @@ UNITY_SOURCES = $(TESTDIR)/unity.c
 TEST_SOURCES = $(TESTDIR)/core/test_order_book.c \
                $(TESTDIR)/protocol/test_message_parser.c \
                $(TESTDIR)/protocol/test_message_formatter.c \
-               $(TESTDIR)/core/test_matching_engine.c \
+               $(TESTDIR)/protocol/test_matching_engine.c \
                $(TESTDIR)/scenarios/test_scenarios_odd.c \
                $(TESTDIR)/scenarios/test_scenarios_even.c \
                $(TESTDIR)/test_runner.c
@@ -57,14 +62,16 @@ UNITY_OBJECTS = $(UNITY_SOURCES:$(TESTDIR)/%.c=$(BUILDDIR)/obj/tests/%.o)
 TEST_OBJECTS = $(TEST_SOURCES:$(TESTDIR)/%.c=$(BUILDDIR)/obj/tests/%.o)
 
 # Header dependencies
-HEADERS = $(wildcard $(INCDIR)/*.h) $(wildcard $(INCDIR)/*/*.h)
+HEADERS = $(wildcard $(INCDIR)/*.h) \
+          $(wildcard $(INCDIR)/*/*.h) \
+          $(wildcard $(INCDIR)/*/*/*.h)
 
-# Default target - build everything including binary tools
-all: directories $(TARGET) binary-tools
+# Default target - build everything including tools
+all: directories $(TARGET) tools
 	@echo ""
 	@echo "✓ Build complete!"
 	@echo "  Main executable: $(TARGET)"
-	@echo "  Binary tools:    $(BINARY_CLIENT), $(BINARY_DECODER)"
+	@echo "  Tools:           $(BINARY_CLIENT), $(BINARY_DECODER), $(TCP_CLIENT)"
 
 # Create necessary directories
 directories:
@@ -88,8 +95,8 @@ $(BUILDDIR)/obj/%.o: $(SRCDIR)/%.c $(HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -I$(INCDIR) -c $< -o $@
 
-# Build binary tools
-binary-tools: $(BINARY_CLIENT) $(BINARY_DECODER)
+# Build all tools
+tools: $(BINARY_CLIENT) $(BINARY_DECODER) $(TCP_CLIENT)
 
 $(BINARY_CLIENT): $(TOOLSDIR)/binary_client.c
 	@echo "Building binary client..."
@@ -98,6 +105,10 @@ $(BINARY_CLIENT): $(TOOLSDIR)/binary_client.c
 $(BINARY_DECODER): $(TOOLSDIR)/binary_decoder.c
 	@echo "Building binary decoder..."
 	$(CC) $(CFLAGS) $< -o $@
+
+$(TCP_CLIENT): $(TOOLSDIR)/tcp_client.c
+	@echo "Building TCP test client..."
+	$(CC) $(CFLAGS) -I$(INCDIR) $< -o $@
 
 # Test target
 test: directories $(TEST_TARGET)
@@ -119,14 +130,14 @@ $(BUILDDIR)/obj/tests/%.o: $(TESTDIR)/%.c $(HEADERS) $(TESTDIR)/unity.h
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS_DEBUG) -I$(INCDIR) -I$(TESTDIR) -c $< -o $@
 
-# Binary protocol tests
+# Binary protocol tests (UDP mode with binary)
 test-binary: $(TARGET) $(BINARY_CLIENT)
 	@echo ""
 	@echo "=========================================="
-	@echo "Binary Protocol Test - CSV Output"
+	@echo "Binary Protocol Test - UDP Mode"
 	@echo "=========================================="
-	@echo "Starting server (CSV output mode)..."
-	@./$(TARGET) 1234 > /tmp/binary_test_output.txt 2>&1 & \
+	@echo "Starting server (UDP mode, CSV output)..."
+	@./$(TARGET) --udp 1234 > /tmp/binary_test_output.txt 2>&1 & \
 	SERVER_PID=$$!; \
 	sleep 1; \
 	echo "Sending binary test messages..."; \
@@ -141,29 +152,30 @@ test-binary: $(TARGET) $(BINARY_CLIENT)
 	echo ""; \
 	echo "✓ Binary protocol test complete"
 
-test-binary-full: $(TARGET) $(BINARY_CLIENT) $(BINARY_DECODER)
+# TCP mode tests
+test-tcp: $(TARGET) $(TCP_CLIENT)
 	@echo ""
 	@echo "=========================================="
-	@echo "Binary Protocol Test - Binary Output"
+	@echo "TCP Multi-Client Test"
 	@echo "=========================================="
-	@echo "Starting server (binary output mode)..."
-	@./$(TARGET) 1234 --binary 2>&1 | ./$(BINARY_DECODER) > /tmp/binary_test_decoded.txt & \
+	@echo "Starting server (TCP mode, port 1234)..."
+	@./$(TARGET) --tcp 1234 2>&1 & \
 	SERVER_PID=$$!; \
 	sleep 1; \
-	echo "Sending binary test messages..."; \
-	./$(BINARY_CLIENT) 1234 2; \
-	sleep 1; \
-	echo ""; \
-	echo "Decoded output:"; \
+	echo "Connecting test clients..."; \
+	./$(TCP_CLIENT) localhost 1234 & \
+	CLIENT_PID=$$!; \
+	sleep 2; \
+	echo "Stopping server..."; \
 	kill $$SERVER_PID 2>/dev/null; \
+	kill $$CLIENT_PID 2>/dev/null; \
 	wait $$SERVER_PID 2>/dev/null; \
-	cat /tmp/binary_test_decoded.txt 2>/dev/null || echo "No output captured"; \
-	rm -f /tmp/binary_test_decoded.txt; \
+	wait $$CLIENT_PID 2>/dev/null; \
 	echo ""; \
-	echo "✓ Full binary protocol test complete"
+	echo "✓ TCP test complete"
 
-# Run all tests (unit + binary)
-test-all: test test-binary
+# Run all tests
+test-all: test test-binary test-tcp
 	@echo ""
 	@echo "=========================================="
 	@echo "All Tests Complete"
@@ -176,30 +188,39 @@ clean:
 	@rm -f /tmp/binary_test_*.txt
 	@echo "Clean complete"
 
-# Run the program (default port 1234, CSV output)
+# Run the program in UDP mode (default)
+run-udp: $(TARGET)
+	@echo "Starting matching engine in UDP mode on port 1234..."
+	@./$(TARGET) --udp
+
+# Run the program in TCP mode (new default)
 run: $(TARGET)
-	@echo "Starting matching engine on port 1234 (CSV output)..."
-	@./$(TARGET)
+	@echo "Starting matching engine in TCP mode on port 1234..."
+	@./$(TARGET) --tcp
+
+run-tcp: $(TARGET)
+	@echo "Starting matching engine in TCP mode on port 1234..."
+	@./$(TARGET) --tcp
 
 # Run with binary protocol output
 run-binary: $(TARGET)
-	@echo "Starting matching engine on port 1234 (BINARY output)..."
-	@./$(TARGET) --binary
+	@echo "Starting matching engine in TCP mode with binary output..."
+	@./$(TARGET) --tcp --binary
 
 # Run with binary output and decoder
 run-binary-decoded: $(TARGET) $(BINARY_DECODER)
 	@echo "Starting matching engine with binary output (decoded)..."
-	@./$(TARGET) --binary 2>/dev/null | ./$(BINARY_DECODER)
+	@./$(TARGET) --tcp --binary 2>/dev/null | ./$(BINARY_DECODER)
 
-# Run with custom port
+# Run with custom port (TCP)
 run-port: $(TARGET)
 	@echo "Usage: make run-port PORT=5000"
-	@./$(TARGET) $(PORT)
+	@./$(TARGET) --tcp $(PORT)
 
-# Run with custom port and binary output
-run-binary-port: $(TARGET)
-	@echo "Usage: make run-binary-port PORT=5000"
-	@./$(TARGET) $(PORT) --binary
+# Run with custom port (UDP)
+run-udp-port: $(TARGET)
+	@echo "Usage: make run-udp-port PORT=5000"
+	@./$(TARGET) --udp $(PORT)
 
 # Debug build
 debug: CFLAGS = $(CFLAGS_DEBUG)
@@ -207,7 +228,7 @@ debug: clean all
 
 # Run with valgrind for memory leak detection
 valgrind: debug
-	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET)
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET) --tcp
 
 # Valgrind tests
 valgrind-test: directories $(TEST_TARGET)
@@ -224,7 +245,7 @@ info:
 	@echo "Link flags:     $(LDFLAGS)"
 	@echo "Target:         $(TARGET)"
 	@echo "Test target:    $(TEST_TARGET)"
-	@echo "Binary tools:   $(BINARY_CLIENT), $(BINARY_DECODER)"
+	@echo "Tools:          $(BINARY_CLIENT), $(BINARY_DECODER), $(TCP_CLIENT)"
 	@echo "Build dir:      $(BUILDDIR)"
 	@echo "Sources:        $(words $(LIB_SOURCES)) files"
 	@echo "Tests:          $(words $(TEST_SOURCES)) files"
@@ -233,24 +254,30 @@ info:
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all              - Build matching engine + binary tools (default)"
-	@echo "  binary-tools     - Build binary client and decoder only"
+	@echo "  all              - Build matching engine + tools (default)"
+	@echo "  tools            - Build binary/TCP test clients only"
 	@echo "  test             - Build and run unit tests"
-	@echo "  test-binary      - Test binary protocol with CSV output"
-	@echo "  test-binary-full - Test full binary protocol (binary in/out)"
-	@echo "  test-all         - Run all tests (unit + binary)"
+	@echo "  test-binary      - Test binary protocol (UDP mode)"
+	@echo "  test-tcp         - Test TCP multi-client mode"
+	@echo "  test-all         - Run all tests (unit + binary + TCP)"
 	@echo "  clean            - Remove all build artifacts"
 	@echo "  debug            - Build with debug symbols"
-	@echo "  run              - Run on port 1234 (CSV output)"
-	@echo "  run-binary       - Run on port 1234 (BINARY output)"
-	@echo "  run-binary-decoded - Run with binary output + live decoder"
-	@echo "  run-port         - Run on custom port (e.g., make run-port PORT=5000)"
-	@echo "  run-binary-port  - Run on custom port with binary output"
+	@echo ""
+	@echo "Running:"
+	@echo "  run              - Run in TCP mode on port 1234"
+	@echo "  run-tcp          - Run in TCP mode on port 1234"
+	@echo "  run-udp          - Run in UDP mode on port 1234 (legacy)"
+	@echo "  run-binary       - Run TCP with binary output"
+	@echo "  run-binary-decoded - Run TCP with binary output + decoder"
+	@echo "  run-port         - Run TCP on custom port (e.g., make run-port PORT=5000)"
+	@echo "  run-udp-port     - Run UDP on custom port"
+	@echo ""
+	@echo "Analysis:"
 	@echo "  valgrind         - Run with memory leak detection"
 	@echo "  valgrind-test    - Run tests with valgrind"
 	@echo "  info             - Display build configuration"
 	@echo "  help             - Display this help message"
 
-.PHONY: all clean run run-binary run-binary-decoded run-port run-binary-port \
-        debug valgrind valgrind-test info help directories test test-binary \
-        test-binary-full test-all binary-tools
+.PHONY: all clean run run-tcp run-udp run-binary run-binary-decoded run-port \
+        run-udp-port debug valgrind valgrind-test info help directories \
+        test test-binary test-tcp test-all tools

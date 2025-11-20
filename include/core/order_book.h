@@ -12,7 +12,12 @@ extern "C" {
 
 /**
  * OrderBook - Single symbol order book with price-time priority
- * 
+ *
+ * Updated for TCP multi-client support:
+ * - Tracks client_id with each order for ownership
+ * - Includes client_id in trade messages for routing
+ * - Supports cancelling all orders for a disconnected client
+ *
  * Design decisions:
  * - Fixed array of price levels (10000 slots) - Option B approach
  * - Binary search to find price levels O(log N)
@@ -20,7 +25,7 @@ extern "C" {
  * - Bids sorted descending (best bid = highest price = highest index)
  * - Asks sorted ascending (best ask = lowest price = lowest index)
  * - Hash table for fast order cancellation lookup
- * 
+ *
  * Price level strategy:
  * - Since price range is typically ~100 levels, fixed array is optimal
  * - Better cache locality than tree structures
@@ -78,17 +83,17 @@ typedef struct {
  */
 typedef struct {
     char symbol[MAX_SYMBOL_LENGTH];
-    
+
     /* Price levels - fixed arrays */
     price_level_t bids[MAX_PRICE_LEVELS];    /* Sorted descending */
     price_level_t asks[MAX_PRICE_LEVELS];    /* Sorted ascending */
-    
+
     int num_bid_levels;  /* Number of active bid levels */
     int num_ask_levels;  /* Number of active ask levels */
-    
+
     /* Order lookup for cancellations */
     order_map_t order_map;
-    
+
     /* Track previous best bid/ask for TOB change detection */
     uint32_t prev_best_bid_price;
     uint32_t prev_best_bid_qty;
@@ -125,20 +130,41 @@ void order_book_destroy(order_book_t* book);
 
 /**
  * Process new order, returns output messages (ack, trades, TOB updates)
+ * 
+ * @param book Order book
+ * @param msg New order message
+ * @param client_id Client ID who placed this order (0 for UDP)
+ * @param output Output buffer for generated messages
  */
-void order_book_add_order(order_book_t* book, const new_order_msg_t* msg, 
+void order_book_add_order(order_book_t* book, 
+                          const new_order_msg_t* msg,
+                          uint32_t client_id,
                           output_buffer_t* output);
 
 /**
  * Cancel order, returns output messages (cancel ack, TOB updates)
  */
-void order_book_cancel_order(order_book_t* book, uint32_t user_id, 
-                              uint32_t user_order_id, output_buffer_t* output);
+void order_book_cancel_order(order_book_t* book, 
+                              uint32_t user_id,
+                              uint32_t user_order_id, 
+                              output_buffer_t* output);
 
 /**
  * Flush/clear the entire order book
  */
 void order_book_flush(order_book_t* book, output_buffer_t* output);
+
+/**
+ * Cancel all orders for a specific client (TCP mode)
+ * 
+ * @param book Order book
+ * @param client_id Client ID whose orders should be cancelled
+ * @param output Output buffer for cancel acknowledgements
+ * @return Number of orders cancelled
+ */
+size_t order_book_cancel_client_orders(order_book_t* book,
+                                       uint32_t client_id,
+                                       output_buffer_t* output);
 
 /**
  * Get best bid/ask prices (0 if none)

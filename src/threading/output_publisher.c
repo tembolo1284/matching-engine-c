@@ -1,225 +1,86 @@
 #include "threading/output_publisher.h"
+#include "protocol/csv/message_formatter.h"
 #include "protocol/binary/binary_message_formatter.h"
-#include "protocol/binary/binary_protocol.h"
+#include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
-#include <time.h>
 
-/**
- * Sleep for microseconds
- */
-static void usleep_safe(unsigned int usec) {
-    struct timespec ts;
-    ts.tv_sec = usec / 1000000;
-    ts.tv_nsec = (usec % 1000000) * 1000;
-    nanosleep(&ts, NULL);
-}
+#define BATCH_SIZE 32
+#define SLEEP_TIME_US 100
 
-/**
- * Initialize output publisher
- */
-void output_publisher_init(output_publisher_t* publisher, 
-                           output_queue_t* output_queue,
-                           bool use_binary) {
-    publisher->output_queue = output_queue;
-    message_formatter_init(&publisher->csv_formatter);
-    binary_message_formatter_init(&publisher->binary_formatter);
-    publisher->use_binary = use_binary;
+// Define the queue (already declared in header)
+DEFINE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
 
-    message_formatter_init(&publisher->formatter);
+bool output_publisher_init(output_publisher_context_t* ctx,
+                           const output_publisher_config_t* config,
+                           output_envelope_queue_t* input_queue,
+                           atomic_bool* shutdown_flag) {
+    memset(ctx, 0, sizeof(*ctx));
     
-    atomic_init(&publisher->running, false);
-    atomic_init(&publisher->started, false);
-    atomic_init(&publisher->messages_published, 0);
-}
-
-/**
- * Destroy output publisher and cleanup resources
- */
-void output_publisher_destroy(output_publisher_t* publisher) {
-    output_publisher_stop(publisher);
-}
-
-/**
- * Publish a single output message to stdout
- */
-void output_publisher_publish_message(output_publisher_t* publisher, const output_msg_t* msg) {
-    // Format message to string
-    const char* output = message_formatter_format(&publisher->formatter, msg);
-    
-    // Write to stdout
-    printf("%s\n", output);
-    
-    // Flush to ensure real-time output
-    fflush(stdout);
-}
-
-/**
- * Thread entry point for output publisher
- */
-void* output_publisher_thread_func(void* arg) {
-    output_publisher_t* publisher = (output_publisher_t*)arg;
-
-    fprintf(stderr, "Output Publisher thread started\n");
-    if (publisher->use_binary) {
-        fprintf(stderr, "Output mode: BINARY\n");
-    } else {
-        fprintf(stderr, "Output mode: CSV\n");
-    }
-
-    size_t empty_iterations = 0;
-
-    while (atomic_load_explicit(&publisher->running, memory_order_acquire)) {
-        output_msg_t msg;
-
-        if (output_queue_pop(publisher->output_queue, &msg)) {
-            // Got a message - publish it
-            if (publisher->use_binary) {
-                /* Binary output */
-                size_t bin_len;
-                const void* bin_data = binary_message_formatter_format(
-                    &publisher->binary_formatter,
-                    &msg,
-                    &bin_len
-                );
-
-                if (bin_data && bin_len > 0) {
-                    /* Write binary data to stdout */
-                    size_t written = fwrite(bin_data, 1, bin_len, stdout);
-                    if (written != bin_len) {
-                        fprintf(stderr, "WARNING: Incomplete binary write: %zu/%zu bytes\n",
-                                written, bin_len);
-                    }
-                    fflush(stdout);
-                }
-            } else {
-                /* CSV output */
-                const char* formatted = message_formatter_format(
-                    &publisher->csv_formatter,
-                    &msg
-                );
-                printf("%s\n", formatted);
-                fflush(stdout);
-            }
-
-            atomic_fetch_add_explicit(&publisher->messages_published, 1, memory_order_relaxed);
-            empty_iterations = 0;  // Reset counter
-        } else {
-            // Queue was empty
-            empty_iterations++;
-
-            // Adaptive sleep - sleep longer if consistently empty
-            if (empty_iterations > OUTPUT_IDLE_THRESHOLD) {
-                // Been empty for a while, sleep a bit longer
-                usleep_safe(OUTPUT_IDLE_SLEEP_US);
-            } else {
-                // Just became empty, use very short sleep
-                usleep_safe(OUTPUT_ACTIVE_SLEEP_US);
-            }
-        }
-    }
-
-    // Drain remaining messages in queue before exiting
-    fprintf(stderr, "Draining remaining output messages...\n");
-    size_t drained = 0;
-
-    while (true) {
-        output_msg_t msg;
-        if (!output_queue_pop(publisher->output_queue, &msg)) {
-            break;
-        }
-
-        // Publish the message
-        if (publisher->use_binary) {
-            /* Binary output */
-            size_t bin_len;
-            const void* bin_data = binary_message_formatter_format(
-                &publisher->binary_formatter,
-                &msg,
-                &bin_len
-            );
-
-            if (bin_data && bin_len > 0) {
-                fwrite(bin_data, 1, bin_len, stdout);
-                fflush(stdout);
-            }
-        } else {
-            /* CSV output */
-            const char* formatted = message_formatter_format(
-                &publisher->csv_formatter,
-                &msg
-            );
-            printf("%s\n", formatted);
-            fflush(stdout);
-        }
-
-        drained++;
-    }
-
-    if (drained > 0) {
-        fprintf(stderr, "Drained %zu messages from output queue\n", drained);
-        atomic_fetch_add(&publisher->messages_published, drained);
-    }
-
-    fprintf(stderr, "Output Publisher thread stopped. Messages published: %lu\n",
-            atomic_load(&publisher->messages_published));
-
-    return NULL;
-}
-
-/**
- * Start publishing (spawns thread)
- */
-bool output_publisher_start(output_publisher_t* publisher) {
-    // Check if already running
-    bool expected = false;
-    if (!atomic_compare_exchange_strong(&publisher->started, &expected, true)) {
-        return false;  // Already started
-    }
-    
-    atomic_store_explicit(&publisher->running, true, memory_order_release);
-    
-    // Create thread
-    int result = pthread_create(&publisher->thread, NULL, output_publisher_thread_func, publisher);
-    if (result != 0) {
-        fprintf(stderr, "ERROR: Failed to create output publisher thread: %s\n", strerror(result));
-        atomic_store(&publisher->running, false);
-        atomic_store(&publisher->started, false);
-        return false;
-    }
+    ctx->config = *config;
+    ctx->input_queue = input_queue;
+    ctx->shutdown_flag = shutdown_flag;
     
     return true;
 }
 
-/**
- * Stop publishing (signals thread to exit, drains queue, and waits)
- */
-void output_publisher_stop(output_publisher_t* publisher) {
-    // Check if started
-    if (!atomic_load(&publisher->started)) {
-        return;
+void output_publisher_cleanup(output_publisher_context_t* ctx) {
+    (void)ctx;
+}
+
+void* output_publisher_thread(void* arg) {
+    output_publisher_context_t* ctx = (output_publisher_context_t*)arg;
+    
+    fprintf(stderr, "[Output Publisher] Starting (format: %s)\n",
+            ctx->config.use_binary_output ? "Binary" : "CSV");
+    
+    output_msg_envelope_t batch[BATCH_SIZE];
+    char output_buffer[4096];
+    
+    while (!atomic_load(ctx->shutdown_flag)) {
+        // Dequeue batch of output envelopes
+        size_t count = 0;
+        for (size_t i = 0; i < BATCH_SIZE; i++) {
+            if (output_envelope_queue_dequeue(ctx->input_queue, &batch[count])) {
+                count++;
+            } else {
+                break;
+            }
+        }
+        
+        if (count == 0) {
+            usleep(SLEEP_TIME_US);
+            continue;
+        }
+        
+        // Format and publish each message
+        for (size_t i = 0; i < count; i++) {
+            // Extract the actual message (ignore client_id in UDP mode)
+            output_msg_t* msg = &batch[i].msg;
+            
+            size_t len;
+            if (ctx->config.use_binary_output) {
+                len = format_binary_message(msg, output_buffer, sizeof(output_buffer));
+            } else {
+                len = format_message(msg, output_buffer, sizeof(output_buffer));
+            }
+            
+            if (len > 0) {
+                // Write to stdout
+                fwrite(output_buffer, 1, len, stdout);
+                fflush(stdout);
+                ctx->messages_published++;
+            }
+        }
     }
     
-    // Signal thread to stop
-    atomic_store_explicit(&publisher->running, false, memory_order_release);
+    fprintf(stderr, "[Output Publisher] Shutting down\n");
+    output_publisher_print_stats(ctx);
     
-    // Wait for thread to finish
-    pthread_join(publisher->thread, NULL);
-    
-    atomic_store(&publisher->started, false);
+    return NULL;
 }
 
-/**
- * Check if thread is running
- */
-bool output_publisher_is_running(const output_publisher_t* publisher) {
-    return atomic_load_explicit(&publisher->running, memory_order_acquire);
-}
-
-/**
- * Get statistics
- */
-uint64_t output_publisher_get_messages_published(const output_publisher_t* publisher) {
-    return atomic_load(&publisher->messages_published);
+void output_publisher_print_stats(const output_publisher_context_t* ctx) {
+    fprintf(stderr, "\n=== Output Publisher Statistics ===\n");
+    fprintf(stderr, "Messages published:    %lu\n", ctx->messages_published);
 }

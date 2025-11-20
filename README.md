@@ -516,6 +516,185 @@ if (data[0] == 0x4D) {
 
 ---
 
+# TCP Multi-Client Quick Start
+
+## Building
+```bash
+make clean
+make
+```
+
+This builds:
+- `build/matching_engine` - Main server
+- `build/tcp_client` - TCP test client
+- `build/binary_client` - UDP binary test client
+- `build/binary_decoder` - Binary protocol decoder
+
+## Running the TCP Server
+
+### Basic TCP Server (CSV output)
+```bash
+./build/matching_engine --tcp
+```
+
+### TCP Server on Custom Port
+```bash
+./build/matching_engine --tcp 5000
+```
+
+### TCP Server with Binary Output
+```bash
+./build/matching_engine --tcp --binary
+```
+
+## Testing with TCP Client
+
+### Terminal 1: Start Server
+```bash
+./build/matching_engine --tcp 1234
+```
+
+### Terminal 2: Run Test Scenarios
+
+**Scenario 1 - Simple Orders:**
+```bash
+./build/tcp_client localhost 1234 1
+```
+
+**Scenario 2 - Matching Trade:**
+```bash
+./build/tcp_client localhost 1234 2
+```
+
+**Scenario 3 - Cancel Order:**
+```bash
+./build/tcp_client localhost 1234 3
+```
+
+**Interactive Mode:**
+```bash
+./build/tcp_client localhost 1234
+```
+
+Then type orders:
+```
+> N, 1, IBM, 100, 50, B, 1
+> N, 1, IBM, 100, 50, S, 2
+> F
+> quit
+```
+
+## Multiple Clients
+
+Each TCP client gets a unique `client_id` (1-based). The server validates that the `userId` in orders matches the assigned `client_id`.
+
+**Terminal 1: Server**
+```bash
+./build/matching_engine --tcp
+```
+
+**Terminal 2: Client 1 (will be assigned client_id=1)**
+```bash
+./build/tcp_client localhost 1234
+> N, 1, IBM, 100, 50, B, 1
+```
+
+**Terminal 3: Client 2 (will be assigned client_id=2)**
+```bash
+./build/tcp_client localhost 1234
+> N, 2, IBM, 100, 50, S, 1
+```
+
+When Client 2's sell order matches Client 1's buy order, **both clients receive the trade message**.
+
+## Expected Output
+
+**Client 1 sends buy order:**
+```
+> N, 1, IBM, 100, 50, B, 1
+
+Server responds:
+A, IBM, 1, 1
+B, IBM, B, 100, 50
+```
+
+**Client 2 sends matching sell order:**
+```
+> N, 2, IBM, 100, 50, S, 1
+
+Server responds to Client 2:
+A, IBM, 2, 1
+T, IBM, 1, 1, 2, 1, 100, 50
+B, IBM, B, -, -
+B, IBM, S, -, -
+
+Server responds to Client 1:
+T, IBM, 1, 1, 2, 1, 100, 50
+B, IBM, B, -, -
+B, IBM, S, -, -
+```
+
+Both clients see the trade!
+
+## Running Tests
+```bash
+# Unit tests
+make test
+
+# TCP integration test
+make test-tcp
+
+# All tests
+make test-all
+```
+
+## Legacy UDP Mode
+
+The old UDP mode still works:
+```bash
+# UDP mode
+./build/matching_engine --udp 1234
+
+# Send via netcat
+echo "N, 1, IBM, 100, 50, B, 1" | nc -u localhost 1234
+```
+
+## Protocol Details
+
+### Framing (TCP)
+All messages are length-prefixed:
+```
+[4-byte length (big-endian)][message payload]
+```
+
+### Message Format (CSV)
+```
+New Order:  N, userId, symbol, price, qty, side, userOrderId
+Cancel:     C, userId, userOrderId
+Flush:      F
+```
+
+### Security
+- Each TCP client is assigned a unique `client_id` on connection
+- Server validates that `userId` in messages matches the client's assigned `client_id`
+- Prevents clients from spoofing other clients' orders
+- On disconnect, all client's orders are automatically cancelled
+
+## Architecture
+```
+TCP Client 1 ──┐
+TCP Client 2 ──┼──> TCP Listener ──> Input Queue ──> Processor ──> Output Router
+TCP Client 3 ──┘         ↑                                              │
+                         │                                              │
+                         └──────────────────────────────────────────────┘
+                              (per-client output queues)
+```
+
+- **TCP Listener**: epoll-based event loop, handles all client I/O
+- **Processor**: Matching engine, generates output with client routing info
+- **Output Router**: Routes messages to appropriate client queues
+- **Lock-free queues**: Zero contention between threads
+
 ## Project Structure
 ```
 matching-engine-c/

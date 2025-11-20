@@ -13,13 +13,13 @@
 static void list_append(order_t** head, order_t** tail, order_t* order) {
     order->next = NULL;
     order->prev = *tail;
-    
+
     if (*tail != NULL) {
         (*tail)->next = order;
     }
-    
+
     *tail = order;
-    
+
     if (*head == NULL) {
         *head = order;
     }
@@ -34,13 +34,13 @@ static void list_remove(order_t** head, order_t** tail, order_t* order) {
     } else {
         *head = order->next;
     }
-    
+
     if (order->next != NULL) {
         order->next->prev = order->prev;
     } else {
         *tail = order->prev;
     }
-    
+
     order->next = NULL;
     order->prev = NULL;
 }
@@ -73,13 +73,13 @@ static uint32_t hash_order_key(uint64_t key) {
  */
 static void order_map_insert(order_map_t* map, uint64_t key, const order_location_t* location) {
     uint32_t hash = hash_order_key(key);
-    
+
     // Create new entry
     order_map_entry_t* entry = (order_map_entry_t*)malloc(sizeof(order_map_entry_t));
     entry->key = key;
     entry->location = *location;
     entry->next = map->buckets[hash];
-    
+
     // Insert at head of bucket chain
     map->buckets[hash] = entry;
 }
@@ -90,14 +90,14 @@ static void order_map_insert(order_map_t* map, uint64_t key, const order_locatio
 static order_map_entry_t* order_map_find(order_map_t* map, uint64_t key) {
     uint32_t hash = hash_order_key(key);
     order_map_entry_t* entry = map->buckets[hash];
-    
+
     while (entry != NULL) {
         if (entry->key == key) {
             return entry;
         }
         entry = entry->next;
     }
-    
+
     return NULL;
 }
 
@@ -108,7 +108,7 @@ static void order_map_remove(order_map_t* map, uint64_t key) {
     uint32_t hash = hash_order_key(key);
     order_map_entry_t* entry = map->buckets[hash];
     order_map_entry_t* prev = NULL;
-    
+
     while (entry != NULL) {
         if (entry->key == key) {
             // Found it - remove from chain
@@ -151,14 +151,14 @@ static void order_map_clear(order_map_t* map) {
 static int find_price_level(const price_level_t* levels, int num_levels, uint32_t price, bool descending) {
     int left = 0;
     int right = num_levels - 1;
-    
+
     while (left <= right) {
         int mid = left + (right - left) / 2;
-        
+
         if (levels[mid].price == price) {
             return mid;
         }
-        
+
         if (descending) {
             // Descending order (bids)
             if (levels[mid].price > price) {
@@ -175,7 +175,7 @@ static int find_price_level(const price_level_t* levels, int num_levels, uint32_
             }
         }
     }
-    
+
     return -1;  // Not found
 }
 
@@ -186,7 +186,7 @@ static int find_price_level(const price_level_t* levels, int num_levels, uint32_
 static int insert_price_level(price_level_t* levels, int* num_levels, uint32_t price, bool descending) {
     // Find insertion point
     int insert_pos = *num_levels;
-    
+
     for (int i = 0; i < *num_levels; i++) {
         bool should_insert_here;
         if (descending) {
@@ -194,28 +194,28 @@ static int insert_price_level(price_level_t* levels, int* num_levels, uint32_t p
         } else {
             should_insert_here = (price < levels[i].price);
         }
-        
+
         if (should_insert_here) {
             insert_pos = i;
             break;
         }
     }
-    
+
     // Shift elements to make room
     if (insert_pos < *num_levels) {
-        memmove(&levels[insert_pos + 1], &levels[insert_pos], 
+        memmove(&levels[insert_pos + 1], &levels[insert_pos],
                 (*num_levels - insert_pos) * sizeof(price_level_t));
     }
-    
+
     // Initialize new level
     levels[insert_pos].price = price;
     levels[insert_pos].total_quantity = 0;
     levels[insert_pos].orders_head = NULL;
     levels[insert_pos].orders_tail = NULL;
     levels[insert_pos].active = true;
-    
+
     (*num_levels)++;
-    
+
     return insert_pos;
 }
 
@@ -226,16 +226,16 @@ static void remove_price_level(price_level_t* levels, int* num_levels, int index
     if (index < 0 || index >= *num_levels) {
         return;
     }
-    
+
     // Free all orders at this level
     list_free_all(levels[index].orders_head);
-    
+
     // Shift elements down
     if (index < *num_levels - 1) {
-        memmove(&levels[index], &levels[index + 1], 
+        memmove(&levels[index], &levels[index + 1],
                 (*num_levels - index - 1) * sizeof(price_level_t));
     }
-    
+
     (*num_levels)--;
 }
 
@@ -249,16 +249,16 @@ static void remove_price_level(price_level_t* levels, int* num_levels, int index
 void order_book_init(order_book_t* book, const char* symbol) {
     strncpy(book->symbol, symbol, MAX_SYMBOL_LENGTH - 1);
     book->symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
-    
+
     // Initialize price levels
     memset(book->bids, 0, sizeof(book->bids));
     memset(book->asks, 0, sizeof(book->asks));
     book->num_bid_levels = 0;
     book->num_ask_levels = 0;
-    
+
     // Initialize order map
     memset(&book->order_map, 0, sizeof(order_map_t));
-    
+
     // Initialize TOB tracking
     book->prev_best_bid_price = 0;
     book->prev_best_bid_qty = 0;
@@ -277,12 +277,12 @@ void order_book_destroy(order_book_t* book) {
     for (int i = 0; i < book->num_bid_levels; i++) {
         list_free_all(book->bids[i].orders_head);
     }
-    
+
     // Free all ask levels
     for (int i = 0; i < book->num_ask_levels; i++) {
         list_free_all(book->asks[i].orders_head);
     }
-    
+
     // Clear order map
     order_map_clear(&book->order_map);
 }
@@ -293,10 +293,10 @@ void order_book_destroy(order_book_t* book) {
 static void add_order_to_level(order_book_t* book, price_level_t* level, order_t* order) {
     // Add to list
     list_append(&level->orders_head, &level->orders_tail, order);
-    
+
     // Update total quantity
     level->total_quantity += order->remaining_qty;
-    
+
     // Add to order map for cancellation
     uint64_t key = make_order_key(order->user_id, order->user_order_id);
     order_location_t location;
@@ -314,42 +314,47 @@ static void match_order(order_book_t* book, order_t* order, output_buffer_t* out
         // Buy order: match against asks (ascending price)
         while (order->remaining_qty > 0 && book->num_ask_levels > 0) {
             price_level_t* best_ask_level = &book->asks[0];  // Lowest price (best ask)
-            
+
             // Check if we can match
-            bool can_match = (order->type == ORDER_TYPE_MARKET) || 
+            bool can_match = (order->type == ORDER_TYPE_MARKET) ||
                             (order->price >= best_ask_level->price);
-            
+
             if (!can_match) {
                 break;
             }
-            
+
             // Match with orders at this price level (FIFO)
             order_t* passive_order = best_ask_level->orders_head;
-            
+
             while (order->remaining_qty > 0 && passive_order != NULL) {
                 order_t* next_order = passive_order->next;
-                
+
                 // Calculate trade quantity
                 uint32_t trade_qty = (order->remaining_qty < passive_order->remaining_qty) ?
                                      order->remaining_qty : passive_order->remaining_qty;
-                
-                // Generate trade message
+
+                // Generate trade message WITH CLIENT IDs
                 output_msg_t trade_msg = make_trade_msg(
                     book->symbol,
-                    order->user_id, 
+                    order->user_id,
                     order->user_order_id,
-                    passive_order->user_id, 
+                    passive_order->user_id,
                     passive_order->user_order_id,
                     best_ask_level->price,  // Trade at passive order price
                     trade_qty
                 );
-                output_buffer_add(output, &trade_msg);
                 
+                // Add client routing info for TCP mode
+                trade_msg.data.trade.buy_client_id = order->client_id;
+                trade_msg.data.trade.sell_client_id = passive_order->client_id;
+                
+                output_buffer_add(output, &trade_msg);
+
                 // Update quantities
                 order_fill(order, trade_qty);
                 order_fill(passive_order, trade_qty);
                 best_ask_level->total_quantity -= trade_qty;
-                
+
                 // Remove passive order if fully filled
                 if (order_is_filled(passive_order)) {
                     uint64_t key = make_order_key(passive_order->user_id, passive_order->user_order_id);
@@ -357,10 +362,10 @@ static void match_order(order_book_t* book, order_t* order, output_buffer_t* out
                     list_remove(&best_ask_level->orders_head, &best_ask_level->orders_tail, passive_order);
                     free(passive_order);
                 }
-                
+
                 passive_order = next_order;
             }
-            
+
             // Remove price level if empty
             if (best_ask_level->orders_head == NULL) {
                 remove_price_level(book->asks, &book->num_ask_levels, 0);
@@ -370,42 +375,47 @@ static void match_order(order_book_t* book, order_t* order, output_buffer_t* out
         // Sell order: match against bids (descending price)
         while (order->remaining_qty > 0 && book->num_bid_levels > 0) {
             price_level_t* best_bid_level = &book->bids[0];  // Highest price (best bid)
-            
+
             // Check if we can match
-            bool can_match = (order->type == ORDER_TYPE_MARKET) || 
+            bool can_match = (order->type == ORDER_TYPE_MARKET) ||
                             (order->price <= best_bid_level->price);
-            
+
             if (!can_match) {
                 break;
             }
-            
+
             // Match with orders at this price level (FIFO)
             order_t* passive_order = best_bid_level->orders_head;
-            
+
             while (order->remaining_qty > 0 && passive_order != NULL) {
                 order_t* next_order = passive_order->next;
-                
+
                 // Calculate trade quantity
                 uint32_t trade_qty = (order->remaining_qty < passive_order->remaining_qty) ?
                                      order->remaining_qty : passive_order->remaining_qty;
-                
-                // Generate trade message
+
+                // Generate trade message WITH CLIENT IDs
                 output_msg_t trade_msg = make_trade_msg(
                     book->symbol,
-                    passive_order->user_id, 
+                    passive_order->user_id,
                     passive_order->user_order_id,
-                    order->user_id, 
+                    order->user_id,
                     order->user_order_id,
                     best_bid_level->price,  // Trade at passive order price
                     trade_qty
                 );
-                output_buffer_add(output, &trade_msg);
                 
+                // Add client routing info for TCP mode
+                trade_msg.data.trade.buy_client_id = passive_order->client_id;
+                trade_msg.data.trade.sell_client_id = order->client_id;
+                
+                output_buffer_add(output, &trade_msg);
+
                 // Update quantities
                 order_fill(order, trade_qty);
                 order_fill(passive_order, trade_qty);
                 best_bid_level->total_quantity -= trade_qty;
-                
+
                 // Remove passive order if fully filled
                 if (order_is_filled(passive_order)) {
                     uint64_t key = make_order_key(passive_order->user_id, passive_order->user_order_id);
@@ -413,10 +423,10 @@ static void match_order(order_book_t* book, order_t* order, output_buffer_t* out
                     list_remove(&best_bid_level->orders_head, &best_bid_level->orders_tail, passive_order);
                     free(passive_order);
                 }
-                
+
                 passive_order = next_order;
             }
-            
+
             // Remove price level if empty
             if (best_bid_level->orders_head == NULL) {
                 remove_price_level(book->bids, &book->num_bid_levels, 0);
@@ -432,22 +442,22 @@ static void add_to_book(order_book_t* book, order_t* order) {
     if (order->side == SIDE_BUY) {
         // Find or create price level
         int idx = find_price_level(book->bids, book->num_bid_levels, order->price, true);
-        
+
         if (idx == -1) {
             // Price level doesn't exist - create it
             idx = insert_price_level(book->bids, &book->num_bid_levels, order->price, true);
         }
-        
+
         add_order_to_level(book, &book->bids[idx], order);
     } else {
         // Find or create price level
         int idx = find_price_level(book->asks, book->num_ask_levels, order->price, false);
-        
+
         if (idx == -1) {
             // Price level doesn't exist - create it
             idx = insert_price_level(book->asks, &book->num_ask_levels, order->price, false);
         }
-        
+
         add_order_to_level(book, &book->asks[idx], order);
     }
 }
@@ -455,13 +465,12 @@ static void add_to_book(order_book_t* book, order_t* order) {
 /**
  * Check for top-of-book changes and generate TOB messages
  */
-
 static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
     uint32_t current_best_bid_price = order_book_get_best_bid_price(book);
     uint32_t current_best_bid_qty = order_book_get_best_bid_quantity(book);
     uint32_t current_best_ask_price = order_book_get_best_ask_price(book);
     uint32_t current_best_ask_qty = order_book_get_best_ask_quantity(book);
-    
+
     /* Track if sides ever become active */
     if (current_best_bid_price > 0) {
         book->bid_side_ever_active = true;
@@ -469,11 +478,11 @@ static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
     if (current_best_ask_price > 0) {
         book->ask_side_ever_active = true;
     }
-    
+
     /* Check bid side changes */
-    if (current_best_bid_price != book->prev_best_bid_price || 
+    if (current_best_bid_price != book->prev_best_bid_price ||
         current_best_bid_qty != book->prev_best_bid_qty) {
-        
+
         if (current_best_bid_price == 0 && book->bid_side_ever_active) {
             /* Bid side eliminated */
             output_msg_t msg = make_top_of_book_eliminated_msg(book->symbol, SIDE_BUY);
@@ -482,15 +491,15 @@ static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
             output_msg_t msg = make_top_of_book_msg(book->symbol, SIDE_BUY, current_best_bid_price, current_best_bid_qty);
             output_buffer_add(output, &msg);
         }
-        
+
         book->prev_best_bid_price = current_best_bid_price;
         book->prev_best_bid_qty = current_best_bid_qty;
     }
-    
+
     /* Check ask side changes */
-    if (current_best_ask_price != book->prev_best_ask_price || 
+    if (current_best_ask_price != book->prev_best_ask_price ||
         current_best_ask_qty != book->prev_best_ask_qty) {
-        
+
         if (current_best_ask_price == 0 && book->ask_side_ever_active) {
             /* Ask side eliminated */
             output_msg_t msg = make_top_of_book_eliminated_msg(book->symbol, SIDE_SELL);
@@ -499,28 +508,32 @@ static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
             output_msg_t msg = make_top_of_book_msg(book->symbol, SIDE_SELL, current_best_ask_price, current_best_ask_qty);
             output_buffer_add(output, &msg);
         }
-        
+
         book->prev_best_ask_price = current_best_ask_price;
         book->prev_best_ask_qty = current_best_ask_qty;
     }
 }
 
 /**
- * Process new order
+ * Process new order (UPDATED WITH CLIENT_ID)
  */
-void order_book_add_order(order_book_t* book, const new_order_msg_t* msg, output_buffer_t* output) {
-    // Create order with timestamp
+void order_book_add_order(order_book_t* book, 
+                          const new_order_msg_t* msg,
+                          uint32_t client_id,
+                          output_buffer_t* output) {
+    // Create order with timestamp AND client_id
     uint64_t timestamp = order_get_current_timestamp();
     order_t* order = (order_t*)malloc(sizeof(order_t));
     order_init(order, msg, timestamp);
-    
+    order->client_id = client_id;  // Store client ownership
+
     // Send acknowledgement
     output_msg_t ack = make_ack_msg(book->symbol, order->user_id, order->user_order_id);
     output_buffer_add(output, &ack);
-    
+
     // Try to match the order
     match_order(book, order, output);
-    
+
     // If order has remaining quantity and is a limit order, add to book
     if (order->remaining_qty > 0 && order->type == ORDER_TYPE_LIMIT) {
         add_to_book(book, order);
@@ -528,7 +541,7 @@ void order_book_add_order(order_book_t* book, const new_order_msg_t* msg, output
         // Order fully filled or market order - free it
         free(order);
     }
-    
+
     // Check for top-of-book changes
     check_tob_changes(book, output);
 }
@@ -536,27 +549,27 @@ void order_book_add_order(order_book_t* book, const new_order_msg_t* msg, output
 /**
  * Cancel order
  */
-void order_book_cancel_order(order_book_t* book, uint32_t user_id, uint32_t user_order_id, 
+void order_book_cancel_order(order_book_t* book, uint32_t user_id, uint32_t user_order_id,
                               output_buffer_t* output) {
     uint64_t key = make_order_key(user_id, user_order_id);
     order_map_entry_t* entry = order_map_find(&book->order_map, key);
-    
+
     if (entry == NULL) {
         // Order not found - still send cancel ack
         output_msg_t msg = make_cancel_ack_msg(book->symbol, user_id, user_order_id);
         output_buffer_add(output, &msg);
         return;
     }
-    
+
     // Get order location
     order_location_t* loc = &entry->location;
     order_t* order = loc->order_ptr;
-    
+
     // Find price level
     price_level_t* levels;
     int* num_levels;
     bool descending;
-    
+
     if (loc->side == SIDE_BUY) {
         levels = book->bids;
         num_levels = &book->num_bid_levels;
@@ -566,42 +579,86 @@ void order_book_cancel_order(order_book_t* book, uint32_t user_id, uint32_t user
         num_levels = &book->num_ask_levels;
         descending = false;
     }
-    
+
     int idx = find_price_level(levels, *num_levels, loc->price, descending);
-    
+
     if (idx != -1) {
         price_level_t* level = &levels[idx];
-        
+
         // Update total quantity
         level->total_quantity -= order->remaining_qty;
-        
+
         // Remove from list
         list_remove(&level->orders_head, &level->orders_tail, order);
-        
+
         // Free order
         free(order);
-        
+
         // Remove price level if empty
         if (level->orders_head == NULL) {
             remove_price_level(levels, num_levels, idx);
         }
     }
-    
+
     // Remove from order map
     order_map_remove(&book->order_map, key);
-    
+
     // Send cancel acknowledgement
     output_msg_t msg = make_cancel_ack_msg(book->symbol, user_id, user_order_id);
     output_buffer_add(output, &msg);
-    
+
     // Check for top-of-book changes
     check_tob_changes(book, output);
 }
 
 /**
+ * Cancel all orders for a specific client (TCP mode)
+ */
+size_t order_book_cancel_client_orders(order_book_t* book,
+                                       uint32_t client_id,
+                                       output_buffer_t* output) {
+    size_t cancelled_count = 0;
+    
+    // Cancel all bid orders for this client
+    for (int i = 0; i < book->num_bid_levels; i++) {
+        order_t* order = book->bids[i].orders_head;
+        
+        while (order != NULL) {
+            order_t* next_order = order->next;
+            
+            if (order->client_id == client_id) {
+                // Found an order from this client - cancel it
+                order_book_cancel_order(book, order->user_id, order->user_order_id, output);
+                cancelled_count++;
+            }
+            
+            order = next_order;
+        }
+    }
+    
+    // Cancel all ask orders for this client
+    for (int i = 0; i < book->num_ask_levels; i++) {
+        order_t* order = book->asks[i].orders_head;
+        
+        while (order != NULL) {
+            order_t* next_order = order->next;
+            
+            if (order->client_id == client_id) {
+                // Found an order from this client - cancel it
+                order_book_cancel_order(book, order->user_id, order->user_order_id, output);
+                cancelled_count++;
+            }
+            
+            order = next_order;
+        }
+    }
+    
+    return cancelled_count;
+}
+
+/**
  * Flush/clear the entire order book
  */
-
 void order_book_flush(order_book_t* book, output_buffer_t* output) {
     // Generate cancel acks for all bid orders
     for (int i = 0; i < book->num_bid_levels; i++) {

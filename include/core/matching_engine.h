@@ -12,7 +12,12 @@ extern "C" {
 
 /**
  * MatchingEngine - Multi-symbol order book orchestrator
- * 
+ *
+ * Updated for TCP multi-client support:
+ * - Tracks client_id with each order for ownership
+ * - Supports cancelling all orders for a disconnected client
+ * - Passes client_id through to order books
+ *
  * Design decisions:
  * - Maintains one OrderBook per symbol
  * - Creates order books on-demand when first order arrives
@@ -57,6 +62,7 @@ typedef struct {
     /* Pre-allocated order books (to avoid malloc in hot path) */
     order_book_t books[MAX_SYMBOLS];
     int num_books;
+    
 } matching_engine_t;
 
 /* ============================================================================
@@ -75,16 +81,28 @@ void matching_engine_destroy(matching_engine_t* engine);
 
 /**
  * Process input message, returns output messages
+ * 
+ * @param engine Matching engine
+ * @param msg Input message
+ * @param client_id Client ID (0 for UDP mode, >0 for TCP client)
+ * @param output Output buffer for generated messages
  */
-void matching_engine_process_message(matching_engine_t* engine, 
+void matching_engine_process_message(matching_engine_t* engine,
                                      const input_msg_t* msg,
+                                     uint32_t client_id,
                                      output_buffer_t* output);
 
 /**
  * Process new order
+ * 
+ * @param engine Matching engine
+ * @param msg New order message
+ * @param client_id Client ID who placed this order
+ * @param output Output buffer
  */
 void matching_engine_process_new_order(matching_engine_t* engine,
                                        const new_order_msg_t* msg,
+                                       uint32_t client_id,
                                        output_buffer_t* output);
 
 /**
@@ -99,6 +117,21 @@ void matching_engine_process_cancel_order(matching_engine_t* engine,
  */
 void matching_engine_process_flush(matching_engine_t* engine,
                                    output_buffer_t* output);
+
+/**
+ * Cancel all orders for a specific client (TCP mode)
+ * 
+ * Called when a TCP client disconnects. Walks through all order books
+ * and cancels orders where order->client_id matches.
+ * 
+ * @param engine Matching engine
+ * @param client_id Client ID to cancel orders for
+ * @param output Output buffer for cancel acknowledgements
+ * @return Number of orders cancelled
+ */
+size_t matching_engine_cancel_client_orders(matching_engine_t* engine,
+                                            uint32_t client_id,
+                                            output_buffer_t* output);
 
 /**
  * Get or create order book for symbol
