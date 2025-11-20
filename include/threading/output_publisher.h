@@ -4,8 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
-#include "message_types_extended.h"
-#include "lockfree_queue.h"
+#include "protocol/message_types_extended.h"
+#include "threading/lockfree_queue.h"
 
 /**
  * Output Publisher Thread (UDP Mode Only)

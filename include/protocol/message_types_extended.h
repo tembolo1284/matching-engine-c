@@ -38,7 +38,7 @@ typedef struct {
 typedef struct {
     output_msg_t msg;          // The actual ack/trade/TOB message
     uint32_t client_id;        // Which client should receive this (1-based)
-    uint64_t sequence          // (always the client that sent the order)
+    uint64_t sequence;         // (always the client that sent the order)
 } output_msg_envelope_t;
 
 /**

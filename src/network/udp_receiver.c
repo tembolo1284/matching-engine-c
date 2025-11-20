@@ -195,7 +195,7 @@ void* udp_receiver_thread_func(void* arg) {
                     int retry_count = 0;
                     const int MAX_RETRIES = 1000;
                     
-                    while (!input_envelope_queue_push(receiver->output_queue, &envelope)) {
+                    while (!input_envelope_queue_enqueue(receiver->output_queue, &envelope)) {
                         retry_count++;
                         if (retry_count >= MAX_RETRIES) {
                             fprintf(stderr, "WARNING: Input queue full, dropping message!\n");

@@ -3,48 +3,47 @@
 #include <stdio.h>
 #include <string.h>
 
-#define BATCH_SIZE 32
-#define SLEEP_TIME_US 1
-
-// Define queue implementations
-DEFINE_LOCKFREE_QUEUE(input_msg_envelope_t, input_envelope_queue)
-DEFINE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
-
-bool processor_init(processor_context_t* ctx,
-                   const processor_config_t* config,
-                   matching_engine_t* engine,
-                   input_envelope_queue_t* input_queue,
-                   output_envelope_queue_t* output_queue,
-                   atomic_bool* shutdown_flag) {
-    memset(ctx, 0, sizeof(*ctx));
+bool processor_init(processor_t* processor,
+                    const processor_config_t* config,
+                    matching_engine_t* engine,
+                    input_envelope_queue_t* input_queue,
+                    output_envelope_queue_t* output_queue,
+                    atomic_bool* shutdown_flag) {
+    memset(processor, 0, sizeof(*processor));
     
-    ctx->config = *config;
-    ctx->engine = engine;
-    ctx->input_queue = input_queue;
-    ctx->output_queue = output_queue;
-    ctx->shutdown_flag = shutdown_flag;
+    processor->config = *config;
+    processor->engine = engine;
+    processor->input_queue = input_queue;
+    processor->output_queue = output_queue;
+    processor->shutdown_flag = shutdown_flag;
+    
+    atomic_init(&processor->running, false);
+    atomic_init(&processor->started, false);
+    atomic_init(&processor->messages_processed, 0);
+    atomic_init(&processor->batches_processed, 0);
+    atomic_init(&processor->output_sequence, 0);
     
     return true;
 }
 
-void processor_cleanup(processor_context_t* ctx) {
-    (void)ctx;
+void processor_cleanup(processor_t* processor) {
+    (void)processor;  // Nothing to clean up for now
 }
 
 void* processor_thread(void* arg) {
-    processor_context_t* ctx = (processor_context_t*)arg;
+    processor_t* processor = (processor_t*)arg;
     
     fprintf(stderr, "[Processor] Starting (mode: %s)\n",
-            ctx->config.tcp_mode ? "TCP" : "UDP");
+            processor->config.tcp_mode ? "TCP" : "UDP");
     
-    input_msg_envelope_t input_batch[BATCH_SIZE];
-    output_msg_t output_buffer[1024];
+    input_msg_envelope_t input_batch[PROCESSOR_BATCH_SIZE];
+    output_buffer_t output_buffer;
     
-    while (!atomic_load(ctx->shutdown_flag)) {
+    while (!atomic_load(processor->shutdown_flag)) {
         // Dequeue batch of input messages
         size_t count = 0;
-        for (size_t i = 0; i < BATCH_SIZE; i++) {
-            if (input_envelope_queue_dequeue(ctx->input_queue, &input_batch[count])) {
+        for (size_t i = 0; i < PROCESSOR_BATCH_SIZE; i++) {
+            if (input_envelope_queue_dequeue(processor->input_queue, &input_batch[count])) {
                 count++;
             } else {
                 break;
@@ -52,11 +51,11 @@ void* processor_thread(void* arg) {
         }
         
         if (count == 0) {
-            usleep(SLEEP_TIME_US);
+            usleep(PROCESSOR_SLEEP_US);
             continue;
         }
         
-        ctx->batches_processed++;
+        atomic_fetch_add(&processor->batches_processed, 1);
         
         // Process each message
         for (size_t i = 0; i < count; i++) {
@@ -64,91 +63,88 @@ void* processor_thread(void* arg) {
             input_msg_t* msg = &envelope->msg;
             uint32_t client_id = envelope->client_id;
             
-            size_t output_count = 0;
+            // Initialize output buffer
+            output_buffer_init(&output_buffer);
             
-            switch (msg->type) {
-                case INPUT_NEW_ORDER: {
-                    new_order_input_t* order_input = &msg->data.new_order;
-                    output_count = matching_engine_add_order(
-                        ctx->engine,
-                        order_input->user_id,
-                        order_input->symbol,
-                        order_input->price,
-                        order_input->quantity,
-                        order_input->side,
-                        order_input->user_order_id,
-                        client_id,  // Pass client_id for ownership tracking
-                        output_buffer
-                    );
-                    break;
-                }
-                
-                case INPUT_CANCEL: {
-                    cancel_input_t* cancel_input = &msg->data.cancel;
-                    output_count = matching_engine_cancel_order(
-                        ctx->engine,
-                        cancel_input->user_id,
-                        cancel_input->user_order_id,
-                        output_buffer
-                    );
-                    break;
-                }
-                
-                case INPUT_FLUSH: {
-                    output_count = matching_engine_flush(ctx->engine, output_buffer);
-                    break;
-                }
-            }
+            // Process through matching engine
+            matching_engine_process_message(processor->engine, msg, client_id, &output_buffer);
             
             // Wrap outputs in envelopes with routing logic
-            for (size_t j = 0; j < output_count; j++) {
-                output_msg_t* out_msg = &output_buffer[j];
+            for (int j = 0; j < output_buffer.count; j++) {
+                output_msg_t* out_msg = &output_buffer.messages[j];
+                uint64_t seq = atomic_fetch_add(&processor->output_sequence, 1);
                 
-                if (out_msg->type == OUTPUT_TRADE) {
+                if (out_msg->type == OUTPUT_MSG_TRADE) {
                     // Trade - route to BOTH participants
                     uint32_t buy_client = out_msg->data.trade.buy_client_id;
                     uint32_t sell_client = out_msg->data.trade.sell_client_id;
                     
                     // Send to buyer
-                    output_msg_envelope_t env1 = create_output_envelope(out_msg, buy_client);
-                    if (!output_envelope_queue_enqueue(ctx->output_queue, &env1)) {
+                    output_msg_envelope_t env1 = create_output_envelope(out_msg, buy_client, seq);
+                    if (!output_envelope_queue_enqueue(processor->output_queue, &env1)) {
                         fprintf(stderr, "[Processor] Output queue full!\n");
                     }
                     
                     // Send to seller if different client
                     if (buy_client != sell_client) {
-                        output_msg_envelope_t env2 = create_output_envelope(out_msg, sell_client);
-                        if (!output_envelope_queue_enqueue(ctx->output_queue, &env2)) {
+                        output_msg_envelope_t env2 = create_output_envelope(out_msg, sell_client, seq);
+                        if (!output_envelope_queue_enqueue(processor->output_queue, &env2)) {
                             fprintf(stderr, "[Processor] Output queue full!\n");
                         }
                     }
                 } else {
                     // Ack, Cancel, TOB - route to originating client
-                    output_msg_envelope_t envelope = create_output_envelope(out_msg, client_id);
-                    if (!output_envelope_queue_enqueue(ctx->output_queue, &envelope)) {
+                    output_msg_envelope_t env = create_output_envelope(out_msg, client_id, seq);
+                    if (!output_envelope_queue_enqueue(processor->output_queue, &env)) {
                         fprintf(stderr, "[Processor] Output queue full!\n");
                     }
                 }
             }
             
-            ctx->messages_processed++;
+            atomic_fetch_add(&processor->messages_processed, 1);
         }
     }
     
     fprintf(stderr, "[Processor] Shutting down\n");
-    processor_print_stats(ctx);
-    
+    processor_print_stats(processor);
     return NULL;
 }
 
-void processor_print_stats(const processor_context_t* ctx) {
+void processor_print_stats(const processor_t* processor) {
     fprintf(stderr, "\n=== Processor Statistics ===\n");
-    fprintf(stderr, "Messages processed:    %lu\n", ctx->messages_processed);
-    fprintf(stderr, "Batches processed:     %lu\n", ctx->batches_processed);
+    fprintf(stderr, "Messages processed:    %lu\n", 
+            atomic_load(&processor->messages_processed));
+    fprintf(stderr, "Batches processed:     %lu\n", 
+            atomic_load(&processor->batches_processed));
 }
 
-void processor_cancel_client_orders(processor_context_t* ctx, uint32_t client_id) {
-    // TODO: Walk through all order books and cancel orders for this client
-    fprintf(stderr, "[Processor] Cancelling all orders for client %u (TODO)\n", client_id);
-    (void)ctx;
+void processor_cancel_client_orders(processor_t* processor, uint32_t client_id) {
+    fprintf(stderr, "[Processor] Cancelling all orders for client %u\n", client_id);
+    
+    // Initialize output buffer for cancel acknowledgements
+    output_buffer_t output_buffer;
+    output_buffer_init(&output_buffer);
+    
+    // Call matching engine to cancel all orders for this client
+    size_t cancelled = matching_engine_cancel_client_orders(
+        processor->engine,
+        client_id,
+        &output_buffer
+    );
+    
+    fprintf(stderr, "[Processor] Cancelled %zu orders for client %u\n", 
+            cancelled, client_id);
+    
+    // Enqueue cancel acknowledgements to output queue
+    for (int i = 0; i < output_buffer.count; i++) {
+        output_msg_t* out_msg = &output_buffer.messages[i];
+        uint64_t seq = atomic_fetch_add(&processor->output_sequence, 1);
+        
+        // Route cancel acks back to the disconnected client (for logging/cleanup)
+        output_msg_envelope_t envelope = create_output_envelope(out_msg, client_id, seq);
+        
+        if (!output_envelope_queue_enqueue(processor->output_queue, &envelope)) {
+            fprintf(stderr, "[Processor] Output queue full while cancelling client orders!\n");
+        }
+    }
 }
