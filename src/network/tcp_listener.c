@@ -304,31 +304,31 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
         // Auto-detect CSV vs binary (binary starts with 0x4D magic byte)
         if (msg_len > 0 && (unsigned char)msg_data[0] == 0x4D) {
             // Binary protocol
-            parsed = parse_binary_message(msg_data, msg_len, &input_msg);
+            parsed = is_binary_message(msg_data, msg_len, &input_msg);
         } else {
             // CSV protocol
-            parsed = parse_message(msg_data, msg_len, &input_msg);
+            parsed = frame_message(msg_data, msg_len, &input_msg);
         }
         
         if (parsed) {
             // Validate userId matches client_id (security check)
             bool valid = true;
             switch (input_msg.type) {
-                case INPUT_NEW_ORDER:
+                case INPUT_MSG_NEW_ORDER:
                     if (input_msg.data.new_order.user_id != client_id) {
                         fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
                                 client_id, input_msg.data.new_order.user_id);
                         valid = false;
                     }
                     break;
-                case INPUT_CANCEL:
+                case INPUT_MSG_CANCEL:
                     if (input_msg.data.cancel.user_id != client_id) {
                         fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
                                 client_id, input_msg.data.cancel.user_id);
                         valid = false;
                     }
                     break;
-                case INPUT_FLUSH:
+                case INPUT_MSG_FLUSH:
                     // Flush doesn't have userId - always valid
                     break;
             }
@@ -417,9 +417,9 @@ static void process_output_queues(tcp_listener_context_t* ctx) {
         size_t formatted_len;
         
         if (ctx->config.use_binary_output) {
-            formatted_len = format_binary_message(&msg, formatted, sizeof(formatted));
+            formatted_len = is_binary_message(&msg, formatted, sizeof(formatted));
         } else {
-            formatted_len = format_message(&msg, formatted, sizeof(formatted));
+            formatted_len = frame_message(&msg, formatted, sizeof(formatted));
         }
         
         if (formatted_len == 0) {
