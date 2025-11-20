@@ -7,8 +7,8 @@
 #include <netinet/in.h>
 #include <pthread.h>
 #include "network/message_framing.h"
-#include "lockfree_queue.h"
-#include "message_types.h"
+#include "threading/lockfree_queue.h"
+#include "protocol/message_types.h"
 
 /**
  * TCP Connection Management

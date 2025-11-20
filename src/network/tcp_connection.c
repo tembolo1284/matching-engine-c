@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
+#include <arpa/inet.h>
 
 // Define the lock-free queue implementation
 DEFINE_LOCKFREE_QUEUE(output_msg_t, output_queue)
@@ -71,7 +72,7 @@ bool tcp_client_add(tcp_client_registry_t* registry,
     client->has_pending_write = false;
     
     // Initialize output queue
-    output_queue_init(&client->output_queue, TCP_CLIENT_OUTPUT_QUEUE_SIZE);
+    output_queue_init(&client->output_queue);
     
     // Initialize statistics
     client->connected_at = time(NULL);

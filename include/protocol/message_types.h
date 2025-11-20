@@ -100,6 +100,9 @@ typedef struct {
     uint32_t user_order_id_sell;
     uint32_t price;
     uint32_t quantity;
+
+    uint32_t buy_client_id;
+    uint32_t sell_client_id;
 } trade_msg_t;
 
 typedef struct {

@@ -2,7 +2,6 @@
 #define MATCHING_ENGINE_LOCKFREE_QUEUE_H
 
 #include <stdatomic.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -13,19 +12,19 @@ extern "C" {
 
 /**
  * LockFreeQueue - Single-producer, single-consumer lock-free queue
- * 
+ *
  * Design decisions:
  * - Fixed-size ring buffer (power of 2 for efficient modulo via bitmasking)
  * - Cache-line padding to prevent false sharing
  * - Lock-free using C11 atomic operations
  * - Template-like functionality via macros
- * 
+ *
  * CRITICAL: Increased default size from 4096 to 16384 to handle UDP bursts
- * 
+ *
  * Usage pattern:
  * 1. Define queue type with DECLARE_LOCKFREE_QUEUE macro
- * 2. Implement queue functions with IMPLEMENT_LOCKFREE_QUEUE macro
- * 3. Use generated push/pop/empty/size functions
+ * 2. Implement queue functions with DEFINE_LOCKFREE_QUEUE macro
+ * 3. Use generated init/destroy/enqueue/dequeue/empty/size functions
  */
 
 /* Cache line size (typically 64 bytes on modern CPUs) */
@@ -39,15 +38,16 @@ extern "C" {
 
 /**
  * Macro to declare a lock-free queue type
- * 
+ *
  * Usage:
  *   DECLARE_LOCKFREE_QUEUE(input_msg_t, input_queue)
- * 
+ *
  * Generates:
  *   - struct input_queue_t { ... }
  *   - void input_queue_init(input_queue_t* q);
- *   - bool input_queue_push(input_queue_t* q, const input_msg_t* item);
- *   - bool input_queue_pop(input_queue_t* q, input_msg_t* item);
+ *   - void input_queue_destroy(input_queue_t* q);
+ *   - bool input_queue_enqueue(input_queue_t* q, const input_msg_t* item);
+ *   - bool input_queue_dequeue(input_queue_t* q, input_msg_t* item);
  *   - bool input_queue_empty(const input_queue_t* q);
  *   - size_t input_queue_size(const input_queue_t* q);
  */
@@ -74,19 +74,20 @@ extern "C" {
     \
     /* Function declarations */ \
     void NAME##_init(NAME##_t* queue); \
-    bool NAME##_push(NAME##_t* queue, const TYPE* item); \
-    bool NAME##_pop(NAME##_t* queue, TYPE* item); \
+    void NAME##_destroy(NAME##_t* queue); \
+    bool NAME##_enqueue(NAME##_t* queue, const TYPE* item); \
+    bool NAME##_dequeue(NAME##_t* queue, TYPE* item); \
     bool NAME##_empty(const NAME##_t* queue); \
     size_t NAME##_size(const NAME##_t* queue); \
     size_t NAME##_capacity(const NAME##_t* queue);
 
 /**
  * Macro to implement lock-free queue functions
- * 
+ *
  * Usage (in .c file):
- *   IMPLEMENT_LOCKFREE_QUEUE(input_msg_t, input_queue)
+ *   DEFINE_LOCKFREE_QUEUE(input_msg_t, input_queue)
  */
-#define IMPLEMENT_LOCKFREE_QUEUE(TYPE, NAME) \
+#define DEFINE_LOCKFREE_QUEUE(TYPE, NAME) \
     /* Initialize queue */ \
     void NAME##_init(NAME##_t* queue) { \
         atomic_init(&queue->head, 0); \
@@ -94,8 +95,13 @@ extern "C" {
         queue->capacity = LOCKFREE_QUEUE_SIZE; \
     } \
     \
-    /* Push element (returns false if queue is full) */ \
-    bool NAME##_push(NAME##_t* queue, const TYPE* item) { \
+    /* Destroy queue (no-op for fixed array, provided for API consistency) */ \
+    void NAME##_destroy(NAME##_t* queue) { \
+        (void)queue; /* Nothing to free for fixed-size array */ \
+    } \
+    \
+    /* Enqueue element (returns false if queue is full) */ \
+    bool NAME##_enqueue(NAME##_t* queue, const TYPE* item) { \
         const size_t current_tail = atomic_load_explicit(&queue->tail, memory_order_relaxed); \
         const size_t next_tail = (current_tail + 1) & (LOCKFREE_QUEUE_SIZE - 1); \
         \
@@ -108,8 +114,8 @@ extern "C" {
         return true; \
     } \
     \
-    /* Pop element (returns false if queue is empty) */ \
-    bool NAME##_pop(NAME##_t* queue, TYPE* item) { \
+    /* Dequeue element (returns false if queue is empty) */ \
+    bool NAME##_dequeue(NAME##_t* queue, TYPE* item) { \
         const size_t current_head = atomic_load_explicit(&queue->head, memory_order_relaxed); \
         \
         if (current_head == atomic_load_explicit(&queue->tail, memory_order_acquire)) { \
@@ -138,8 +144,11 @@ extern "C" {
     size_t NAME##_capacity(const NAME##_t* queue) { \
         return queue->capacity; \
     }
-#ifdef __cplusplus
 
+/* Legacy aliases for backward compatibility */
+#define IMPLEMENT_LOCKFREE_QUEUE(TYPE, NAME) DEFINE_LOCKFREE_QUEUE(TYPE, NAME)
+
+#ifdef __cplusplus
 }
 #endif
 
