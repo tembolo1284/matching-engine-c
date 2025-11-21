@@ -97,22 +97,50 @@ static int run_tcp_mode(const app_config_t* config) {
     fprintf(stderr, "Max clients:    %d\n", MAX_TCP_CLIENTS);
     fprintf(stderr, "========================================\n\n");
 
-    // Create matching engine
-    matching_engine_t engine;
-    matching_engine_init(&engine);
+    // Allocate matching engine on heap
+    matching_engine_t* engine = malloc(sizeof(matching_engine_t));
+    if (!engine) {
+        fprintf(stderr, "Failed to allocate matching engine\n");
+        return 1;
+    }
+    matching_engine_init(engine);
 
-    // Create client registry
-    tcp_client_registry_t client_registry;
-    tcp_client_registry_init(&client_registry);
+    // Allocate client registry on heap
+    tcp_client_registry_t* client_registry = malloc(sizeof(tcp_client_registry_t));
+    if (!client_registry) {
+        fprintf(stderr, "Failed to allocate client registry\n");
+        matching_engine_destroy(engine);
+        free(engine);
+        return 1;
+    }
+    tcp_client_registry_init(client_registry);
 
-    // Create queues
-    input_envelope_queue_t input_queue;
-    input_envelope_queue_init(&input_queue);
+    // Allocate queues on heap
+    input_envelope_queue_t* input_queue = malloc(sizeof(input_envelope_queue_t));
+    if (!input_queue) {
+        fprintf(stderr, "Failed to allocate input queue\n");
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
+        return 1;
+    }
+    input_envelope_queue_init(input_queue);
 
-    output_envelope_queue_t output_queue;
-    output_envelope_queue_init(&output_queue);
+    output_envelope_queue_t* output_queue = malloc(sizeof(output_envelope_queue_t));
+    if (!output_queue) {
+        fprintf(stderr, "Failed to allocate output queue\n");
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
+        return 1;
+    }
+    output_envelope_queue_init(output_queue);
 
-    // Thread contexts
+    // Thread contexts (these are smaller, can stay on stack)
     tcp_listener_context_t listener_ctx;
     processor_t processor_ctx;
     output_router_context_t router_ctx;
@@ -124,9 +152,17 @@ static int run_tcp_mode(const app_config_t* config) {
         .use_binary_output = config->binary_output
     };
 
-    if (!tcp_listener_init(&listener_ctx, &listener_config, &client_registry,
-                           &input_queue, &g_shutdown)) {
+    if (!tcp_listener_init(&listener_ctx, &listener_config, client_registry,
+                           input_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize TCP listener\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -135,9 +171,17 @@ static int run_tcp_mode(const app_config_t* config) {
         .tcp_mode = true
     };
 
-    if (!processor_init(&processor_ctx, &processor_config, &engine,
-                        &input_queue, &output_queue, &g_shutdown)) {
+    if (!processor_init(&processor_ctx, &processor_config, engine,
+                        input_queue, output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize processor\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -146,17 +190,33 @@ static int run_tcp_mode(const app_config_t* config) {
         .tcp_mode = true
     };
 
-    if (!output_router_init(&router_ctx, &router_config, &client_registry,
-                            &output_queue, &g_shutdown)) {
+    if (!output_router_init(&router_ctx, &router_config, client_registry,
+                            output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize output router\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
-    // Create threads - FIXED: consistent naming with _tid suffix
+    // Create threads
     pthread_t listener_tid, processor_tid, router_tid;
 
     if (pthread_create(&listener_tid, NULL, tcp_listener_thread, &listener_ctx) != 0) {
         fprintf(stderr, "Failed to create TCP listener thread\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -164,6 +224,14 @@ static int run_tcp_mode(const app_config_t* config) {
         fprintf(stderr, "Failed to create processor thread\n");
         atomic_store(&g_shutdown, true);
         pthread_join(listener_tid, NULL);
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -172,6 +240,14 @@ static int run_tcp_mode(const app_config_t* config) {
         atomic_store(&g_shutdown, true);
         pthread_join(listener_tid, NULL);
         pthread_join(processor_tid, NULL);
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        tcp_client_registry_destroy(client_registry);
+        free(client_registry);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -186,7 +262,7 @@ static int run_tcp_mode(const app_config_t* config) {
     // 1. Stop accepting new connections (listener will stop)
     // 2. Disconnect all clients
     uint32_t disconnected_clients[MAX_TCP_CLIENTS];
-    size_t num_disconnected = tcp_client_disconnect_all(&client_registry,
+    size_t num_disconnected = tcp_client_disconnect_all(client_registry,
                                                         disconnected_clients,
                                                         MAX_TCP_CLIENTS);
     fprintf(stderr, "[Main] Disconnected %zu clients\n", num_disconnected);
@@ -206,11 +282,18 @@ static int run_tcp_mode(const app_config_t* config) {
     pthread_join(processor_tid, NULL);
     pthread_join(router_tid, NULL);
 
-    // Cleanup
-    tcp_client_registry_destroy(&client_registry);
-    input_envelope_queue_destroy(&input_queue);
-    output_envelope_queue_destroy(&output_queue);
-    matching_engine_destroy(&engine);
+    // Cleanup - free everything in reverse order
+    tcp_client_registry_destroy(client_registry);
+    free(client_registry);
+    
+    input_envelope_queue_destroy(input_queue);
+    free(input_queue);
+    
+    output_envelope_queue_destroy(output_queue);
+    free(output_queue);
+    
+    matching_engine_destroy(engine);
+    free(engine);
 
     fprintf(stderr, "\n=== Matching Engine Stopped ===\n");
     return 0;
@@ -225,33 +308,57 @@ static int run_udp_mode(const app_config_t* config) {
     fprintf(stderr, "Output format:  %s\n", config->binary_output ? "Binary" : "CSV");
     fprintf(stderr, "========================================\n\n");
 
-    // Create matching engine
-    matching_engine_t engine;
-    matching_engine_init(&engine);
+    // Allocate matching engine on heap
+    matching_engine_t* engine = malloc(sizeof(matching_engine_t));
+    if (!engine) {
+        fprintf(stderr, "Failed to allocate matching engine\n");
+        return 1;
+    }
+    matching_engine_init(engine);
 
-    // Create queues
-    input_envelope_queue_t input_queue;
-    input_envelope_queue_init(&input_queue);
+    // Allocate queues on heap
+    input_envelope_queue_t* input_queue = malloc(sizeof(input_envelope_queue_t));
+    if (!input_queue) {
+        fprintf(stderr, "Failed to allocate input queue\n");
+        matching_engine_destroy(engine);
+        free(engine);
+        return 1;
+    }
+    input_envelope_queue_init(input_queue);
 
-    output_envelope_queue_t output_queue;
-    output_envelope_queue_init(&output_queue);
+    output_envelope_queue_t* output_queue = malloc(sizeof(output_envelope_queue_t));
+    if (!output_queue) {
+        fprintf(stderr, "Failed to allocate output queue\n");
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        matching_engine_destroy(engine);
+        free(engine);
+        return 1;
+    }
+    output_envelope_queue_init(output_queue);
 
-    // Thread contexts
+    // Thread contexts (smaller, can stay on stack)
     udp_receiver_t receiver_ctx;
     processor_t processor_ctx;
     output_publisher_context_t publisher_ctx;
 
     // Initialize UDP receiver
-    udp_receiver_init(&receiver_ctx, &input_queue, config->port);
+    udp_receiver_init(&receiver_ctx, input_queue, config->port);
 
     // Configure processor
     processor_config_t processor_config = {
         .tcp_mode = false
     };
 
-    if (!processor_init(&processor_ctx, &processor_config, &engine,
-                        &input_queue, &output_queue, &g_shutdown)) {
+    if (!processor_init(&processor_ctx, &processor_config, engine,
+                        input_queue, output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize processor\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -260,25 +367,42 @@ static int run_udp_mode(const app_config_t* config) {
         .use_binary_output = config->binary_output
     };
 
-    if (!output_publisher_init(&publisher_ctx, &publisher_config, &output_queue, &g_shutdown)) {
+    if (!output_publisher_init(&publisher_ctx, &publisher_config, output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize output publisher\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
-    // Create threads - FIXED: consistent naming
+    // Create threads
     pthread_t processor_tid, publisher_tid;
 
     // Start UDP receiver (it creates its own thread internally)
     if (!udp_receiver_start(&receiver_ctx)) {
         fprintf(stderr, "Failed to start UDP receiver\n");
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
-    // FIXED: processor_thread is the function name
     if (pthread_create(&processor_tid, NULL, processor_thread, &processor_ctx) != 0) {
         fprintf(stderr, "Failed to create processor thread\n");
         atomic_store(&g_shutdown, true);
         udp_receiver_stop(&receiver_ctx);
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -287,6 +411,12 @@ static int run_udp_mode(const app_config_t* config) {
         atomic_store(&g_shutdown, true);
         udp_receiver_stop(&receiver_ctx);
         pthread_join(processor_tid, NULL);
+        output_envelope_queue_destroy(output_queue);
+        free(output_queue);
+        input_envelope_queue_destroy(input_queue);
+        free(input_queue);
+        matching_engine_destroy(engine);
+        free(engine);
         return 1;
     }
 
@@ -308,11 +438,17 @@ static int run_udp_mode(const app_config_t* config) {
     pthread_join(processor_tid, NULL);
     pthread_join(publisher_tid, NULL);
 
-    // Cleanup
+    // Cleanup - free everything in reverse order
     udp_receiver_destroy(&receiver_ctx);
-    input_envelope_queue_destroy(&input_queue);
-    output_envelope_queue_destroy(&output_queue);
-    matching_engine_destroy(&engine);
+    
+    input_envelope_queue_destroy(input_queue);
+    free(input_queue);
+    
+    output_envelope_queue_destroy(output_queue);
+    free(output_queue);
+    
+    matching_engine_destroy(engine);
+    free(engine);
 
     fprintf(stderr, "\n=== Matching Engine Stopped ===\n");
     return 0;

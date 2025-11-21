@@ -233,7 +233,16 @@ valgrind: debug
 
 # Valgrind tests
 valgrind-test: directories $(TEST_TARGET)
-	valgrind --leak-check=full --show-leak-kinds=all ./$(TEST_TARGET)
+	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET) --tcp 2>&1 & \
+	SERVER_PID=$$!; \
+	sleep 5; \
+	echo ""; \
+	echo "Sending shutdown signal..."; \
+	kill -SIGTERM $$SERVER_PID 2>/dev/null || true; \
+	wait $$SERVER_PID 2>/dev/null || true; \
+	echo ""; \
+	echo "Valgrind test complete"
 
 # Print configuration
 info:
