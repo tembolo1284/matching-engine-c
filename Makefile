@@ -123,7 +123,7 @@ test: directories $(TEST_TARGET)
 $(TEST_TARGET): $(LIB_OBJECTS) $(UNITY_OBJECTS) $(TEST_OBJECTS)
 	@echo "Linking test executable..."
 	$(CC) $(LIB_OBJECTS) $(UNITY_OBJECTS) $(TEST_OBJECTS) $(LDFLAGS) -o $@
-	@echo "✓ Test build complete: $@"
+	@echo "Test build complete: $@"
 
 # Compile test files
 $(BUILDDIR)/obj/tests/%.o: $(TESTDIR)/%.c $(HEADERS) $(TESTDIR)/unity.h
@@ -151,7 +151,7 @@ test-binary: $(TARGET) $(BINARY_CLIENT)
 	cat /tmp/binary_test_output.txt; \
 	rm -f /tmp/binary_test_output.txt; \
 	echo ""; \
-	echo "✓ Binary protocol test complete"
+	echo "Binary protocol test complete"
 
 # TCP mode tests
 test-tcp: $(TARGET) $(TCP_CLIENT)
@@ -173,7 +173,7 @@ test-tcp: $(TARGET) $(TCP_CLIENT)
 	wait $$SERVER_PID 2>/dev/null; \
 	wait $$CLIENT_PID 2>/dev/null; \
 	echo ""; \
-	echo "✓ TCP test complete"
+	echo "TCP test complete"
 
 # Run all tests
 test-all: test test-binary test-tcp
@@ -229,7 +229,14 @@ debug: clean all
 
 # Run with valgrind for memory leak detection
 valgrind: debug
-	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET) --tcp
+	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET) --tcp 2>&1 & \
+	sleep 5; \
+	echo ""; \
+	echo "Sending shutdown signal..."; \
+	pkill -SIGTERM matching_engine 2>/dev/null || true; \
+	sleep 1; \
+	echo "Valgrind test complete"
 
 # Valgrind tests
 valgrind-test: directories $(TEST_TARGET)
