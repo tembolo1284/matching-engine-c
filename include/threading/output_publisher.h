@@ -6,6 +6,7 @@
 #include <stdatomic.h>
 #include "protocol/message_types_extended.h"
 #include "threading/lockfree_queue.h"
+#include "threading/queues.h"
 
 /**
  * Output Publisher Thread (UDP Mode Only)
@@ -17,9 +18,6 @@
  * Flow (UDP):
  *   Processor → Output Queue (envelopes) → Output Publisher → stdout
  */
-
-// Use the envelope queue (same as TCP)
-DECLARE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
 
 /**
  * Output publisher configuration

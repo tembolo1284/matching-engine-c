@@ -36,6 +36,7 @@ LIB_SOURCES = $(SRCDIR)/core/order_book.c \
               $(SRCDIR)/network/tcp_listener.c \
               $(SRCDIR)/network/udp_receiver.c \
               $(SRCDIR)/threading/lockfree_queue.c \
+              $(SRCDIR)/threading/queues.c \
               $(SRCDIR)/threading/processor.c \
               $(SRCDIR)/threading/output_publisher.c \
               $(SRCDIR)/threading/output_router.c

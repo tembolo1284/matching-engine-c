@@ -7,6 +7,7 @@
 #include "network/tcp_connection.h"
 #include "protocol/message_types_extended.h"
 #include "threading/lockfree_queue.h"
+#include "threading/queues.h"
 
 /**
  * TCP Listener Thread
@@ -26,9 +27,6 @@
  *   Accept → Read (framed) → Parse → Enqueue to processor
  *   Processor → Output router → Client queues → Write (framed)
  */
-
-// Declare input envelope queue
-DECLARE_LOCKFREE_QUEUE(input_msg_envelope_t, input_envelope_queue)
 
 /**
  * TCP listener configuration

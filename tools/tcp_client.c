@@ -2,13 +2,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdbool.h>
+#include <pthread.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <errno.h>
+#include <time.h>
 
 #define MAX_MESSAGE_SIZE 2048
 #define FRAME_HEADER_SIZE 4
+
+static const struct timespec ts = {
+    .tv_sec = 0,
+    .tv_nsec = 100000
+};
 
 // Simple framing helpers
 static bool send_framed_message(int sockfd, const char* msg, size_t msg_len) {
@@ -194,7 +202,7 @@ static void run_interactive_mode(int sockfd) {
         }
         
         // Small delay to let server process
-        usleep(100000);
+        nanosleep(&ts, NULL);
     }
 }
 
@@ -259,7 +267,7 @@ int main(int argc, char** argv) {
     }
     
     // Give reader thread time to start
-    usleep(100000);
+    nanosleep(&ts, NULL);
     
     // Run scenario
     if (strcmp(scenario, "1") == 0) {

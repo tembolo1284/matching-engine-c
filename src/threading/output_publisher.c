@@ -1,15 +1,23 @@
 #include "threading/output_publisher.h"
 #include "protocol/csv/message_formatter.h"
 #include "protocol/binary/binary_message_formatter.h"
+#include "threading/queues.h"
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define BATCH_SIZE 32
 #define SLEEP_TIME_US 100
 
-// Define the queue (already declared in header)
-DEFINE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
+static const struct timespec ts = {
+    .tv_sec = 0,
+    .tv_nsec = 1000
+};
+
+// Global formatter instances
+static message_formatter_t g_csv_formatter;
+static binary_message_formatter_t g_binary_formatter;
 
 bool output_publisher_init(output_publisher_context_t* ctx,
                            const output_publisher_config_t* config,
@@ -20,6 +28,10 @@ bool output_publisher_init(output_publisher_context_t* ctx,
     ctx->config = *config;
     ctx->input_queue = input_queue;
     ctx->shutdown_flag = shutdown_flag;
+    
+    // Initialize formatters
+    message_formatter_init(&g_csv_formatter);
+    binary_message_formatter_init(&g_binary_formatter);
     
     return true;
 }
@@ -49,7 +61,7 @@ void* output_publisher_thread(void* arg) {
         }
         
         if (count == 0) {
-            usleep(SLEEP_TIME_US);
+            nanosleep(&ts, NULL);
             continue;
         }
         
@@ -58,11 +70,36 @@ void* output_publisher_thread(void* arg) {
             // Extract the actual message (ignore client_id in UDP mode)
             output_msg_t* msg = &batch[i].msg;
             
-            size_t len;
+            size_t len = 0;
+            
             if (ctx->config.use_binary_output) {
-                len = format_binary_message(msg, output_buffer, sizeof(output_buffer));
+                // Binary formatting
+                size_t bin_len;
+                const void* bin_data = binary_message_formatter_format(
+                    &g_binary_formatter, msg, &bin_len
+                );
+                
+                if (bin_data && bin_len <= sizeof(output_buffer)) {
+                    memcpy(output_buffer, bin_data, bin_len);
+                    len = bin_len;
+                }
             } else {
-                len = format_message(msg, output_buffer, sizeof(output_buffer));
+                // CSV formatting
+                const char* csv_str = message_formatter_format(&g_csv_formatter, msg);
+                
+                if (csv_str) {
+                    len = strlen(csv_str);
+                    if (len < sizeof(output_buffer)) {
+                        memcpy(output_buffer, csv_str, len);
+                        // Add newline for CSV
+                        if (len + 1 < sizeof(output_buffer)) {
+                            output_buffer[len] = '\n';
+                            len++;
+                        }
+                    } else {
+                        len = 0; // Too long
+                    }
+                }
             }
             
             if (len > 0) {
@@ -76,7 +113,6 @@ void* output_publisher_thread(void* arg) {
     
     fprintf(stderr, "[Output Publisher] Shutting down\n");
     output_publisher_print_stats(ctx);
-    
     return NULL;
 }
 

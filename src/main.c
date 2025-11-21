@@ -7,7 +7,7 @@
 #include <unistd.h>
 
 #include "core/matching_engine.h"
-#include "message_types_extended.h"
+#include "protocol/message_types_extended.h"
 #include "network/udp_receiver.h"
 #include "network/tcp_listener.h"
 #include "network/tcp_connection.h"
@@ -53,7 +53,7 @@ static bool parse_args(int argc, char** argv, app_config_t* config) {
     config->tcp_mode = true;    // Default to TCP
     config->port = 1234;
     config->binary_output = false;
-    
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--tcp") == 0) {
             config->tcp_mode = true;
@@ -83,7 +83,7 @@ static bool parse_args(int argc, char** argv, app_config_t* config) {
             return false;
         }
     }
-    
+
     return true;
 }
 
@@ -96,123 +96,122 @@ static int run_tcp_mode(const app_config_t* config) {
     fprintf(stderr, "Output format:  %s\n", config->binary_output ? "Binary" : "CSV");
     fprintf(stderr, "Max clients:    %d\n", MAX_TCP_CLIENTS);
     fprintf(stderr, "========================================\n\n");
-    
+
     // Create matching engine
     matching_engine_t engine;
     matching_engine_init(&engine);
-    
+
     // Create client registry
     tcp_client_registry_t client_registry;
     tcp_client_registry_init(&client_registry);
-    
+
     // Create queues
     input_envelope_queue_t input_queue;
-    input_envelope_queue_init(&input_queue, 16384);
-    
+    input_envelope_queue_init(&input_queue);
+
     output_envelope_queue_t output_queue;
-    output_envelope_queue_init(&output_queue, 16384);
-    
+    output_envelope_queue_init(&output_queue);
+
     // Thread contexts
     tcp_listener_context_t listener_ctx;
-    processor_context_t processor_ctx;
+    processor_t processor_ctx;
     output_router_context_t router_ctx;
-    
+
     // Configure TCP listener
     tcp_listener_config_t listener_config = {
         .port = config->port,
         .listen_backlog = 10,
         .use_binary_output = config->binary_output
     };
-    
+
     if (!tcp_listener_init(&listener_ctx, &listener_config, &client_registry,
                            &input_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize TCP listener\n");
         return 1;
     }
-    
+
     // Configure processor
     processor_config_t processor_config = {
         .tcp_mode = true
     };
-    
+
     if (!processor_init(&processor_ctx, &processor_config, &engine,
                         &input_queue, &output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize processor\n");
         return 1;
     }
-    
+
     // Configure output router
     output_router_config_t router_config = {
         .tcp_mode = true
     };
-    
+
     if (!output_router_init(&router_ctx, &router_config, &client_registry,
                             &output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize output router\n");
         return 1;
     }
-    
-    // Create threads
-    pthread_t listener_thread, processor_thread, router_thread;
-    
-    if (pthread_create(&listener_thread, NULL, tcp_listener_thread, &listener_ctx) != 0) {
+
+    // Create threads - FIXED: consistent naming with _tid suffix
+    pthread_t listener_tid, processor_tid, router_tid;
+
+    if (pthread_create(&listener_tid, NULL, tcp_listener_thread, &listener_ctx) != 0) {
         fprintf(stderr, "Failed to create TCP listener thread\n");
         return 1;
     }
-    
-    if (pthread_create(&processor_thread, NULL, processor_thread_func, &processor_ctx) != 0) {
+
+    if (pthread_create(&processor_tid, NULL, processor_thread, &processor_ctx) != 0) {
         fprintf(stderr, "Failed to create processor thread\n");
         atomic_store(&g_shutdown, true);
-        pthread_join(listener_thread, NULL);
+        pthread_join(listener_tid, NULL);
         return 1;
     }
-    
-    if (pthread_create(&router_thread, NULL, output_router_thread, &router_ctx) != 0) {
+
+    if (pthread_create(&router_tid, NULL, output_router_thread, &router_ctx) != 0) {
         fprintf(stderr, "Failed to create output router thread\n");
         atomic_store(&g_shutdown, true);
-        pthread_join(listener_thread, NULL);
-        pthread_join(processor_thread, NULL);
+        pthread_join(listener_tid, NULL);
+        pthread_join(processor_tid, NULL);
         return 1;
     }
-    
+
     // Wait for shutdown signal
     while (!atomic_load(&g_shutdown)) {
         sleep(1);
     }
-    
+
     // Graceful shutdown sequence
     fprintf(stderr, "\n[Main] Initiating graceful shutdown...\n");
-    
+
     // 1. Stop accepting new connections (listener will stop)
     // 2. Disconnect all clients
     uint32_t disconnected_clients[MAX_TCP_CLIENTS];
-    size_t num_disconnected = tcp_client_disconnect_all(&client_registry, 
+    size_t num_disconnected = tcp_client_disconnect_all(&client_registry,
                                                         disconnected_clients,
                                                         MAX_TCP_CLIENTS);
-    
     fprintf(stderr, "[Main] Disconnected %zu clients\n", num_disconnected);
-    
+
     // 3. Cancel all orders for disconnected clients
     for (size_t i = 0; i < num_disconnected; i++) {
         processor_cancel_client_orders(&processor_ctx, disconnected_clients[i]);
     }
-    
+
     // 4. Let queues drain (give threads 2 seconds to finish)
     fprintf(stderr, "[Main] Draining queues...\n");
     sleep(2);
-    
+
     // 5. Join threads
     fprintf(stderr, "[Main] Waiting for threads to finish...\n");
-    pthread_join(listener_thread, NULL);
-    pthread_join(processor_thread, NULL);
-    pthread_join(router_thread, NULL);
-    
+    pthread_join(listener_tid, NULL);
+    pthread_join(processor_tid, NULL);
+    pthread_join(router_tid, NULL);
+
     // Cleanup
     tcp_client_registry_destroy(&client_registry);
     input_envelope_queue_destroy(&input_queue);
     output_envelope_queue_destroy(&output_queue);
     matching_engine_destroy(&engine);
-    
+
     fprintf(stderr, "\n=== Matching Engine Stopped ===\n");
     return 0;
 }
@@ -225,98 +224,96 @@ static int run_udp_mode(const app_config_t* config) {
     fprintf(stderr, "Port:           %u\n", config->port);
     fprintf(stderr, "Output format:  %s\n", config->binary_output ? "Binary" : "CSV");
     fprintf(stderr, "========================================\n\n");
-    
+
     // Create matching engine
     matching_engine_t engine;
     matching_engine_init(&engine);
-    
+
     // Create queues
     input_envelope_queue_t input_queue;
-    input_envelope_queue_init(&input_queue, 16384);
-    
+    input_envelope_queue_init(&input_queue);
+
     output_envelope_queue_t output_queue;
-    output_envelope_queue_init(&output_queue, 16384);
-    
+    output_envelope_queue_init(&output_queue);
+
     // Thread contexts
-    udp_receiver_context_t receiver_ctx;
-    processor_context_t processor_ctx;
+    udp_receiver_t receiver_ctx;
+    processor_t processor_ctx;
     output_publisher_context_t publisher_ctx;
-    
-    // Configure UDP receiver
-    udp_receiver_config_t receiver_config = {
-        .port = config->port,
-        .recv_buffer_size = 10 * 1024 * 1024
-    };
-    
-    if (!udp_receiver_init(&receiver_ctx, &receiver_config, &input_queue, &g_shutdown)) {
-        fprintf(stderr, "Failed to initialize UDP receiver\n");
-        return 1;
-    }
-    
+
+    // Initialize UDP receiver
+    udp_receiver_init(&receiver_ctx, &input_queue, config->port);
+
     // Configure processor
     processor_config_t processor_config = {
         .tcp_mode = false
     };
-    
+
     if (!processor_init(&processor_ctx, &processor_config, &engine,
                         &input_queue, &output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize processor\n");
         return 1;
     }
-    
+
     // Configure output publisher
     output_publisher_config_t publisher_config = {
         .use_binary_output = config->binary_output
     };
-    
+
     if (!output_publisher_init(&publisher_ctx, &publisher_config, &output_queue, &g_shutdown)) {
         fprintf(stderr, "Failed to initialize output publisher\n");
         return 1;
     }
-    
-    // Create threads
-    pthread_t receiver_thread, processor_thread, publisher_thread;
-    
-    if (pthread_create(&receiver_thread, NULL, udp_receiver_thread, &receiver_ctx) != 0) {
-        fprintf(stderr, "Failed to create UDP receiver thread\n");
+
+    // Create threads - FIXED: consistent naming
+    pthread_t processor_tid, publisher_tid;
+
+    // Start UDP receiver (it creates its own thread internally)
+    if (!udp_receiver_start(&receiver_ctx)) {
+        fprintf(stderr, "Failed to start UDP receiver\n");
         return 1;
     }
-    
-    if (pthread_create(&processor_thread, NULL, processor_thread_func, &processor_ctx) != 0) {
+
+    // FIXED: processor_thread is the function name
+    if (pthread_create(&processor_tid, NULL, processor_thread, &processor_ctx) != 0) {
         fprintf(stderr, "Failed to create processor thread\n");
         atomic_store(&g_shutdown, true);
-        pthread_join(receiver_thread, NULL);
+        udp_receiver_stop(&receiver_ctx);
         return 1;
     }
-    
-    if (pthread_create(&publisher_thread, NULL, output_publisher_thread, &publisher_ctx) != 0) {
+
+    if (pthread_create(&publisher_tid, NULL, output_publisher_thread, &publisher_ctx) != 0) {
         fprintf(stderr, "Failed to create output publisher thread\n");
         atomic_store(&g_shutdown, true);
-        pthread_join(receiver_thread, NULL);
-        pthread_join(processor_thread, NULL);
+        udp_receiver_stop(&receiver_ctx);
+        pthread_join(processor_tid, NULL);
         return 1;
     }
-    
+
     // Wait for shutdown signal
     while (!atomic_load(&g_shutdown)) {
         sleep(1);
     }
-    
+
     // Graceful shutdown
     fprintf(stderr, "\n[Main] Initiating graceful shutdown...\n");
+    
+    // Stop UDP receiver
+    udp_receiver_stop(&receiver_ctx);
+    
     fprintf(stderr, "[Main] Draining queues...\n");
     sleep(2);
-    
+
     fprintf(stderr, "[Main] Waiting for threads to finish...\n");
-    pthread_join(receiver_thread, NULL);
-    pthread_join(processor_thread, NULL);
-    pthread_join(publisher_thread, NULL);
-    
+    pthread_join(processor_tid, NULL);
+    pthread_join(publisher_tid, NULL);
+
     // Cleanup
+    udp_receiver_destroy(&receiver_ctx);
     input_envelope_queue_destroy(&input_queue);
     output_envelope_queue_destroy(&output_queue);
     matching_engine_destroy(&engine);
-    
+
     fprintf(stderr, "\n=== Matching Engine Stopped ===\n");
     return 0;
 }
@@ -327,11 +324,11 @@ int main(int argc, char** argv) {
     if (!parse_args(argc, argv, &config)) {
         return 1;
     }
-    
+
     // Setup signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
-    
+
     // Run in appropriate mode
     int result;
     if (config.tcp_mode) {
@@ -339,6 +336,6 @@ int main(int argc, char** argv) {
     } else {
         result = run_udp_mode(&config);
     }
-    
+
     return result;
 }

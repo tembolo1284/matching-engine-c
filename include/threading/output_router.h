@@ -4,9 +4,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
-#include "network/tcp_connection.h"
 #include "protocol/message_types_extended.h"
-#include "threading/lockfree_queue.h"
+#include "threading/queues.h"
+#include "network/tcp_connection.h"
 
 /**
  * Output Router Thread
@@ -25,9 +25,6 @@
  *   - Handle disconnected clients (drop messages)
  *   - Handle flush: cancel all orders for disconnected clients
  */
-
-// Declare output envelope queue
-DECLARE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
 
 /**
  * Output router configuration

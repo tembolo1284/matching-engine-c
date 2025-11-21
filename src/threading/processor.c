@@ -2,6 +2,12 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+
+static const struct timespec ts = {
+    .tv_sec = 0,
+    .tv_nsec = 1000
+};
 
 bool processor_init(processor_t* processor,
                     const processor_config_t* config,
@@ -51,7 +57,7 @@ void* processor_thread(void* arg) {
         }
         
         if (count == 0) {
-            usleep(PROCESSOR_SLEEP_US);
+            nanosleep(&ts, NULL);
             continue;
         }
         

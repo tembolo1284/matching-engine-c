@@ -2,12 +2,15 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define BATCH_SIZE 32
 #define SLEEP_TIME_US 100
 
-// Define the output envelope queue
-DEFINE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
+static const struct timespec ts = {
+    .tv_sec = 0,
+    .tv_nsec = 1000
+};
 
 bool output_router_init(output_router_context_t* ctx,
                         const output_router_config_t* config,
@@ -50,7 +53,7 @@ void* output_router_thread(void* arg) {
         
         if (count == 0) {
             // No messages - sleep briefly
-            usleep(SLEEP_TIME_US);
+            nanosleep(&ts, NULL);
             continue;
         }
         
