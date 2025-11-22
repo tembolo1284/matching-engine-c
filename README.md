@@ -325,6 +325,56 @@ C, IBM, 2, 2
 B, IBM, B, -, -
 B, IBM, S, -, -
 ```
+### Testing all combinations properly:
+
+#### UDP + Binary (with decoder)
+```bash
+# Terminal 1: Start server with binary output piped to decoder
+./build/matching_engine --udp --binary 2>/dev/null | ./build/binary_decoder
+
+# Terminal 2: Run tests
+./build/binary_client 1234 1
+./build/binary_client 1234 2
+./build/binary_client 1234 3
+```
+
+#### UDP + CSV (human readable)
+
+```bash
+# Terminal 1: Start server with CSV output
+./build/matching_engine --udp 1234
+
+# Terminal 2: Run tests
+./build/binary_client 1234 1
+./build/binary_client 1234 2
+./build/binary_client 1234 3
+```
+
+You should see nice CSV output like:
+```
+A, IBM, 1, 1
+B, IBM, B, 100, 50
+T, IBM, 1, 1, 2, 2, 100, 50
+...
+
+#### TCP + CSV (with netcat)
+
+```bash
+# Terminal 1: Start TCP server
+./build/matching_engine --tcp 1234
+
+# Terminal 2: Send CSV messages
+echo "N,1,IBM,100,50,B,1" | nc 127.0.0.1 1234
+echo "N,2,IBM,100,50,S,2" | nc 127.0.0.1 1234
+echo "F" | nc 127.0.0.1 1234
+
+```
+
+#### TCP + Binary (Need a TCP Binary client)
+
+```bash
+tbd
+```
 
 ### Graceful Shutdown
 
