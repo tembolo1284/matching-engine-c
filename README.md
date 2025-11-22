@@ -708,6 +708,22 @@ The old UDP mode still works:
 # Send via netcat
 echo "N, 1, IBM, 100, 50, B, 1" | nc -u localhost 1234
 ```
+# Test 1: TCP + CSV
+./build/matching_engine --tcp 1234
+./build/binary_client 1234 2 --tcp --csv
+
+# Test 2: TCP + Binary
+./build/matching_engine --tcp --binary 1234
+./build/binary_client 1234 2 --tcp
+
+# Test 3: UDP + CSV
+./build/matching_engine --udp 1234
+./build/binary_client 1234 2 --csv
+
+# Test 4: UDP + Binary
+./build/matching_engine --udp --binary 1234
+./build/binary_client 1234 2
+
 
 ## Protocol Details
 
