@@ -73,6 +73,7 @@ void* tcp_listener_thread(void* arg) {
     // Setup listening socket
     if (!setup_listening_socket(ctx)) {
         fprintf(stderr, "[TCP Listener] Failed to setup listening socket\n");
+        atomic_store(ctx->shutdown_flag, true);  // Signal other threads to stop
         return NULL;
     }
 
@@ -80,6 +81,7 @@ void* tcp_listener_thread(void* arg) {
     if (!setup_epoll(ctx)) {
         fprintf(stderr, "[TCP Listener] Failed to setup epoll\n");
         close(ctx->listen_fd);
+        atomic_store(ctx->shutdown_flag, true);  // Signal other threads to stop
         return NULL;
     }
 

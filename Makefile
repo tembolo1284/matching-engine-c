@@ -230,13 +230,18 @@ debug: clean all
 # Run with valgrind for memory leak detection
 valgrind: debug
 	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
+	@echo "Cleaning up any existing processes..."
+	@pkill -9 matching_engine 2>/dev/null || true
+	@sleep 1
 	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET) --tcp 2>&1 & \
+	VALGRIND_PID=$$!; \
 	sleep 5; \
 	echo ""; \
 	echo "Sending shutdown signal..."; \
 	pkill -SIGTERM matching_engine 2>/dev/null || true; \
-	sleep 1; \
-	echo "Valgrind test complete"
+	wait $$VALGRIND_PID 2>/dev/null || true; \
+	echo ""; \
+	echo "✓ Valgrind test complete"
 
 # Valgrind tests
 valgrind-test: directories $(TEST_TARGET)
