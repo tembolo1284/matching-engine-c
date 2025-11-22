@@ -7,6 +7,8 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <stdbool.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #define BINARY_MAGIC 0x4D
 #define BINARY_SYMBOL_LEN 8
@@ -209,6 +211,49 @@ static void send_flush(client_context_t* ctx) {
     }
 }
 
+/* Read and display responses from server (TCP only) */
+static void read_responses(client_context_t* ctx) {
+    if (!ctx->use_tcp) {
+        return;  // UDP is fire-and-forget
+    }
+    
+    printf("\n--- Server Responses ---\n");
+    
+    char buffer[4096];
+    ssize_t total_read = 0;
+    int max_attempts = 10;  // Try reading for up to 1 second
+    struct timespec short_sleep = {0, 100000000L};  // 100ms
+    
+    // Set socket to non-blocking for reading
+    int flags = fcntl(ctx->sock, F_GETFL, 0);
+    fcntl(ctx->sock, F_SETFL, flags | O_NONBLOCK);
+    
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+        ssize_t n = recv(ctx->sock, buffer, sizeof(buffer) - 1, 0);
+        
+        if (n > 0) {
+            total_read += n;
+            buffer[n] = '\0';
+            printf("%s", buffer);
+            fflush(stdout);
+        } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            break;  // Error
+        }
+        
+        // If we got data, keep trying for more
+        if (n > 0) {
+            attempt = 0;  // Reset counter
+        }
+        
+        nanosleep(&short_sleep, NULL);
+    }
+    
+    if (total_read == 0) {
+        printf("(No response received)\n");
+    }
+    printf("------------------------\n");
+}
+
 void print_usage(const char* progname) {
     printf("Usage: %s <port> <scenario> [options]\n", progname);
     printf("\nOptions:\n");
@@ -291,14 +336,14 @@ int main(int argc, char* argv[]) {
     /* Sleep helper */
     struct timespec ts = {0, 100000000L}; // 100ms
     
-    /* Run scenario */
+    /* Run scenario - All use user_id = 1 for TCP compatibility */
     switch (scenario) {
         case 1:
             /* Simple order test */
             printf("Scenario 1: Simple Orders\n");
             send_new_order(&ctx, 1, "IBM", 100, 50, 'B', 1);
             nanosleep(&ts, NULL);
-            send_new_order(&ctx, 2, "IBM", 105, 50, 'S', 2);
+            send_new_order(&ctx, 1, "IBM", 105, 50, 'S', 2);
             nanosleep(&ts, NULL);
             send_flush(&ctx);
             break;
@@ -308,7 +353,7 @@ int main(int argc, char* argv[]) {
             printf("Scenario 2: Trade\n");
             send_new_order(&ctx, 1, "IBM", 100, 50, 'B', 1);
             nanosleep(&ts, NULL);
-            send_new_order(&ctx, 2, "IBM", 100, 50, 'S', 2);
+            send_new_order(&ctx, 1, "IBM", 100, 50, 'S', 2);
             nanosleep(&ts, NULL);
             send_flush(&ctx);
             break;
@@ -318,7 +363,7 @@ int main(int argc, char* argv[]) {
             printf("Scenario 3: Cancel\n");
             send_new_order(&ctx, 1, "IBM", 100, 50, 'B', 1);
             nanosleep(&ts, NULL);
-            send_new_order(&ctx, 2, "IBM", 105, 50, 'S', 2);
+            send_new_order(&ctx, 1, "IBM", 105, 50, 'S', 2);
             nanosleep(&ts, NULL);
             send_cancel(&ctx, 1, 1);
             nanosleep(&ts, NULL);
@@ -331,11 +376,11 @@ int main(int argc, char* argv[]) {
             return 1;
     }
     
-    printf("\nTest complete. Check server output.\n");
+    printf("\nTest complete.\n");
     
-    /* For TCP, give server time to respond */
+    /* For TCP, read responses from server */
     if (use_tcp) {
-        nanosleep(&ts, NULL);
+        read_responses(&ctx);
     }
     
     close(sock);
