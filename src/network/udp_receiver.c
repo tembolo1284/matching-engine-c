@@ -52,11 +52,17 @@ void udp_receiver_destroy(udp_receiver_t* receiver) {
  * Setup UDP socket
  */
 bool udp_receiver_setup_socket(udp_receiver_t* receiver) {
-    // Create UDP socket
-    receiver->sockfd = socket(AF_INET, SOCK_DGRAM, 0);
+    // Create UDP socket - use IPv6 which also accepts IPv4 on most systems
+    receiver->sockfd = socket(AF_INET6, SOCK_DGRAM, 0);
     if (receiver->sockfd < 0) {
         fprintf(stderr, "ERROR: Failed to create UDP socket: %s\n", strerror(errno));
         return false;
+    }
+    
+    // Disable IPv6-only mode to accept both IPv4 and IPv6
+    int no = 0;
+    if (setsockopt(receiver->sockfd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no)) < 0) {
+        fprintf(stderr, "WARNING: Failed to disable IPV6_V6ONLY: %s\n", strerror(errno));
     }
     
     // Set socket to reuse address
@@ -85,12 +91,12 @@ bool udp_receiver_setup_socket(udp_receiver_t* receiver) {
         fprintf(stderr, "WARNING: Failed to set receive timeout: %s\n", strerror(errno));
     }
     
-    // Bind to port
-    struct sockaddr_in addr;
+    // Bind to port (IPv6 address that also accepts IPv4)
+    struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(receiver->port);
+    addr.sin6_family = AF_INET6;
+    addr.sin6_addr = in6addr_any;  // Listen on all interfaces (IPv4 and IPv6)
+    addr.sin6_port = htons(receiver->port);
     
     if (bind(receiver->sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         fprintf(stderr, "ERROR: Failed to bind to port %u: %s\n", receiver->port, strerror(errno));
@@ -99,7 +105,7 @@ bool udp_receiver_setup_socket(udp_receiver_t* receiver) {
         return false;
     }
     
-    fprintf(stderr, "UDP Receiver listening on port %u\n", receiver->port);
+    fprintf(stderr, "UDP Receiver listening on port %u (IPv4 + IPv6)\n", receiver->port);
     return true;
 }
 
@@ -112,7 +118,7 @@ void* udp_receiver_thread_func(void* arg) {
     fprintf(stderr, "UDP Receiver thread started on port %d\n", receiver->port);
     
     char buffer[MAX_UDP_PACKET_SIZE];
-    struct sockaddr_in client_addr;
+    struct sockaddr_in6 client_addr;
     socklen_t client_len = sizeof(client_addr);
     
     while (atomic_load_explicit(&receiver->running, memory_order_acquire)) {

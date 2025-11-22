@@ -66,7 +66,7 @@ UNITY_SOURCES = $(TESTDIR)/unity.c
 TEST_SOURCES = $(TESTDIR)/core/test_order_book.c \
                $(TESTDIR)/protocol/test_message_parser.c \
                $(TESTDIR)/protocol/test_message_formatter.c \
-               $(TESTDIR)/protocol/test_matching_engine.c \
+               $(TESTDIR)/core/test_matching_engine.c \
                $(TESTDIR)/scenarios/test_scenarios_odd.c \
                $(TESTDIR)/scenarios/test_scenarios_even.c \
                $(TESTDIR)/test_runner.c

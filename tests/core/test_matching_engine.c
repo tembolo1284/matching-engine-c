@@ -22,7 +22,7 @@ void test_ProcessSingleOrder(void) {
     
     output_buffer_t output;
     output_buffer_init(&output);
-    matching_engine_process_message(&engine, &input, &output);
+    matching_engine_process_message(&engine, &input, 0, &output);
     
     /* Should get ack + TOB update */
     TEST_ASSERT_GREATER_OR_EQUAL(2, output.count);
@@ -46,8 +46,8 @@ void test_MultipleSymbols(void) {
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_buy);
     
-    matching_engine_process_message(&engine, &input1, &out1);
-    matching_engine_process_message(&engine, &input2, &out2);
+    matching_engine_process_message(&engine, &input1, 0, &out1);
+    matching_engine_process_message(&engine, &input2, 0, &out2);
     
     /* Each symbol should have its own order book */
     /* Verify by adding matching order for IBM */
@@ -56,7 +56,7 @@ void test_MultipleSymbols(void) {
     
     output_buffer_t out3;
     output_buffer_init(&out3);
-    matching_engine_process_message(&engine, &input3, &out3);
+    matching_engine_process_message(&engine, &input3, 0, &out3);
     
     /* Should generate trade for IBM */
     bool found_trade = false;
@@ -80,7 +80,7 @@ void test_CancelOrderAcrossSymbols(void) {
     
     output_buffer_t out1;
     output_buffer_init(&out1);
-    matching_engine_process_message(&engine, &input1, &out1);
+    matching_engine_process_message(&engine, &input1, 0, &out1);
     
     /* Cancel the order (no symbol in cancel message) */
     cancel_msg_t cancel = {"IBM", 1, 1};
@@ -88,7 +88,7 @@ void test_CancelOrderAcrossSymbols(void) {
     
     output_buffer_t out2;
     output_buffer_init(&out2);
-    matching_engine_process_message(&engine, &input2, &out2);
+    matching_engine_process_message(&engine, &input2, 0, &out2);
     
     /* Should get cancel ack */
     TEST_ASSERT_GREATER_OR_EQUAL(1, out2.count);
@@ -112,14 +112,14 @@ void test_FlushAllOrderBooks(void) {
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_buy);
     
-    matching_engine_process_message(&engine, &input1, &out1);
-    matching_engine_process_message(&engine, &input2, &out2);
+    matching_engine_process_message(&engine, &input1, 0, &out1);
+    matching_engine_process_message(&engine, &input2, 0, &out2);
     
     /* Flush all */
     input_msg_t flush = make_flush_msg();
     output_buffer_t out3;
     output_buffer_init(&out3);
-    matching_engine_process_message(&engine, &flush, &out3);
+    matching_engine_process_message(&engine, &flush, 0, &out3);
     
     /* No output for flush */
     TEST_ASSERT_EQUAL(4, out3.count);
@@ -127,7 +127,7 @@ void test_FlushAllOrderBooks(void) {
     /* After flush, adding same orders should work (no conflicts) */
     output_buffer_t out4;
     output_buffer_init(&out4);
-    matching_engine_process_message(&engine, &input1, &out4);
+    matching_engine_process_message(&engine, &input1, 0, &out4);
     TEST_ASSERT_GREATER_OR_EQUAL(1, out4.count);
     
     tearDown();
@@ -148,8 +148,8 @@ void test_IsolatedOrderBooks(void) {
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_sell);
     
-    matching_engine_process_message(&engine, &input1, &out1);
-    matching_engine_process_message(&engine, &input2, &out2);
+    matching_engine_process_message(&engine, &input1, 0, &out1);
+    matching_engine_process_message(&engine, &input2, 0, &out2);
     
     /* Should NOT generate a trade (different symbols) */
     bool found_trade = false;
@@ -173,7 +173,7 @@ void test_CancelNonExistentOrderEngine(void) {
     
     output_buffer_t output;
     output_buffer_init(&output);
-    matching_engine_process_message(&engine, &input, &output);
+    matching_engine_process_message(&engine, &input, 0, &output);
     
     /* Should still get cancel ack */
     TEST_ASSERT_EQUAL(1, output.count);
@@ -197,8 +197,8 @@ void test_SameUserOrderIdDifferentSymbols(void) {
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_buy);
     
-    matching_engine_process_message(&engine, &input1, &out1);
-    matching_engine_process_message(&engine, &input2, &out2);
+    matching_engine_process_message(&engine, &input1, 0, &out1);
+    matching_engine_process_message(&engine, &input2, 0, &out2);
     
     /* Both should succeed */
     TEST_ASSERT_GREATER_OR_EQUAL(1, out1.count);

@@ -40,7 +40,7 @@ static void process_input(const char* input_lines[], int num_lines) {
             output_buffer_t output;
             output_buffer_init(&output);
             
-            matching_engine_process_message(&engine, &msg, &output);
+            matching_engine_process_message(&engine, &msg, 0, &output);
             
             /* Format each output message */
             for (int j = 0; j < output.count; j++) {

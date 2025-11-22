@@ -29,7 +29,7 @@ static void process_input(const char* input[], size_t count) {
         input_msg_t msg;
         message_parser_parse(&parser, input[i], &msg);
 
-        matching_engine_process_message(&engine, &msg, &output);
+        matching_engine_process_message(&engine, &msg, 0, &output);
 
         /* Print outputs for debugging */
         for (int j = 0; j < output.count; j++) {
@@ -354,4 +354,3 @@ void test_Scenario16_CancelAllBids(void) {
 
     tearDown();
 }
-

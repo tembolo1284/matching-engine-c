@@ -29,7 +29,7 @@ void test_AddSingleBuyOrder(void) {
     output_buffer_t output;
     output_buffer_init(&output);
     
-    order_book_add_order(&book, &msg, &output);
+    order_book_add_order(&book, &msg, 0, &output);  // client_id = 0 for tests
     
     /* Should get: 1 ack + 1 TOB update */
     TEST_ASSERT_EQUAL(2, output.count);
@@ -58,7 +58,7 @@ void test_AddSingleSellOrder(void) {
     
     output_buffer_t output;
     output_buffer_init(&output);
-    order_book_add_order(&book, &msg, &output);
+    order_book_add_order(&book, &msg, 0, &output);
     
     TEST_ASSERT_EQUAL(2, output.count);
     TEST_ASSERT_EQUAL(105, order_book_get_best_ask_price(&book));
@@ -75,13 +75,13 @@ void test_MatchingBuyAndSell(void) {
     new_order_msg_t sell = {1, "TEST", 100, 50, SIDE_SELL, 1};
     output_buffer_t output1;
     output_buffer_init(&output1);
-    order_book_add_order(&book, &sell, &output1);
+    order_book_add_order(&book, &sell, 1, &output1);
     
     /* Add buy order at 100 (should match) */
     new_order_msg_t buy = {2, "TEST", 100, 50, SIDE_BUY, 2};
     output_buffer_t output2;
     output_buffer_init(&output2);
-    order_book_add_order(&book, &buy, &output2);
+    order_book_add_order(&book, &buy, 2, &output2);
     
     /* Should get: ack + trade + TOB updates */
     TEST_ASSERT_GREATER_OR_EQUAL(2, output2.count);
@@ -117,13 +117,13 @@ void test_PartialFill(void) {
     new_order_msg_t sell = {1, "TEST", 100, 100, SIDE_SELL, 1};
     output_buffer_t output1;
     output_buffer_init(&output1);
-    order_book_add_order(&book, &sell, &output1);
+    order_book_add_order(&book, &sell, 1, &output1);
     
     /* Add buy order at 100 for 30 shares (partial fill) */
     new_order_msg_t buy = {2, "TEST", 100, 30, SIDE_BUY, 2};
     output_buffer_t output2;
     output_buffer_init(&output2);
-    order_book_add_order(&book, &buy, &output2);
+    order_book_add_order(&book, &buy, 2, &output2);
     
     /* Should have a trade for 30 shares */
     bool found_trade = false;
@@ -149,13 +149,13 @@ void test_MarketOrderBuy(void) {
     new_order_msg_t sell = {1, "TEST", 100, 50, SIDE_SELL, 1};
     output_buffer_t output1;
     output_buffer_init(&output1);
-    order_book_add_order(&book, &sell, &output1);
+    order_book_add_order(&book, &sell, 1, &output1);
     
     /* Market buy (price = 0) */
     new_order_msg_t market_buy = {2, "TEST", 0, 50, SIDE_BUY, 2};
     output_buffer_t output2;
     output_buffer_init(&output2);
-    order_book_add_order(&book, &market_buy, &output2);
+    order_book_add_order(&book, &market_buy, 2, &output2);
     
     /* Should match at sell price (100) */
     bool found_trade = false;
@@ -179,13 +179,13 @@ void test_MarketOrderSell(void) {
     new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
     output_buffer_t output1;
     output_buffer_init(&output1);
-    order_book_add_order(&book, &buy, &output1);
+    order_book_add_order(&book, &buy, 1, &output1);
     
     /* Market sell (price = 0) */
     new_order_msg_t market_sell = {2, "TEST", 0, 50, SIDE_SELL, 2};
     output_buffer_t output2;
     output_buffer_init(&output2);
-    order_book_add_order(&book, &market_sell, &output2);
+    order_book_add_order(&book, &market_sell, 2, &output2);
     
     /* Should match at buy price (100) */
     bool found_trade = false;
@@ -214,9 +214,9 @@ void test_PriceTimePriority(void) {
     output_buffer_init(&out2);
     output_buffer_init(&out3);
     
-    order_book_add_order(&book, &buy1, &out1);
-    order_book_add_order(&book, &buy2, &out2);
-    order_book_add_order(&book, &buy3, &out3);
+    order_book_add_order(&book, &buy1, 1, &out1);
+    order_book_add_order(&book, &buy2, 2, &out2);
+    order_book_add_order(&book, &buy3, 3, &out3);
     
     TEST_ASSERT_EQUAL(60, order_book_get_best_bid_quantity(&book));
     
@@ -224,7 +224,7 @@ void test_PriceTimePriority(void) {
     new_order_msg_t sell = {4, "TEST", 100, 35, SIDE_SELL, 4};
     output_buffer_t output;
     output_buffer_init(&output);
-    order_book_add_order(&book, &sell, &output);
+    order_book_add_order(&book, &sell, 4, &output);
     
     /* Should get 3 trades */
     int trade_count = 0;
@@ -260,7 +260,7 @@ void test_CancelOrder(void) {
     new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
     output_buffer_t output1;
     output_buffer_init(&output1);
-    order_book_add_order(&book, &buy, &output1);
+    order_book_add_order(&book, &buy, 1, &output1);
     
     /* Cancel it */
     output_buffer_t output2;
@@ -306,8 +306,8 @@ void test_FlushOrderBook(void) {
     output_buffer_init(&out2);
     output_buffer_init(&flush_out);
     
-    order_book_add_order(&book, &buy, &out1);
-    order_book_add_order(&book, &sell, &out2);
+    order_book_add_order(&book, &buy, 1, &out1);
+    order_book_add_order(&book, &sell, 2, &out2);
 
     /* Flush - should generate cancel acks */
     order_book_flush(&book, &flush_out);
@@ -342,10 +342,10 @@ void test_MultipleOrdersAtDifferentPrices(void) {
     output_buffer_init(&out3);
     output_buffer_init(&out4);
     
-    order_book_add_order(&book, &buy1, &out1);
-    order_book_add_order(&book, &buy2, &out2);
-    order_book_add_order(&book, &sell1, &out3);
-    order_book_add_order(&book, &sell2, &out4);
+    order_book_add_order(&book, &buy1, 1, &out1);
+    order_book_add_order(&book, &buy2, 1, &out2);
+    order_book_add_order(&book, &sell1, 2, &out3);
+    order_book_add_order(&book, &sell2, 2, &out4);
     
     /* Verify best prices */
     TEST_ASSERT_EQUAL(100, order_book_get_best_bid_price(&book));
