@@ -243,7 +243,7 @@ run-udp-port: $(TARGET)
 debug: CFLAGS = $(CFLAGS_DEBUG)
 debug: clean all
 
-# Run with valgrind for memory leak detection
+# Run with valgrind for memory leak detection (cross-platform)
 valgrind: debug
 ifeq ($(UNAME_S),Linux)
 	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
@@ -270,12 +270,13 @@ else ifeq ($(UNAME_S),Darwin)
 	sleep 3; \
 	echo ""; \
 	echo "Running leaks analysis..."; \
-	leaks $$SERVER_PID || true; \
 	echo ""; \
-	echo "Sending shutdown signal..."; \
-	kill -SIGTERM $$SERVER_PID 2>/dev/null || true; \
-	wait $$SERVER_PID 2>/dev/null || true; \
+	leaks $$SERVER_PID 2>&1 | grep -A 20 "^Process\|leaked bytes" || true; \
 	echo ""; \
+	echo "Stopping server..."; \
+	kill -TERM $$SERVER_PID 2>/dev/null || true; \
+	sleep 2; \
+	kill -9 $$SERVER_PID 2>/dev/null || true; \
 	echo "✓ Memory leak test complete"
 else
 	@echo "Memory leak detection not configured for this platform."
