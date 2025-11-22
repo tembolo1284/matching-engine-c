@@ -283,7 +283,7 @@ else
 	@echo "Platform detected: $(UNAME_S)"
 endif
 
-# Valgrind tests
+# Valgrind tests (cross-platform)
 valgrind-test: directories $(TEST_TARGET)
 ifeq ($(UNAME_S),Linux)
 	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
@@ -292,8 +292,9 @@ ifeq ($(UNAME_S),Linux)
 	sleep 5; \
 	echo ""; \
 	echo "Sending shutdown signal..."; \
-	kill -SIGTERM $$SERVER_PID 2>/dev/null || true; \
-	wait $$SERVER_PID 2>/dev/null || true; \
+	kill -TERM $$SERVER_PID 2>/dev/null || true; \
+	sleep 2; \
+	kill -9 $$SERVER_PID 2>/dev/null || true; \
 	echo ""; \
 	echo "Valgrind test complete"
 else ifeq ($(UNAME_S),Darwin)
@@ -303,13 +304,14 @@ else ifeq ($(UNAME_S),Darwin)
 	sleep 3; \
 	echo ""; \
 	echo "Running leaks analysis..."; \
-	leaks $$SERVER_PID || true; \
 	echo ""; \
-	echo "Sending shutdown signal..."; \
-	kill -SIGTERM $$SERVER_PID 2>/dev/null || true; \
-	wait $$SERVER_PID 2>/dev/null || true; \
+	leaks $$SERVER_PID 2>&1 | grep -A 20 "^Process\|leaked bytes" || true; \
 	echo ""; \
-	echo "Memory leak test complete"
+	echo "Stopping server..."; \
+	kill -TERM $$SERVER_PID 2>/dev/null || true; \
+	sleep 2; \
+	kill -9 $$SERVER_PID 2>/dev/null || true; \
+	echo "✓ Memory leak test complete"
 else
 	@echo "Memory leak detection not configured for this platform."
 endif
