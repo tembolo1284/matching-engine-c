@@ -109,10 +109,10 @@ void tcp_client_remove(tcp_client_registry_t* registry,
         return;
     }
     
-    fprintf(stderr, "[TCP] Client %u disconnected (recv=%lu, sent=%lu)\n",
+    fprintf(stderr, "[TCP] Client %u disconnected (recv=%llu, sent=%llu)\n",
             client_id,
-            client->messages_received,
-            client->messages_sent);
+            (unsigned long long)client->messages_received,
+            (unsigned long long)client->messages_sent);
     
     // Close socket
     close(client->socket_fd);

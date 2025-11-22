@@ -4,7 +4,6 @@
 #include "protocol/binary/binary_message_parser.h"
 #include "protocol/binary/binary_message_formatter.h"
 #include <sys/socket.h>
-#include <sys/epoll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
@@ -13,8 +12,19 @@
 #include <string.h>
 #include <stdio.h>
 
-#define MAX_EPOLL_EVENTS 128
-#define EPOLL_TIMEOUT_MS 100
+// Platform-specific event mechanism includes
+#ifdef __linux__
+    #include <sys/epoll.h>
+    #define USE_EPOLL 1
+#elif defined(__APPLE__) || defined(__FreeBSD__)
+    #include <sys/event.h>
+    #define USE_KQUEUE 1
+#else
+    #error "Unsupported platform - need epoll or kqueue"
+#endif
+
+#define MAX_EVENTS 128
+#define EVENT_TIMEOUT_MS 100
 
 static message_parser_t g_csv_parser;
 static binary_message_parser_t g_binary_parser;
@@ -23,13 +33,18 @@ static binary_message_formatter_t g_binary_formatter;
 
 // Forward declarations
 static bool setup_listening_socket(tcp_listener_context_t* ctx);
-static bool setup_epoll(tcp_listener_context_t* ctx);
+static bool setup_event_loop(tcp_listener_context_t* ctx);
 static void handle_new_connection(tcp_listener_context_t* ctx);
 static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id);
 static void handle_client_write(tcp_listener_context_t* ctx, uint32_t client_id);
 static void disconnect_client(tcp_listener_context_t* ctx, uint32_t client_id);
 static bool set_nonblocking(int fd);
 static void process_output_queues(tcp_listener_context_t* ctx);
+
+#ifdef USE_KQUEUE
+static bool add_fd_to_kqueue(int kq, int fd, int filter);
+static bool modify_fd_in_kqueue(int kq, int fd, int filter, bool enable);
+#endif
 
 bool tcp_listener_init(tcp_listener_context_t* ctx,
                        const tcp_listener_config_t* config,
@@ -43,7 +58,11 @@ bool tcp_listener_init(tcp_listener_context_t* ctx,
     ctx->input_queue = input_queue;
     ctx->shutdown_flag = shutdown_flag;
     ctx->listen_fd = -1;
+#ifdef USE_EPOLL
     ctx->epoll_fd = -1;
+#elif defined(USE_KQUEUE)
+    ctx->kqueue_fd = -1;
+#endif
 
     message_parser_init(&g_csv_parser);
     binary_message_parser_init(&g_binary_parser);
@@ -54,10 +73,17 @@ bool tcp_listener_init(tcp_listener_context_t* ctx,
 }
 
 void tcp_listener_cleanup(tcp_listener_context_t* ctx) {
+#ifdef USE_EPOLL
     if (ctx->epoll_fd >= 0) {
         close(ctx->epoll_fd);
         ctx->epoll_fd = -1;
     }
+#elif defined(USE_KQUEUE)
+    if (ctx->kqueue_fd >= 0) {
+        close(ctx->kqueue_fd);
+        ctx->kqueue_fd = -1;
+    }
+#endif
 
     if (ctx->listen_fd >= 0) {
         close(ctx->listen_fd);
@@ -73,39 +99,51 @@ void* tcp_listener_thread(void* arg) {
     // Setup listening socket
     if (!setup_listening_socket(ctx)) {
         fprintf(stderr, "[TCP Listener] Failed to setup listening socket\n");
-        atomic_store(ctx->shutdown_flag, true);  // Signal other threads to stop
+        atomic_store(ctx->shutdown_flag, true);
         return NULL;
     }
 
-    // Setup epoll
-    if (!setup_epoll(ctx)) {
-        fprintf(stderr, "[TCP Listener] Failed to setup epoll\n");
+    // Setup event loop
+    if (!setup_event_loop(ctx)) {
+        fprintf(stderr, "[TCP Listener] Failed to setup event loop\n");
         close(ctx->listen_fd);
-        atomic_store(ctx->shutdown_flag, true);  // Signal other threads to stop
+        atomic_store(ctx->shutdown_flag, true);
         return NULL;
     }
 
     fprintf(stderr, "[TCP Listener] Ready and listening\n");
 
     // Main event loop
-    struct epoll_event events[MAX_EPOLL_EVENTS];
+#ifdef USE_EPOLL
+    struct epoll_event events[MAX_EVENTS];
+#elif defined(USE_KQUEUE)
+    struct kevent events[MAX_EVENTS];
+    struct timespec timeout;
+    timeout.tv_sec = EVENT_TIMEOUT_MS / 1000;
+    timeout.tv_nsec = (EVENT_TIMEOUT_MS % 1000) * 1000000;
+#endif
 
     while (!atomic_load(ctx->shutdown_flag)) {
         // Check output queues for pending messages
         process_output_queues(ctx);
 
-        int nfds = epoll_wait(ctx->epoll_fd, events, MAX_EPOLL_EVENTS, EPOLL_TIMEOUT_MS);
+#ifdef USE_EPOLL
+        int nfds = epoll_wait(ctx->epoll_fd, events, MAX_EVENTS, EVENT_TIMEOUT_MS);
+#elif defined(USE_KQUEUE)
+        int nfds = kevent(ctx->kqueue_fd, NULL, 0, events, MAX_EVENTS, &timeout);
+#endif
 
         if (nfds < 0) {
             if (errno == EINTR) {
-                continue;  // Interrupted by signal
+                continue;
             }
-            fprintf(stderr, "[TCP Listener] epoll_wait error: %s\n", strerror(errno));
+            fprintf(stderr, "[TCP Listener] event wait error: %s\n", strerror(errno));
             break;
         }
 
         // Process events
         for (int i = 0; i < nfds; i++) {
+#ifdef USE_EPOLL
             int fd = events[i].data.fd;
             uint32_t event_mask = events[i].events;
 
@@ -116,7 +154,6 @@ void* tcp_listener_thread(void* arg) {
                     goto cleanup;
                 } else {
                     // Client error - disconnect
-                    // Need to find client_id from fd
                     for (size_t j = 0; j < MAX_TCP_CLIENTS; j++) {
                         tcp_client_t* client = &ctx->client_registry->clients[j];
                         if (client->active && client->socket_fd == fd) {
@@ -134,7 +171,7 @@ void* tcp_listener_thread(void* arg) {
                 continue;
             }
 
-            // Client I/O - find client by fd
+            // Client I/O
             tcp_client_t* client = NULL;
             for (size_t j = 0; j < MAX_TCP_CLIENTS; j++) {
                 if (ctx->client_registry->clients[j].active &&
@@ -145,7 +182,7 @@ void* tcp_listener_thread(void* arg) {
             }
 
             if (!client) {
-                continue;  // Client not found (shouldn't happen)
+                continue;
             }
 
             if (event_mask & EPOLLIN) {
@@ -155,6 +192,70 @@ void* tcp_listener_thread(void* arg) {
             if (event_mask & EPOLLOUT) {
                 handle_client_write(ctx, client->client_id);
             }
+
+#elif defined(USE_KQUEUE)
+            int fd = (int)events[i].ident;
+            int16_t filter = events[i].filter;
+            uint16_t flags = events[i].flags;
+
+            // Check for errors
+            if (flags & EV_ERROR) {
+                if (fd == ctx->listen_fd) {
+                    fprintf(stderr, "[TCP Listener] Error on listening socket\n");
+                    goto cleanup;
+                } else {
+                    // Client error - disconnect
+                    for (size_t j = 0; j < MAX_TCP_CLIENTS; j++) {
+                        tcp_client_t* client = &ctx->client_registry->clients[j];
+                        if (client->active && client->socket_fd == fd) {
+                            disconnect_client(ctx, client->client_id);
+                            break;
+                        }
+                    }
+                    continue;
+                }
+            }
+
+            // Check for EOF (client disconnect)
+            if (flags & EV_EOF) {
+                if (fd != ctx->listen_fd) {
+                    for (size_t j = 0; j < MAX_TCP_CLIENTS; j++) {
+                        tcp_client_t* client = &ctx->client_registry->clients[j];
+                        if (client->active && client->socket_fd == fd) {
+                            disconnect_client(ctx, client->client_id);
+                            break;
+                        }
+                    }
+                }
+                continue;
+            }
+
+            // New connection
+            if (fd == ctx->listen_fd && filter == EVFILT_READ) {
+                handle_new_connection(ctx);
+                continue;
+            }
+
+            // Client I/O
+            tcp_client_t* client = NULL;
+            for (size_t j = 0; j < MAX_TCP_CLIENTS; j++) {
+                if (ctx->client_registry->clients[j].active &&
+                    ctx->client_registry->clients[j].socket_fd == fd) {
+                    client = &ctx->client_registry->clients[j];
+                    break;
+                }
+            }
+
+            if (!client) {
+                continue;
+            }
+
+            if (filter == EVFILT_READ) {
+                handle_client_read(ctx, client->client_id);
+            } else if (filter == EVFILT_WRITE) {
+                handle_client_write(ctx, client->client_id);
+            }
+#endif
         }
     }
 
@@ -213,14 +314,14 @@ static bool setup_listening_socket(tcp_listener_context_t* ctx) {
     return true;
 }
 
-static bool setup_epoll(tcp_listener_context_t* ctx) {
+static bool setup_event_loop(tcp_listener_context_t* ctx) {
+#ifdef USE_EPOLL
     ctx->epoll_fd = epoll_create1(0);
     if (ctx->epoll_fd < 0) {
         fprintf(stderr, "[TCP Listener] epoll_create1() failed: %s\n", strerror(errno));
         return false;
     }
 
-    // Add listening socket to epoll
     struct epoll_event ev;
     ev.events = EPOLLIN;
     ev.data.fd = ctx->listen_fd;
@@ -230,8 +331,48 @@ static bool setup_epoll(tcp_listener_context_t* ctx) {
         return false;
     }
 
+#elif defined(USE_KQUEUE)
+    ctx->kqueue_fd = kqueue();
+    if (ctx->kqueue_fd < 0) {
+        fprintf(stderr, "[TCP Listener] kqueue() failed: %s\n", strerror(errno));
+        return false;
+    }
+
+    if (!add_fd_to_kqueue(ctx->kqueue_fd, ctx->listen_fd, EVFILT_READ)) {
+        fprintf(stderr, "[TCP Listener] Failed to add listen socket to kqueue\n");
+        return false;
+    }
+#endif
+
     return true;
 }
+
+#ifdef USE_KQUEUE
+static bool add_fd_to_kqueue(int kq, int fd, int filter) {
+    struct kevent ev;
+    EV_SET(&ev, fd, filter, EV_ADD | EV_ENABLE, 0, 0, NULL);
+    
+    if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
+        fprintf(stderr, "[TCP Listener] kevent(EV_ADD) failed: %s\n", strerror(errno));
+        return false;
+    }
+    
+    return true;
+}
+
+static bool modify_fd_in_kqueue(int kq, int fd, int filter, bool enable) {
+    struct kevent ev;
+    uint16_t flags = enable ? (EV_ADD | EV_ENABLE) : (EV_ADD | EV_DISABLE);
+    EV_SET(&ev, fd, filter, flags, 0, 0, NULL);
+    
+    if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
+        fprintf(stderr, "[TCP Listener] kevent(modify) failed: %s\n", strerror(errno));
+        return false;
+    }
+    
+    return true;
+}
+#endif
 
 static void handle_new_connection(tcp_listener_context_t* ctx) {
     struct sockaddr_in client_addr;
@@ -259,9 +400,10 @@ static void handle_new_connection(tcp_listener_context_t* ctx) {
         return;
     }
 
-    // Add client socket to epoll
+    // Add client socket to event loop
+#ifdef USE_EPOLL
     struct epoll_event ev;
-    ev.events = EPOLLIN | EPOLLET;  // Edge-triggered for efficiency
+    ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = client_fd;
 
     if (epoll_ctl(ctx->epoll_fd, EPOLL_CTL_ADD, client_fd, &ev) < 0) {
@@ -269,6 +411,14 @@ static void handle_new_connection(tcp_listener_context_t* ctx) {
         tcp_client_remove(ctx->client_registry, client_id);
         return;
     }
+
+#elif defined(USE_KQUEUE)
+    if (!add_fd_to_kqueue(ctx->kqueue_fd, client_fd, EVFILT_READ)) {
+        fprintf(stderr, "[TCP Listener] Failed to add client to kqueue\n");
+        tcp_client_remove(ctx->client_registry, client_id);
+        return;
+    }
+#endif
 
     ctx->total_connections++;
 }
@@ -293,7 +443,6 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
     }
 
     if (n == 0) {
-        // Client closed connection
         disconnect_client(ctx, client_id);
         return;
     }
@@ -310,24 +459,22 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
         input_msg_t input_msg;
         bool parsed = false;
 
-        // Auto-detect CSV vs binary (binary starts with 0x4D magic byte)
+        // Auto-detect CSV vs binary
         if (msg_len > 0 && (unsigned char)msg_data[0] == 0x4D) {
-            // Binary protocol
             parsed = binary_message_parser_parse(&g_binary_parser, msg_data, msg_len, &input_msg);
         } else {
-            // CSV protocol - needs null-terminated string
             char csv_buffer[4096];
             if (msg_len < sizeof(csv_buffer)) {
                 memcpy(csv_buffer, msg_data, msg_len);
                 csv_buffer[msg_len] = '\0';
                 parsed = message_parser_parse(&g_csv_parser, csv_buffer, &input_msg);
             } else {
-                parsed = false; // Message too long
+                parsed = false;
             }
         }
 
         if (parsed) {
-            // Validate userId matches client_id (security check)
+            // Validate userId matches client_id
             bool valid = true;
             switch (input_msg.type) {
                 case INPUT_MSG_NEW_ORDER:
@@ -345,12 +492,10 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
                     }
                     break;
                 case INPUT_MSG_FLUSH:
-                    // Flush doesn't have userId - always valid
                     break;
             }
 
             if (valid) {
-                // Create envelope and enqueue
                 input_msg_envelope_t envelope = create_input_envelope(
                     &input_msg, client_id, client->messages_received
                 );
@@ -367,7 +512,6 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
             fprintf(stderr, "[TCP Listener] Failed to parse message from client %u\n", client_id);
         }
 
-        // Reset framing state for next message
         framing_read_state_init(&client->read_state);
     }
 }
@@ -378,7 +522,6 @@ static void handle_client_write(tcp_listener_context_t* ctx, uint32_t client_id)
         return;
     }
 
-    // If we have a pending write, continue it
     if (client->has_pending_write) {
         const char* data;
         size_t len;
@@ -404,17 +547,19 @@ static void handle_client_write(tcp_listener_context_t* ctx, uint32_t client_id)
             client->messages_sent++;
             ctx->total_messages_sent++;
 
-            // Modify epoll to stop monitoring EPOLLOUT (save CPU)
+#ifdef USE_EPOLL
             struct epoll_event ev;
             ev.events = EPOLLIN | EPOLLET;
             ev.data.fd = client->socket_fd;
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_MOD, client->socket_fd, &ev);
+#elif defined(USE_KQUEUE)
+            modify_fd_in_kqueue(ctx->kqueue_fd, client->socket_fd, EVFILT_WRITE, false);
+#endif
         }
     }
 }
 
 static void process_output_queues(tcp_listener_context_t* ctx) {
-    // Check each client's output queue and initiate writes
     for (size_t i = 0; i < MAX_TCP_CLIENTS; i++) {
         tcp_client_t* client = &ctx->client_registry->clients[i];
 
@@ -422,13 +567,11 @@ static void process_output_queues(tcp_listener_context_t* ctx) {
             continue;
         }
 
-        // Try to dequeue a message
         output_msg_t msg;
         if (!tcp_client_dequeue_output(client, &msg)) {
-            continue;  // No messages
+            continue;
         }
 
-        // Format message (CSV or binary) - FIXED
         char formatted[2048];
         size_t formatted_len;
 
@@ -461,7 +604,6 @@ static void process_output_queues(tcp_listener_context_t* ctx) {
             continue;
         }
 
-        // Initialize write state with framed message
         if (!framing_write_state_init(&client->write_state, formatted, formatted_len)) {
             fprintf(stderr, "[TCP Listener] Message too large for client %u\n",
                     client->client_id);
@@ -470,7 +612,6 @@ static void process_output_queues(tcp_listener_context_t* ctx) {
 
         client->has_pending_write = true;
 
-        // Try immediate write (non-blocking)
         const char* data;
         size_t len;
         framing_write_get_remaining(&client->write_state, &data, &len);
@@ -487,23 +628,28 @@ static void process_output_queues(tcp_listener_context_t* ctx) {
                 client->messages_sent++;
                 ctx->total_messages_sent++;
             } else {
-                // Partial write - add EPOLLOUT to be notified when socket is writable
+#ifdef USE_EPOLL
                 struct epoll_event ev;
                 ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
                 ev.data.fd = client->socket_fd;
                 epoll_ctl(ctx->epoll_fd, EPOLL_CTL_MOD, client->socket_fd, &ev);
+#elif defined(USE_KQUEUE)
+                add_fd_to_kqueue(ctx->kqueue_fd, client->socket_fd, EVFILT_WRITE);
+#endif
             }
         } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            // Write error
             fprintf(stderr, "[TCP Listener] write() error for client %u: %s\n",
                     client->client_id, strerror(errno));
             disconnect_client(ctx, client->client_id);
         } else {
-            // Would block - add EPOLLOUT
+#ifdef USE_EPOLL
             struct epoll_event ev;
             ev.events = EPOLLIN | EPOLLOUT | EPOLLET;
             ev.data.fd = client->socket_fd;
             epoll_ctl(ctx->epoll_fd, EPOLL_CTL_MOD, client->socket_fd, &ev);
+#elif defined(USE_KQUEUE)
+            add_fd_to_kqueue(ctx->kqueue_fd, client->socket_fd, EVFILT_WRITE);
+#endif
         }
     }
 }
@@ -514,14 +660,13 @@ static void disconnect_client(tcp_listener_context_t* ctx, uint32_t client_id) {
         return;
     }
 
-    // Remove from epoll
+#ifdef USE_EPOLL
     epoll_ctl(ctx->epoll_fd, EPOLL_CTL_DEL, client->socket_fd, NULL);
+#elif defined(USE_KQUEUE)
+    // kqueue automatically removes fd when it's closed
+#endif
 
-    // Remove from registry (closes socket)
     tcp_client_remove(ctx->client_registry, client_id);
-
-    // TODO: Notify processor to cancel all orders for this client
-    // This will be handled by the output_router thread
 }
 
 static bool set_nonblocking(int fd) {
@@ -541,11 +686,11 @@ static bool set_nonblocking(int fd) {
 
 void tcp_listener_print_stats(const tcp_listener_context_t* ctx) {
     fprintf(stderr, "\n=== TCP Listener Statistics ===\n");
-    fprintf(stderr, "Total connections:     %lu\n", ctx->total_connections);
+    fprintf(stderr, "Total connections:     %llu\n", (unsigned long long)ctx->total_connections);
     fprintf(stderr, "Active clients:        %zu\n",
             tcp_client_get_active_count(ctx->client_registry));
-    fprintf(stderr, "Messages received:     %lu\n", ctx->total_messages_received);
-    fprintf(stderr, "Messages sent:         %lu\n", ctx->total_messages_sent);
-    fprintf(stderr, "Bytes received:        %lu\n", ctx->total_bytes_received);
-    fprintf(stderr, "Bytes sent:            %lu\n", ctx->total_bytes_sent);
+    fprintf(stderr, "Messages received:     %llu\n", (unsigned long long)ctx->total_messages_received);
+    fprintf(stderr, "Messages sent:         %llu\n", (unsigned long long)ctx->total_messages_sent);
+    fprintf(stderr, "Bytes received:        %llu\n", (unsigned long long)ctx->total_bytes_received);
+    fprintf(stderr, "Bytes sent:            %llu\n", (unsigned long long)ctx->total_bytes_sent);
 }

@@ -118,5 +118,5 @@ void* output_publisher_thread(void* arg) {
 
 void output_publisher_print_stats(const output_publisher_context_t* ctx) {
     fprintf(stderr, "\n=== Output Publisher Statistics ===\n");
-    fprintf(stderr, "Messages published:    %lu\n", ctx->messages_published);
+    fprintf(stderr, "Messages published:    %llu\n", (unsigned long long)ctx->messages_published);
 }

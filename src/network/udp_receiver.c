@@ -224,10 +224,10 @@ void* udp_receiver_thread_func(void* arg) {
         }
     }
     
-    fprintf(stderr, "UDP Receiver thread stopped. Packets: %lu, Parsed: %lu, Dropped: %lu\n",
-            atomic_load(&receiver->packets_received),
-            atomic_load(&receiver->messages_parsed),
-            atomic_load(&receiver->messages_dropped));
+    fprintf(stderr, "UDP Receiver thread stopped. Packets: %llu, Parsed: %llu, Dropped: %llu\n",
+            (unsigned long long)atomic_load(&receiver->packets_received),
+            (unsigned long long)atomic_load(&receiver->messages_parsed),
+           (unsigned long long) atomic_load(&receiver->messages_dropped));
     
     return NULL;
 }

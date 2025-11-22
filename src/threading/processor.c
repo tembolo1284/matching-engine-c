@@ -118,10 +118,10 @@ void* processor_thread(void* arg) {
 
 void processor_print_stats(const processor_t* processor) {
     fprintf(stderr, "\n=== Processor Statistics ===\n");
-    fprintf(stderr, "Messages processed:    %lu\n", 
-            atomic_load(&processor->messages_processed));
-    fprintf(stderr, "Batches processed:     %lu\n", 
-            atomic_load(&processor->batches_processed));
+    fprintf(stderr, "Messages processed:    %llu\n", 
+           (unsigned long long) atomic_load(&processor->messages_processed));
+    fprintf(stderr, "Batches processed:     %llu\n", 
+           (unsigned long long)atomic_load(&processor->batches_processed));
 }
 
 void processor_cancel_client_orders(processor_t* processor, uint32_t client_id) {

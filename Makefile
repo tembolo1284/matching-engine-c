@@ -1,10 +1,25 @@
 # Makefile for Order Book - Matching Engine (Pure C with TCP Support)
 
+# Detect platform
+UNAME_S := $(shell uname -s)
+
 # Compiler and flags
 CC = gcc
-CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O3 -march=native -pthread
+CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -O3 -pthread
 CFLAGS_DEBUG = -std=c11 -Wall -Wextra -Wpedantic -g -O0 -pthread -DDEBUG
 LDFLAGS = -pthread -lm
+
+# Platform-specific optimizations
+ifeq ($(UNAME_S),Linux)
+    CFLAGS += -march=native
+    CFLAGS_DEBUG += -march=native
+endif
+
+ifeq ($(UNAME_S),Darwin)
+    # macOS: use native architecture, suppress some warnings
+    CFLAGS += -Wno-deprecated-declarations
+    CFLAGS_DEBUG += -Wno-deprecated-declarations
+endif
 
 # Directories
 SRCDIR = src
@@ -71,6 +86,7 @@ HEADERS = $(wildcard $(INCDIR)/*.h) \
 all: directories $(TARGET) tools
 	@echo ""
 	@echo "✓ Build complete!"
+	@echo "  Platform:        $(UNAME_S)"
 	@echo "  Main executable: $(TARGET)"
 	@echo "  Tools:           $(BINARY_CLIENT), $(BINARY_DECODER), $(TCP_CLIENT)"
 
@@ -229,6 +245,7 @@ debug: clean all
 
 # Run with valgrind for memory leak detection
 valgrind: debug
+ifeq ($(UNAME_S),Linux)
 	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
 	@echo "Cleaning up any existing processes..."
 	@pkill -9 matching_engine 2>/dev/null || true
@@ -242,9 +259,32 @@ valgrind: debug
 	wait $$VALGRIND_PID 2>/dev/null || true; \
 	echo ""; \
 	echo "✓ Valgrind test complete"
+else ifeq ($(UNAME_S),Darwin)
+	@echo "Starting memory leak test with macOS leaks tool..."
+	@echo "Cleaning up any existing processes..."
+	@pkill -9 matching_engine 2>/dev/null || true
+	@sleep 1
+	@echo "Starting server..."
+	@./$(TARGET) --tcp 2>&1 & \
+	SERVER_PID=$$!; \
+	sleep 3; \
+	echo ""; \
+	echo "Running leaks analysis..."; \
+	leaks $$SERVER_PID || true; \
+	echo ""; \
+	echo "Sending shutdown signal..."; \
+	kill -SIGTERM $$SERVER_PID 2>/dev/null || true; \
+	wait $$SERVER_PID 2>/dev/null || true; \
+	echo ""; \
+	echo "✓ Memory leak test complete"
+else
+	@echo "Memory leak detection not configured for this platform."
+	@echo "Platform detected: $(UNAME_S)"
+endif
 
 # Valgrind tests
 valgrind-test: directories $(TEST_TARGET)
+ifeq ($(UNAME_S),Linux)
 	@echo "Starting valgrind test (will auto-stop after 5 seconds)..."
 	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./$(TARGET) --tcp 2>&1 & \
 	SERVER_PID=$$!; \
@@ -255,12 +295,30 @@ valgrind-test: directories $(TEST_TARGET)
 	wait $$SERVER_PID 2>/dev/null || true; \
 	echo ""; \
 	echo "Valgrind test complete"
+else ifeq ($(UNAME_S),Darwin)
+	@echo "Starting memory leak test with macOS leaks tool..."
+	@./$(TARGET) --tcp 2>&1 & \
+	SERVER_PID=$$!; \
+	sleep 3; \
+	echo ""; \
+	echo "Running leaks analysis..."; \
+	leaks $$SERVER_PID || true; \
+	echo ""; \
+	echo "Sending shutdown signal..."; \
+	kill -SIGTERM $$SERVER_PID 2>/dev/null || true; \
+	wait $$SERVER_PID 2>/dev/null || true; \
+	echo ""; \
+	echo "Memory leak test complete"
+else
+	@echo "Memory leak detection not configured for this platform."
+endif
 
 # Print configuration
 info:
 	@echo "=========================================="
 	@echo "Matching Engine - Build Configuration"
 	@echo "=========================================="
+	@echo "Platform:       $(UNAME_S)"
 	@echo "Compiler:       $(CC)"
 	@echo "C Standard:     C11"
 	@echo "Flags:          $(CFLAGS)"

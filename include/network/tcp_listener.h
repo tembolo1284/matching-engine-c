@@ -12,14 +12,14 @@
 /**
  * TCP Listener Thread
  * 
- * Event-driven network I/O using epoll (Linux). Handles:
+ * Event-driven network I/O using epoll (Linux) or kqueue (macOS/BSD). Handles:
  *   - Accepting new client connections
  *   - Reading framed messages from all clients
  *   - Writing output messages to clients
  *   - Detecting client disconnections
  * 
  * Architecture:
- *   Single thread uses epoll to multiplex I/O across all clients
+ *   Single thread uses epoll/kqueue to multiplex I/O across all clients
  *   No thread-per-client overhead
  *   Scales efficiently to 100+ clients
  * 
@@ -46,7 +46,13 @@ typedef struct {
     
     // Network state
     int listen_fd;                          // Listening socket
-    int epoll_fd;                           // epoll file descriptor
+    
+    // Platform-specific event mechanism
+#ifdef __linux__
+    int epoll_fd;                           // epoll file descriptor (Linux)
+#else
+    int kqueue_fd;                          // kqueue file descriptor (macOS/BSD)
+#endif
     
     // Client registry
     tcp_client_registry_t* client_registry;

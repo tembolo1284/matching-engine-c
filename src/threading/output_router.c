@@ -96,6 +96,6 @@ void* output_router_thread(void* arg) {
 
 void output_router_print_stats(const output_router_context_t* ctx) {
     fprintf(stderr, "\n=== Output Router Statistics ===\n");
-    fprintf(stderr, "Messages routed:       %lu\n", ctx->messages_routed);
-    fprintf(stderr, "Messages dropped:      %lu\n", ctx->messages_dropped);
+    fprintf(stderr, "Messages routed:       %llu\n", (unsigned long long)ctx->messages_routed);
+    fprintf(stderr, "Messages dropped:      %llu\n", (unsigned long long)ctx->messages_dropped);
 }
