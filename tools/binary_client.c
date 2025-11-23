@@ -81,11 +81,11 @@ static bool frame_message_tcp(const void* msg_data, size_t msg_len,
     if (msg_len > MAX_MSG_SIZE) {
         return false;
     }
-    
+
     uint32_t length_be = htonl((uint32_t)msg_len);
     memcpy(output, &length_be, FRAME_HEADER_SIZE);
     memcpy(output + FRAME_HEADER_SIZE, msg_data, msg_len);
-    
+
     *output_len = FRAME_HEADER_SIZE + msg_len;
     return true;
 }
@@ -95,12 +95,12 @@ static ssize_t send_data(client_context_t* ctx, const void* data, size_t len) {
     if (ctx->use_tcp) {
         char framed[MAX_MSG_SIZE + FRAME_HEADER_SIZE];
         size_t framed_len;
-        
+
         if (!frame_message_tcp(data, len, framed, &framed_len)) {
             fprintf(stderr, "Error: Message too large\n");
             return -1;
         }
-        
+
         return send(ctx->sock, framed, framed_len, 0);
     } else {
         return sendto(ctx->sock, data, len, 0,
@@ -122,7 +122,7 @@ static void send_new_order_binary(client_context_t* ctx,
     msg.quantity = htonl(qty);
     msg.side = side;
     msg.user_order_id = htonl(order_id);
-    
+
     send_data(ctx, &msg, sizeof(msg));
 }
 
@@ -200,35 +200,35 @@ static void send_flush(client_context_t* ctx) {
     }
 }
 
-/* Response reader thread (for TCP interactive mode) */
+/* Response reader thread (for TCP) */
 void* response_reader_thread(void* arg) {
     client_context_t* ctx = (client_context_t*)arg;
     char buffer[4096];
     size_t buffer_pos = 0;
-    
+
     while (ctx->running) {
         ssize_t n = recv(ctx->sock, buffer + buffer_pos, sizeof(buffer) - buffer_pos - 1, 0);
-        
+
         if (n > 0) {
             buffer_pos += n;
-            
+
             // Extract complete framed messages
             while (buffer_pos >= FRAME_HEADER_SIZE) {
                 uint32_t msg_len_be;
                 memcpy(&msg_len_be, buffer, FRAME_HEADER_SIZE);
                 uint32_t msg_len = ntohl(msg_len_be);
-                
+
                 if (buffer_pos < FRAME_HEADER_SIZE + msg_len) {
                     break;
                 }
-                
+
                 char* msg_start = buffer + FRAME_HEADER_SIZE;
                 char saved_char = msg_start[msg_len];
                 msg_start[msg_len] = '\0';
                 printf("%s", msg_start);
                 fflush(stdout);
                 msg_start[msg_len] = saved_char;
-                
+
                 size_t remaining = buffer_pos - (FRAME_HEADER_SIZE + msg_len);
                 if (remaining > 0) {
                     memmove(buffer, buffer + FRAME_HEADER_SIZE + msg_len, remaining);
@@ -244,7 +244,7 @@ void* response_reader_thread(void* arg) {
             break;
         }
     }
-    
+
     return NULL;
 }
 
@@ -259,27 +259,22 @@ void print_help() {
     printf("\n");
 }
 
-/* Run interactive mode (TCP) */
+/* Run interactive mode (TCP only) */
 void run_interactive_mode(client_context_t* ctx) {
-    pthread_t reader_thread;
-    pthread_create(&reader_thread, NULL, response_reader_thread, ctx);
-    
-    print_help();
-    
     char line[256];
     uint32_t user_id = 1;
-    
+
     while (ctx->running) {
         printf("> ");
         fflush(stdout);
-        
+
         if (!fgets(line, sizeof(line), stdin)) {
             break;
         }
-        
+
         char symbol[16];
         uint32_t price, qty, order_id;
-        
+
         if (strncmp(line, "buy ", 4) == 0) {
             if (sscanf(line, "buy %s %u %u %u", symbol, &price, &qty, &order_id) == 4) {
                 send_new_order(ctx, user_id, symbol, price, qty, 'B', order_id);
@@ -312,16 +307,15 @@ void run_interactive_mode(client_context_t* ctx) {
             printf("Unknown command. Type 'help' for commands.\n");
         }
     }
-    
-    ctx->running = false;
-    pthread_join(reader_thread, NULL);
 }
 
-/* Run scenario mode (UDP or TCP one-shot) */
-void run_scenario_mode(client_context_t* ctx, int scenario) {
+/* Run scenario (UDP runs and exits, TCP runs then enters interactive) */
+void run_scenario(client_context_t* ctx, int scenario) {
     struct timespec ts = {0, 100000000L};  // 100ms
     uint32_t user_id = 1;
-    
+
+    printf("\n=== Running Scenario %d ===\n", scenario);
+
     switch (scenario) {
         case 1:
             printf("Scenario 1: Simple Orders\n");
@@ -334,7 +328,7 @@ void run_scenario_mode(client_context_t* ctx, int scenario) {
             send_flush(ctx);
             printf("Sent: FLUSH\n");
             break;
-            
+
         case 2:
             printf("Scenario 2: Trade\n");
             send_new_order(ctx, user_id, "IBM", 100, 50, 'B', 1);
@@ -346,7 +340,7 @@ void run_scenario_mode(client_context_t* ctx, int scenario) {
             send_flush(ctx);
             printf("Sent: FLUSH\n");
             break;
-            
+
         case 3:
             printf("Scenario 3: Cancel\n");
             send_new_order(ctx, user_id, "IBM", 100, 50, 'B', 1);
@@ -361,12 +355,16 @@ void run_scenario_mode(client_context_t* ctx, int scenario) {
             send_flush(ctx);
             printf("Sent: FLUSH\n");
             break;
-            
+
         default:
             printf("Unknown scenario: %d\n", scenario);
     }
-    
-    printf("\nTest complete. Check server output.\n");
+
+    printf("=== Scenario Complete ===\n\n");
+
+    // Give server time to respond
+    nanosleep(&ts, NULL);
+    nanosleep(&ts, NULL);
 }
 
 void print_usage(const char* progname) {
@@ -374,18 +372,18 @@ void print_usage(const char* progname) {
     printf("\nOptions:\n");
     printf("  --tcp         Use TCP (default: UDP)\n");
     printf("  --csv         Use CSV protocol (default: binary)\n");
-    printf("\nModes:\n");
-    printf("  TCP without scenario: Interactive mode (stay connected)\n");
-    printf("  TCP with scenario:    Run scenario and exit\n");
-    printf("  UDP (any):            Run scenario and exit\n");
+    printf("\nBehavior:\n");
+    printf("  UDP:              Run scenario and exit (fire-and-forget)\n");
+    printf("  TCP + scenario:   Run scenario, then enter interactive mode\n");
+    printf("  TCP no scenario:  Enter interactive mode directly\n");
     printf("\nScenarios:\n");
     printf("  1 - Simple order test\n");
     printf("  2 - Trade test\n");
     printf("  3 - Cancel test\n");
     printf("\nExamples:\n");
-    printf("  %s 1234 --tcp              # TCP interactive mode\n", progname);
-    printf("  %s 1234 2 --tcp --csv      # TCP scenario 2 and exit\n", progname);
-    printf("  %s 1234 1                  # UDP scenario 1\n", progname);
+    printf("  %s 1234 --tcp              # TCP interactive\n", progname);
+    printf("  %s 1234 2 --tcp --csv      # TCP run scenario 2, then interactive\n", progname);
+    printf("  %s 1234 1                  # UDP scenario 1 and exit\n", progname);
 }
 
 int main(int argc, char* argv[]) {
@@ -393,12 +391,12 @@ int main(int argc, char* argv[]) {
         print_usage(argv[0]);
         return 1;
     }
-    
+
     int port = atoi(argv[1]);
     int scenario = 0;
     bool use_tcp = false;
     bool use_csv = false;
-    
+
     // Parse arguments
     for (int i = 2; i < argc; i++) {
         if (strcmp(argv[i], "--tcp") == 0) {
@@ -409,7 +407,7 @@ int main(int argc, char* argv[]) {
             scenario = atoi(argv[i]);
         }
     }
-    
+
     // Create socket
     int sock_type = use_tcp ? SOCK_STREAM : SOCK_DGRAM;
     int sock = socket(AF_INET, sock_type, 0);
@@ -417,14 +415,14 @@ int main(int argc, char* argv[]) {
         perror("socket");
         return 1;
     }
-    
+
     // Setup server address
     struct sockaddr_in server;
     memset(&server, 0, sizeof(server));
     server.sin_family = AF_INET;
     server.sin_port = htons(port);
     server.sin_addr.s_addr = inet_addr("127.0.0.1");
-    
+
     // Connect if TCP
     if (use_tcp) {
         if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0) {
@@ -433,12 +431,12 @@ int main(int argc, char* argv[]) {
             return 1;
         }
     }
-    
+
     printf("=== Trading Client ===\n");
     printf("Mode:     %s\n", use_tcp ? "TCP" : "UDP");
     printf("Protocol: %s\n", use_csv ? "CSV" : "Binary");
     printf("Server:   127.0.0.1:%d\n", port);
-    
+
     // Setup context
     client_context_t ctx = {
         .sock = sock,
@@ -447,22 +445,34 @@ int main(int argc, char* argv[]) {
         .server = server,
         .running = true
     };
-    
+
     g_ctx = &ctx;
     signal(SIGINT, signal_handler);
-    
-    // Decide mode: interactive (TCP without scenario) or scenario (UDP or TCP with scenario)
-    if (use_tcp && scenario == 0) {
-        // TCP interactive mode
-        printf("Mode:     Interactive\n\n");
-        run_interactive_mode(&ctx);
-    } else {
-        // Scenario mode (UDP or TCP one-shot)
-        if (scenario == 0) scenario = 1;  // Default scenario
-        printf("Scenario: %d\n\n", scenario);
-        run_scenario_mode(&ctx, scenario);
+
+    // Start response reader thread for TCP
+    pthread_t reader_thread;
+    if (use_tcp) {
+        pthread_create(&reader_thread, NULL, response_reader_thread, &ctx);
     }
-    
+
+    // Run scenario if specified
+    if (scenario > 0) {
+        run_scenario(&ctx, scenario);
+    }
+
+    // TCP: Enter interactive mode (even after scenario)
+    // UDP: Exit immediately after scenario
+    if (use_tcp) {
+        if (scenario == 0) {
+            printf("\n");
+        }
+        print_help();
+        run_interactive_mode(&ctx);
+        
+        ctx.running = false;
+        pthread_join(reader_thread, NULL);
+    }
+
     close(sock);
     printf("\nDisconnected.\n");
     return 0;
