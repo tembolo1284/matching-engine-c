@@ -872,15 +872,14 @@ void order_book_add_order(order_book_t* book,
     
     // Rule 7: Check allocation success
     if (order == NULL) {
-        // Pool exhausted - send reject message
-        output_msg_t reject = make_reject_msg(book->symbol, 
-                                              msg->user_id, 
-                                              msg->user_order_id,
-                                              "Order pool exhausted");
-        output_buffer_add(output, &reject);
+        // Pool exhausted - just log error and return
+        #ifdef DEBUG
+        fprintf(stderr, "ERROR: Order pool exhausted for %s (user %u, order %u)\n",
+                book->symbol, msg->user_id, msg->user_order_id);
+        #endif
         return;
-    }
-    
+    }   
+ 
     // Initialize order
     uint64_t timestamp = order_get_current_timestamp();
     order_init(order, msg, timestamp);

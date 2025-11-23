@@ -9,6 +9,7 @@
 static matching_engine_t engine;
 static message_parser_t parser;
 static message_formatter_t formatter;
+static memory_pools_t test_pools;  // ← ADD THIS
 
 /* Maximum lines for test scenarios */
 #define MAX_INPUT_LINES 100
@@ -19,7 +20,8 @@ static char actual_outputs[MAX_OUTPUT_LINES][MAX_OUTPUT_LINE_LENGTH];
 static int actual_output_count;
 
 static void setUp(void) {
-    matching_engine_init(&engine);
+    memory_pools_init(&test_pools);  // ← ADD THIS
+    matching_engine_init(&engine, &test_pools);  // ← ADD &test_pools
     message_parser_init(&parser);
     message_formatter_init(&formatter);
     actual_output_count = 0;
@@ -32,23 +34,23 @@ static void tearDown(void) {
 /* Helper: Process input lines and collect formatted outputs */
 static void process_input(const char* input_lines[], int num_lines) {
     actual_output_count = 0;
-    
+
     for (int i = 0; i < num_lines; i++) {
         input_msg_t msg;
-        
+
         if (message_parser_parse(&parser, input_lines[i], &msg)) {
             output_buffer_t output;
             output_buffer_init(&output);
-            
+
             matching_engine_process_message(&engine, &msg, 0, &output);
-            
+
             /* Format each output message */
             for (int j = 0; j < output.count; j++) {
                 const char* formatted = message_formatter_format(&formatter, &output.messages[j]);
                 strncpy(actual_outputs[actual_output_count], formatted, MAX_OUTPUT_LINE_LENGTH - 1);
                 actual_outputs[actual_output_count][MAX_OUTPUT_LINE_LENGTH - 1] = '\0';
                 actual_output_count++;
-                
+
                 if (actual_output_count >= MAX_OUTPUT_LINES) {
                     return; /* Prevent overflow */
                 }
@@ -60,7 +62,7 @@ static void process_input(const char* input_lines[], int num_lines) {
 /* Helper: Verify outputs match expected */
 static void verify_outputs(const char* expected[], int expected_count) {
     TEST_ASSERT_EQUAL_INT(expected_count, actual_output_count);
-    
+
     for (int i = 0; i < expected_count && i < actual_output_count; i++) {
         TEST_ASSERT_EQUAL_STRING(expected[i], actual_outputs[i]);
     }
@@ -73,7 +75,7 @@ static void verify_outputs(const char* expected[], int expected_count) {
 /* Test: Scenario 1 - Balanced Book */
 void test_Scenario1_BalancedBook(void) {
     setUp();
-    
+
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -85,7 +87,7 @@ void test_Scenario1_BalancedBook(void) {
         "N, 2, IBM, 11, 100, S, 104",
         "F"
     };
-    
+
     const char* expected[] = {
         "A, IBM, 1, 1",
         "B, IBM, B, 10, 100",
@@ -111,17 +113,17 @@ void test_Scenario1_BalancedBook(void) {
         "B, IBM, B, -, -",   // Bid side eliminated
         "B, IBM, S, -, -"    // Ask side eliminated
     };
-    
+
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
-    
+
     tearDown();
 }
 
 /* Test: Scenario 3 - Shallow Ask */
 void test_Scenario3_ShallowAsk(void) {
     setUp();
-    
+
     const char* input[] = {
         "N, 1, VAL, 10, 100, B, 1",
         "N, 2, VAL, 9, 100, B, 101",
@@ -130,7 +132,7 @@ void test_Scenario3_ShallowAsk(void) {
         "N, 2, VAL, 11, 100, S, 103",
         "F"
     };
-    
+
     const char* expected[] = {
         "A, VAL, 1, 1",
         "B, VAL, B, 10, 100",
@@ -148,17 +150,17 @@ void test_Scenario3_ShallowAsk(void) {
         "B, VAL, B, -, -",   // Bid side eliminated
         "B, VAL, S, -, -"    // Ask side eliminated
     };
-    
+
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
-    
+
     tearDown();
 }
 
 /* Test: Scenario 9 - Market Sell Partial */
 void test_Scenario9_MarketSellPartial(void) {
     setUp();
-    
+
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -167,7 +169,7 @@ void test_Scenario9_MarketSellPartial(void) {
         "N, 2, IBM, 0, 20, S, 103",
         "F"
     };
-    
+
     const char* expected[] = {
         "A, IBM, 1, 1",
         "B, IBM, B, 10, 100",
@@ -186,17 +188,17 @@ void test_Scenario9_MarketSellPartial(void) {
         "B, IBM, B, -, -",   // Bid side eliminated
         "B, IBM, S, -, -"    // Ask side eliminated
     };
-    
+
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
-    
+
     tearDown();
 }
 
 /* Test: Scenario 11 - Limit Sell Partial */
 void test_Scenario11_LimitSellPartial(void) {
     setUp();
-    
+
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -205,7 +207,7 @@ void test_Scenario11_LimitSellPartial(void) {
         "N, 2, IBM, 10, 20, S, 103",
         "F"
     };
-    
+
     const char* expected[] = {
         "A, IBM, 1, 1",
         "B, IBM, B, 10, 100",
@@ -224,17 +226,17 @@ void test_Scenario11_LimitSellPartial(void) {
         "B, IBM, B, -, -",   // Bid side eliminated
         "B, IBM, S, -, -"    // Ask side eliminated
     };
-    
+
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
-    
+
     tearDown();
 }
 
 /* Test: Scenario 13 - Multiple Orders at Best Price */
 void test_Scenario13_MultipleOrdersAtBestPrice(void) {
     setUp();
-    
+
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -246,7 +248,7 @@ void test_Scenario13_MultipleOrdersAtBestPrice(void) {
         "N, 2, IBM, 10, 100, S, 104",
         "F"
     };
-    
+
     const char* expected[] = {
         "A, IBM, 1, 1",
         "B, IBM, B, 10, 100",
@@ -272,17 +274,17 @@ void test_Scenario13_MultipleOrdersAtBestPrice(void) {
         "B, IBM, B, -, -",   // Bid side eliminated
         "B, IBM, S, -, -"    // Ask side eliminated
     };
-    
+
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
-    
+
     tearDown();
 }
 
 /* Test: Scenario 15 - Cancel Behind Best */
 void test_Scenario15_CancelBehindBest(void) {
     setUp();
-    
+
     const char* input[] = {
         "N, 1, IBM, 10, 100, B, 1",
         "N, 1, IBM, 12, 100, S, 2",
@@ -292,7 +294,7 @@ void test_Scenario15_CancelBehindBest(void) {
         "C, 2, 101",
         "F"
     };
-    
+
     const char* expected[] = {
         "A, IBM, 1, 1",
         "B, IBM, B, 10, 100",
@@ -308,9 +310,9 @@ void test_Scenario15_CancelBehindBest(void) {
         "B, IBM, B, -, -",   // Bid side eliminated
         "B, IBM, S, -, -"    // Ask side eliminated
     };
-    
+
     process_input(input, sizeof(input) / sizeof(input[0]));
     verify_outputs(expected, sizeof(expected) / sizeof(expected[0]));
-    
+
     tearDown();
 }

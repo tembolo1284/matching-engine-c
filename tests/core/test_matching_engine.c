@@ -4,9 +4,11 @@
 
 /* Test fixture */
 static matching_engine_t engine;
+static memory_pools_t test_pools;  // ← ADD THIS
 
 static void setUp(void) {
-    matching_engine_init(&engine);
+    memory_pools_init(&test_pools);  // ← ADD THIS
+    matching_engine_init(&engine, &test_pools);  // ← ADD &test_pools
 }
 
 static void tearDown(void) {
@@ -16,48 +18,48 @@ static void tearDown(void) {
 /* Test: Process Single Order */
 void test_ProcessSingleOrder(void) {
     setUp();
-    
+
     new_order_msg_t msg = {1, "IBM", 100, 50, SIDE_BUY, 1};
     input_msg_t input = make_new_order_msg(&msg);
-    
+
     output_buffer_t output;
     output_buffer_init(&output);
     matching_engine_process_message(&engine, &input, 0, &output);
-    
+
     /* Should get ack + TOB update */
     TEST_ASSERT_GREATER_OR_EQUAL(2, output.count);
     TEST_ASSERT_EQUAL(OUTPUT_MSG_ACK, output.messages[0].type);
-    
+
     tearDown();
 }
 
 /* Test: Multiple Symbols */
 void test_MultipleSymbols(void) {
     setUp();
-    
+
     /* Add orders for different symbols */
     new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
     new_order_msg_t aapl_buy = {1, "AAPL", 150, 30, SIDE_BUY, 2};
-    
+
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
     output_buffer_init(&out2);
-    
+
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_buy);
-    
+
     matching_engine_process_message(&engine, &input1, 0, &out1);
     matching_engine_process_message(&engine, &input2, 0, &out2);
-    
+
     /* Each symbol should have its own order book */
     /* Verify by adding matching order for IBM */
     new_order_msg_t ibm_sell = {2, "IBM", 100, 50, SIDE_SELL, 3};
     input_msg_t input3 = make_new_order_msg(&ibm_sell);
-    
+
     output_buffer_t out3;
     output_buffer_init(&out3);
     matching_engine_process_message(&engine, &input3, 0, &out3);
-    
+
     /* Should generate trade for IBM */
     bool found_trade = false;
     for (int i = 0; i < out3.count; i++) {
@@ -66,91 +68,91 @@ void test_MultipleSymbols(void) {
         }
     }
     TEST_ASSERT_TRUE(found_trade);
-    
+
     tearDown();
 }
 
 /* Test: Cancel Order Across Symbols */
 void test_CancelOrderAcrossSymbols(void) {
     setUp();
-    
+
     /* Add order for IBM */
     new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
-    
+
     output_buffer_t out1;
     output_buffer_init(&out1);
     matching_engine_process_message(&engine, &input1, 0, &out1);
-    
+
     /* Cancel the order (no symbol in cancel message) */
     cancel_msg_t cancel = {"IBM", 1, 1};
     input_msg_t input2 = make_cancel_msg(&cancel);
-    
+
     output_buffer_t out2;
     output_buffer_init(&out2);
     matching_engine_process_message(&engine, &input2, 0, &out2);
-    
+
     /* Should get cancel ack */
     TEST_ASSERT_GREATER_OR_EQUAL(1, out2.count);
     TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, out2.messages[0].type);
-    
+
     tearDown();
 }
 
 /* Test: Flush All Order Books */
 void test_FlushAllOrderBooks(void) {
     setUp();
-    
+
     /* Add orders for multiple symbols */
     new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
     new_order_msg_t aapl_buy = {1, "AAPL", 150, 30, SIDE_BUY, 2};
-    
+
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
     output_buffer_init(&out2);
-    
+
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_buy);
-    
+
     matching_engine_process_message(&engine, &input1, 0, &out1);
     matching_engine_process_message(&engine, &input2, 0, &out2);
-    
+
     /* Flush all */
     input_msg_t flush = make_flush_msg();
     output_buffer_t out3;
     output_buffer_init(&out3);
     matching_engine_process_message(&engine, &flush, 0, &out3);
-    
+
     /* No output for flush */
     TEST_ASSERT_EQUAL(4, out3.count);
-    
+
     /* After flush, adding same orders should work (no conflicts) */
     output_buffer_t out4;
     output_buffer_init(&out4);
     matching_engine_process_message(&engine, &input1, 0, &out4);
     TEST_ASSERT_GREATER_OR_EQUAL(1, out4.count);
-    
+
     tearDown();
 }
 
 /* Test: Isolated Order Books */
 void test_IsolatedOrderBooks(void) {
     setUp();
-    
+
     /* Orders in different symbols should not interact */
     new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
     new_order_msg_t aapl_sell = {2, "AAPL", 100, 50, SIDE_SELL, 2};
-    
+
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
     output_buffer_init(&out2);
-    
+
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_sell);
-    
+
     matching_engine_process_message(&engine, &input1, 0, &out1);
     matching_engine_process_message(&engine, &input2, 0, &out2);
-    
+
     /* Should NOT generate a trade (different symbols) */
     bool found_trade = false;
     for (int i = 0; i < out2.count; i++) {
@@ -159,50 +161,50 @@ void test_IsolatedOrderBooks(void) {
         }
     }
     TEST_ASSERT_FALSE(found_trade);
-    
+
     tearDown();
 }
 
 /* Test: Cancel Non-Existent Order */
 void test_CancelNonExistentOrderEngine(void) {
     setUp();
-    
+
     /* Try to cancel order that was never added */
     cancel_msg_t cancel = {"IBM", 1, 99};
     input_msg_t input = make_cancel_msg(&cancel);
-    
+
     output_buffer_t output;
     output_buffer_init(&output);
     matching_engine_process_message(&engine, &input, 0, &output);
-    
+
     /* Should still get cancel ack */
     TEST_ASSERT_EQUAL(1, output.count);
     TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, output.messages[0].type);
-    
+
     tearDown();
 }
 
 /* Test: Same User Order ID Different Symbols */
 void test_SameUserOrderIdDifferentSymbols(void) {
     setUp();
-    
+
     /* Same user_order_id but different symbols (should be allowed) */
     new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
     new_order_msg_t aapl_buy = {1, "AAPL", 150, 30, SIDE_BUY, 1};  /* Same order ID */
-    
+
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
     output_buffer_init(&out2);
-    
+
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
     input_msg_t input2 = make_new_order_msg(&aapl_buy);
-    
+
     matching_engine_process_message(&engine, &input1, 0, &out1);
     matching_engine_process_message(&engine, &input2, 0, &out2);
-    
+
     /* Both should succeed */
     TEST_ASSERT_GREATER_OR_EQUAL(1, out1.count);
     TEST_ASSERT_GREATER_OR_EQUAL(1, out2.count);
-    
+
     tearDown();
 }

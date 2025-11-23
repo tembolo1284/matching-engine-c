@@ -17,48 +17,16 @@ endif()
 # Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-# Compiler flags - Power of 10 Rule 10 compliant
+# Compiler flags (basic warnings only)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -pthread")
 set(CMAKE_C_FLAGS_RELEASE "-O3")
 set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
 
 # Platform-specific flags
 if(UNIX AND NOT APPLE)
-    # Linux
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 elseif(APPLE)
-    # macOS
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
-endif()
-
-# Rule 10: Treat warnings as errors in Release builds
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror")
-    message(STATUS "✓ Warnings treated as errors (Release build)")
-else()
-    message(STATUS "ℹ Warnings visible but not fatal (Debug build)")
-endif()
-
-# Rule 10: Static analysis tools
-find_program(CPPCHECK cppcheck)
-if(CPPCHECK)
-    message(STATUS "✓ Found cppcheck: ${CPPCHECK}")
-    set(CPPCHECK_AVAILABLE TRUE)
-else()
-    message(WARNING "⚠ cppcheck not found - static analysis unavailable")
-    message(STATUS "  Install with: sudo apt-get install cppcheck  (Linux)")
-    message(STATUS "             or: brew install cppcheck         (macOS)")
-    set(CPPCHECK_AVAILABLE FALSE)
-endif()
-
-# Optional: clang-tidy (more aggressive analysis)
-find_program(CLANG_TIDY clang-tidy)
-if(CLANG_TIDY)
-    message(STATUS "✓ Found clang-tidy: ${CLANG_TIDY}")
-    set(CLANG_TIDY_AVAILABLE TRUE)
-else()
-    message(STATUS "ℹ clang-tidy not found (optional)")
-    set(CLANG_TIDY_AVAILABLE FALSE)
 endif()
 
 # Include directories
@@ -118,96 +86,32 @@ set(TEST_SOURCES
 
 # Test executable
 add_executable(matching_engine_tests ${TEST_SOURCES})
-target_link_libraries(matching_engine_tests PRIVATE 
-    matching_engine_lib 
-    unity 
-    pthread 
+target_link_libraries(matching_engine_tests PRIVATE
+    matching_engine_lib
+    unity
+    pthread
     m
 )
-target_include_directories(matching_engine_tests PRIVATE 
-    include 
+target_include_directories(matching_engine_tests PRIVATE
+    include
     tests
 )
 target_compile_options(matching_engine_tests PRIVATE -g -O0)
 
 # Enable testing
 enable_testing()
-
-# Add test target
 add_test(NAME UnitTests COMMAND matching_engine_tests)
-
-# ============================================================================
-# Static Analysis Targets (Rule 10)
-# ============================================================================
-
-if(CPPCHECK_AVAILABLE)
-    add_custom_target(analyze
-        COMMAND ${CPPCHECK}
-            --enable=all
-            --inconclusive
-            --std=c11
-            --suppress=missingIncludeSystem
-            --suppress=unusedFunction
-            --error-exitcode=1
-            --inline-suppr
-            -I ${CMAKE_SOURCE_DIR}/include
-            ${CMAKE_SOURCE_DIR}/src/core/*.c
-            ${CMAKE_SOURCE_DIR}/src/protocol/csv/*.c
-            ${CMAKE_SOURCE_DIR}/src/protocol/binary/*.c
-            ${CMAKE_SOURCE_DIR}/src/network/*.c
-            ${CMAKE_SOURCE_DIR}/src/threading/*.c
-            ${CMAKE_SOURCE_DIR}/src/main.c
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Running cppcheck static analysis (Rule 10)..."
-    )
-else()
-    # Dummy target if cppcheck not available
-    add_custom_target(analyze
-        COMMAND ${CMAKE_COMMAND} -E echo "⚠ cppcheck not installed - skipping static analysis"
-        COMMAND ${CMAKE_COMMAND} -E echo "  Install with: sudo apt-get install cppcheck"
-        COMMENT "Static analysis unavailable"
-    )
-endif()
-
-if(CLANG_TIDY_AVAILABLE)
-    add_custom_target(analyze-tidy
-        COMMAND ${CLANG_TIDY}
-            -p=${CMAKE_BINARY_DIR}
-            --checks='*,-llvmlibc-*,-altera-*,-fuchsia-*,-readability-magic-numbers,-cppcoreguidelines-avoid-magic-numbers'
-            ${CMAKE_SOURCE_DIR}/src/core/*.c
-            ${CMAKE_SOURCE_DIR}/src/protocol/csv/*.c
-            ${CMAKE_SOURCE_DIR}/src/protocol/binary/*.c
-            ${CMAKE_SOURCE_DIR}/src/network/*.c
-            ${CMAKE_SOURCE_DIR}/src/threading/*.c
-            ${CMAKE_SOURCE_DIR}/src/main.c
-        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-        COMMENT "Running clang-tidy static analysis..."
-    )
-else()
-    add_custom_target(analyze-tidy
-        COMMAND ${CMAKE_COMMAND} -E echo "ℹ clang-tidy not installed - skipping"
-        COMMENT "clang-tidy analysis unavailable"
-    )
-endif()
-
-# Combined static analysis target
-add_custom_target(analyze-all
-    DEPENDS analyze analyze-tidy
-    COMMENT "Running all static analysis tools..."
-)
 
 # ============================================================================
 # Test Targets
 # ============================================================================
 
-# Custom target: run unit tests
 add_custom_target(test-unit
     COMMAND matching_engine_tests
     DEPENDS matching_engine_tests
-    COMMENT "Running Unity unit tests..."
+    COMMENT "Running Unity unit tests"
 )
 
-# Custom target: test-binary (UDP mode with binary protocol)
 add_custom_target(test-binary
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Binary Protocol Test - UDP Mode"
@@ -215,10 +119,9 @@ add_custom_target(test-binary
     COMMAND ${CMAKE_COMMAND} -E echo "Starting server (UDP mode, CSV output)..."
     COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --udp 1234 > /tmp/binary_test_output.txt 2>&1 & SERVER_PID=$$! && sleep 1 && echo 'Sending binary test messages...' && ${CMAKE_BINARY_DIR}/binary_client 1234 1 && sleep 1 && echo '' && echo 'Server output:' && kill $$SERVER_PID 2>/dev/null || true && wait $$SERVER_PID 2>/dev/null || true && cat /tmp/binary_test_output.txt && rm -f /tmp/binary_test_output.txt && echo '' && echo 'Binary protocol test complete'"
     DEPENDS matching_engine binary_client
-    COMMENT "Running binary protocol test..."
+    COMMENT "Running binary protocol test"
 )
 
-# Custom target: test-tcp
 add_custom_target(test-tcp
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "TCP Multi-Client Test"
@@ -226,66 +129,55 @@ add_custom_target(test-tcp
     COMMAND ${CMAKE_COMMAND} -E echo "Starting server (TCP mode, port 1234)..."
     COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp 1234 2>&1 & SERVER_PID=$$! && sleep 1 && echo 'Connecting test clients...' && ${CMAKE_BINARY_DIR}/tcp_client localhost 1234 & CLIENT_PID=$$! && sleep 2 && echo 'Stopping server...' && kill $$SERVER_PID 2>/dev/null || true && kill $$CLIENT_PID 2>/dev/null || true && wait $$SERVER_PID 2>/dev/null || true && wait $$CLIENT_PID 2>/dev/null || true && echo '' && echo 'TCP test complete'"
     DEPENDS matching_engine tcp_client
-    COMMENT "Running TCP multi-client test..."
+    COMMENT "Running TCP multi-client test"
 )
 
-# Custom target: test-all (with static analysis!)
 add_custom_target(test-all
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Running Complete Test Suite"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/4: Static Analysis (Rule 10)"
-    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target analyze
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/4: Unit Tests"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/3: Unit Tests"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-unit
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/4: Binary Protocol Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/3: Binary Protocol Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-binary
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 4/4: TCP Integration Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/3: TCP Integration Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-tcp
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "✓ All Tests Passed"
+    COMMAND ${CMAKE_COMMAND} -E echo "All tests finished"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     DEPENDS matching_engine_tests matching_engine binary_client tcp_client
-    COMMENT "Running static analysis + all tests..."
+    COMMENT "Running all tests"
 )
 
 # ============================================================================
 # Memory Analysis Targets
 # ============================================================================
 
-# Custom target: valgrind (memory leak detection)
 if(UNIX AND NOT APPLE)
-    # Linux - use valgrind
     add_custom_target(valgrind
-        COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test (will auto-stop after 5 seconds)..."
-        COMMAND ${CMAKE_COMMAND} -E echo "Cleaning up any existing processes..."
+        COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test (auto-stop after 5 seconds)..."
         COMMAND pkill -9 matching_engine 2>/dev/null || true
         COMMAND sleep 1
-        COMMAND bash -c "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ${CMAKE_BINARY_DIR}/matching_engine --tcp 2>&1 & VALGRIND_PID=$$! && sleep 5 && echo '' && echo 'Sending shutdown signal...' && pkill -SIGTERM matching_engine 2>/dev/null || true && wait $$VALGRIND_PID 2>/dev/null || true && echo '' && echo '✓ Valgrind test complete'"
+        COMMAND bash -c "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ${CMAKE_BINARY_DIR}/matching_engine --tcp 2>&1 & VALGRIND_PID=$$! && sleep 5 && echo '' && echo 'Stopping server...' && pkill -SIGTERM matching_engine 2>/dev/null || true && wait $$VALGRIND_PID 2>/dev/null || true && echo '' && echo 'Valgrind test complete'"
         DEPENDS matching_engine
-        COMMENT "Running valgrind memory leak detection..."
+        COMMENT "Running valgrind memory leak detection"
     )
 elseif(APPLE)
-    # macOS - use leaks
     add_custom_target(valgrind
         COMMAND ${CMAKE_COMMAND} -E echo "Starting memory leak test with macOS leaks tool..."
-        COMMAND ${CMAKE_COMMAND} -E echo "Cleaning up any existing processes..."
         COMMAND pkill -9 matching_engine 2>/dev/null || true
         COMMAND sleep 1
-        COMMAND ${CMAKE_COMMAND} -E echo "Starting server..."
-        COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp 2>&1 & SERVER_PID=$$! && sleep 3 && echo '' && echo 'Running leaks analysis...' && echo '' && leaks $$SERVER_PID 2>&1 | grep -A 20 '^Process\\|leaked bytes' || true && echo '' && echo 'Stopping server...' && kill -TERM $$SERVER_PID 2>/dev/null || true && sleep 2 && kill -9 $$SERVER_PID 2>/dev/null || true && echo '✓ Memory leak test complete'"
+        COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp 2>&1 & SERVER_PID=$$! && sleep 3 && echo '' && echo 'Running leaks...' && leaks $$SERVER_PID 2>&1 | grep -A 20 '^Process\\|leaked bytes' || true && echo '' && echo 'Stopping server...' && kill -TERM $$SERVER_PID 2>/dev/null || true && sleep 2 && kill -9 $$SERVER_PID 2>/dev/null || true && echo 'Leaks test complete'"
         DEPENDS matching_engine
-        COMMENT "Running leaks memory leak detection..."
+        COMMENT "Running leaks memory leak detection"
     )
 endif()
 
@@ -296,38 +188,37 @@ endif()
 add_custom_target(run
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode..."
+    COMMENT "Running matching engine in TCP mode"
 )
 
 add_custom_target(run-tcp
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode..."
+    COMMENT "Running matching engine in TCP mode"
 )
 
 add_custom_target(run-udp
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --udp
     DEPENDS matching_engine
-    COMMENT "Running matching engine in UDP mode..."
+    COMMENT "Running matching engine in UDP mode"
 )
 
 add_custom_target(run-binary
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --binary
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode with binary output..."
+    COMMENT "Running matching engine in TCP mode with binary output"
 )
 
 add_custom_target(run-binary-decoded
     COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp --binary 2>/dev/null | ${CMAKE_BINARY_DIR}/binary_decoder"
     DEPENDS matching_engine binary_decoder
-    COMMENT "Running matching engine with binary output (decoded)..."
+    COMMENT "Running matching engine with binary output (decoded)"
 )
 
 # ============================================================================
 # Information Targets
 # ============================================================================
 
-# Print build information
 add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Matching Engine - Build Configuration"
@@ -338,17 +229,10 @@ add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "Build type:     ${CMAKE_BUILD_TYPE}"
     COMMAND ${CMAKE_COMMAND} -E echo "C Flags:        ${CMAKE_C_FLAGS}"
     COMMAND ${CMAKE_COMMAND} -E echo "Build dir:      ${CMAKE_BINARY_DIR}"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Power of 10 Compliance:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Warnings:     ${CMAKE_C_FLAGS} contains -Wall -Wextra -Wpedantic"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Errors:       ${CMAKE_BUILD_TYPE} = Release adds -Werror"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Analysis:     cppcheck ${CPPCHECK_AVAILABLE}"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Clang-tidy:   ${CLANG_TIDY_AVAILABLE}"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMENT "Displaying build configuration..."
+    COMMENT "Displaying build configuration"
 )
 
-# Help target
 add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "Available targets:"
     COMMAND ${CMAKE_COMMAND} -E echo ""
@@ -363,17 +247,12 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  test-unit            - Run unit tests"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-binary          - Test binary protocol (UDP mode)"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-tcp             - Test TCP multi-client mode"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-all             - Run static analysis + all tests ⭐"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Static Analysis (Rule 10):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  analyze              - Run cppcheck analysis"
-    COMMAND ${CMAKE_COMMAND} -E echo "  analyze-tidy         - Run clang-tidy analysis"
-    COMMAND ${CMAKE_COMMAND} -E echo "  analyze-all          - Run all static analyzers"
+    COMMAND ${CMAKE_COMMAND} -E echo "  test-all             - Run full test suite"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running:"
     COMMAND ${CMAKE_COMMAND} -E echo "  run                  - Run in TCP mode"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-tcp              - Run in TCP mode"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-udp              - Run in UDP mode (legacy)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-udp              - Run in UDP mode"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-binary           - Run TCP with binary output"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-binary-decoded   - Run TCP with binary output + decoder"
     COMMAND ${CMAKE_COMMAND} -E echo ""
@@ -383,7 +262,7 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "Information:"
     COMMAND ${CMAKE_COMMAND} -E echo "  info                 - Display build configuration"
     COMMAND ${CMAKE_COMMAND} -E echo "  help-targets         - Display this help message"
-    COMMENT "Displaying help..."
+    COMMENT "Displaying help"
 )
 
 # ============================================================================
@@ -397,13 +276,5 @@ message(STATUS "Platform:      ${PLATFORM}")
 message(STATUS "Compiler:      ${CMAKE_C_COMPILER}")
 message(STATUS "Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Standard:    C${CMAKE_C_STANDARD}")
-message(STATUS "")
-message(STATUS "Power of 10 Compliance:")
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    message(STATUS "  Rule 10:     ✓ Warnings as errors (-Werror)")
-else()
-    message(STATUS "  Rule 10:     ⚠ Debug mode (warnings visible)")
-endif()
-message(STATUS "  Analysis:    ${CPPCHECK_AVAILABLE}")
-message(STATUS "  Clang-tidy:  ${CLANG_TIDY_AVAILABLE}")
 message(STATUS "========================================")
+

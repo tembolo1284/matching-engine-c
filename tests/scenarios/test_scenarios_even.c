@@ -9,9 +9,11 @@
 static matching_engine_t engine;
 static message_parser_t parser;
 static message_formatter_t formatter;
+static memory_pools_t test_pools;  // ← ADD THIS
 
 void setUp(void) {
-    matching_engine_init(&engine);
+    memory_pools_init(&test_pools);  // ← ADD THIS
+    matching_engine_init(&engine, &test_pools);  // ← ADD &test_pools
     message_parser_init(&parser);
     message_formatter_init(&formatter);
 }
