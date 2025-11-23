@@ -238,8 +238,7 @@ static void order_symbol_map_insert(matching_engine_t* engine, uint64_t order_ke
     }
     
     entry->order_key = order_key;
-    strncpy(entry->symbol, symbol, MAX_SYMBOL_LENGTH - 1);
-    entry->symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
+    snprintf(entry->symbol, MAX_SYMBOL_LENGTH, "%s", symbol);
     entry->next = engine->order_to_symbol[hash];
 
     engine->order_to_symbol[hash] = entry;

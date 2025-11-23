@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -49,9 +50,8 @@ typedef struct order {
 static inline void order_init(order_t* order, const new_order_msg_t* msg, uint64_t timestamp) {
     order->user_id = msg->user_id;
     order->user_order_id = msg->user_order_id;
-    strncpy(order->symbol, msg->symbol, MAX_SYMBOL_LENGTH - 1);
-    order->symbol[MAX_SYMBOL_LENGTH - 1] = '\0';  /* Ensure null termination */
-    
+    snprintf(order->symbol, MAX_SYMBOL_LENGTH, "%s", msg->symbol);   
+ 
     order->price = msg->price;
     order->quantity = msg->quantity;
     order->remaining_qty = msg->quantity;
