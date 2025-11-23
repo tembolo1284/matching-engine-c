@@ -257,74 +257,6 @@ Examples:
   ./build/matching_engine 5000 --binary # Port 5000, binary output
 ```
 
-### Testing with CSV (Traditional)
-
-**Terminal 1** - Start the matching engine:
-```bash
-./build/matching_engine 2> logs.txt | tee output.txt
-```
-
-**Terminal 2** - Send test orders:
-```bash
-# Send entire test file
-cat data/inputFile.csv | nc -u localhost 1234
-
-# Or send orders manually
-echo "N, 1, IBM, 100, 50, B, 1" | nc -u localhost 1234
-echo "N, 2, IBM, 100, 50, S, 2" | nc -u localhost 1234
-echo "F" | nc -u localhost 1234
-```
-
-### Testing with Binary Protocol
-
-**Send binary messages:**
-```bash
-# Terminal 1: Start server with CSV output (easier to read)
-./build/matching_engine
-
-# Terminal 2: Send binary test scenario
-./build/binary_client 1234 1   # Simple orders
-./build/binary_client 1234 2   # Trade scenario
-./build/binary_client 1234 3   # Cancel scenario
-```
-
-**Full binary mode (binary input + binary output):**
-```bash
-# Terminal 1: Start with binary output and decoder
-make run-binary-decoded
-
-# Terminal 2: Send binary messages
-./build/binary_client 1234 2
-```
-
-### Expected Output (CSV Format)
-```
-A, IBM, 1, 1
-B, IBM, B, 100, 50
-A, IBM, 2, 2
-T, IBM, 1, 1, 2, 2, 100, 50
-B, IBM, B, -, -
-B, IBM, S, -, -
-```
-
-### Flush Command Output
-When you send a flush command, all remaining orders are cancelled:
-```
-# Orders in book before flush
-A, IBM, 1, 1
-B, IBM, B, 100, 50
-A, IBM, 2, 2
-B, IBM, S, 105, 50
-
-# Flush command sent
-F
-
-# Cancel acknowledgements for all orders
-C, IBM, 1, 1
-C, IBM, 2, 2
-B, IBM, B, -, -
-B, IBM, S, -, -
-```
 ### Testing all combinations properly:
 
 #### UDP + Binary (with decoder)
@@ -345,35 +277,81 @@ B, IBM, S, -, -
 ./build/matching_engine --udp 1234
 
 # Terminal 2: Run tests
-./build/binary_client 1234 1
-./build/binary_client 1234 2
-./build/binary_client 1234 3
+./build/binary_client 1234 1 --csv
+./build/binary_client 1234 2 --csv
+./build/binary_client 1234 3 --csv
 ```
 
 You should see nice CSV output like:
-```
+
 A, IBM, 1, 1
 B, IBM, B, 100, 50
 T, IBM, 1, 1, 2, 2, 100, 50
-...
 
-#### TCP + CSV (with netcat)
+
+#### TCP + CSV (Scenario Mode)
 
 ```bash
 # Terminal 1: Start TCP server
 ./build/matching_engine --tcp 1234
 
+# Terminal 2: Run one scenario and exit
+./build/binary_client 1234 2 --tcp --csv  # Scenario 2 (Trade)
+./build/binary_client 1234 1 --tcp --csv  # Scenario 1
+./build/binary_client 1234 3 --tcp --csv  # Scenario 3 (Cancel)
+
 # Terminal 2: Send CSV messages
-echo "N,1,IBM,100,50,B,1" | nc 127.0.0.1 1234
-echo "N,2,IBM,100,50,S,2" | nc 127.0.0.1 1234
-echo "F" | nc 127.0.0.1 1234
+echo "N,1,IBM,100,50,B,1" | nc 127.0.0.1 1234 &
+echo "N,2,IBM,100,50,S,2" | nc 127.0.0.1 1234 &
+echo "F" | nc 127.0.0.1 1234 &
 
 ```
 
 #### TCP + Binary (Need a TCP Binary client)
 
 ```bash
-tbd
+# Terminal 1: Start server
+./build/matching_engine --tcp 1234
+
+# Terminal 2: Interactive client (stays connected)
+./build/binary_client 1234 --tcp
+
+# Then type commands:
+> buy IBM 100 50 1
+> sell IBM 100 50 2
+> flush
+> buy AAPL 150 100 3
+> cancel 3
+> quit
+```
+#### TCP + CSV Protocol (Interactive Mode)
+
+```bash
+# Terminal 1: Start server
+./build/matching_engine --tcp 1234
+
+# Terminal 2: Interactive client (stays connected)
+./build/binary_client 1234 --tcp --csv
+
+# Then type commands:
+> buy IBM 100 50 1
+> sell IBM 100 50 2
+> flush
+> help
+> quit
+```
+
+#### TCP + Binary Ouptut (Server outputs binary)
+```bash
+# Terminal 1: Start server with binary output
+./build/matching_engine --tcp --binary 1234
+
+# Terminal 2: Interactive client
+./build/binary_client 1234 --tcp --csv
+
+# Server will output binary (gibberish), but client sends CSV
+# To decode server output, pipe through decoder:
+./build/matching_engine --tcp --binary 2>/dev/null | ./build/binary_decoder
 ```
 
 ### Graceful Shutdown
