@@ -257,83 +257,150 @@ Examples:
   ./build/matching_engine 5000 --binary # Port 5000, binary output
 ```
 
-### Testing all combinations properly:
+# Testing Guide
 
-#### UDP + Binary (with decoder)
+This guide covers all testing combinations for the Matching Engine.
+
+## Building the Project
+
+### Using Make
+```bash
+make clean
+make
+```
+
+### Using CMake + Ninja
+```bash
+cmake -B build -G Ninja
+cmake --build build
+```
+
+All executables will be in the `build/` directory.
+
+---
+
+## Test Scenarios
+
+### 1. UDP + Binary Protocol (with decoder)
+
+Server outputs binary format, decoded for human readability.
 ```bash
 # Terminal 1: Start server with binary output piped to decoder
 ./build/matching_engine --udp --binary 2>/dev/null | ./build/binary_decoder
 
-# Terminal 2: Run tests
-./build/binary_client 1234 1
-./build/binary_client 1234 2
-./build/binary_client 1234 3
+# Terminal 2: Run test scenarios (fire-and-forget, exits immediately)
+./build/binary_client 1234 1  # Scenario 1: Simple orders
+./build/binary_client 1234 2  # Scenario 2: Trade
+./build/binary_client 1234 3  # Scenario 3: Cancel
 ```
 
-#### UDP + CSV (human readable)
+**Behavior:** UDP mode runs scenario and exits immediately.
 
+---
+
+### 2. UDP + CSV Protocol (human readable)
+
+Server outputs CSV format directly to console.
 ```bash
 # Terminal 1: Start server with CSV output
 ./build/matching_engine --udp 1234
 
-# Terminal 2: Run tests
+# Terminal 2: Run test scenarios
 ./build/binary_client 1234 1 --csv
 ./build/binary_client 1234 2 --csv
 ./build/binary_client 1234 3 --csv
 ```
 
-You should see nice CSV output like:
-
+**Expected output:**
+```
 A, IBM, 1, 1
 B, IBM, B, 100, 50
-T, IBM, 1, 1, 2, 2, 100, 50
+T, IBM, 1, 1, 1, 2, 100, 50
+...
+```
 
+**Behavior:** UDP mode runs scenario and exits immediately.
 
-#### TCP + CSV (Scenario Mode)
+---
 
+### 3. TCP + Binary Protocol (Scenario then Interactive)
+
+Run a predefined scenario, then enter interactive mode.
 ```bash
 # Terminal 1: Start TCP server
 ./build/matching_engine --tcp 1234
 
-# Terminal 2: Run one scenario and exit
-./build/binary_client 1234 2 --tcp --csv  # Scenario 2 (Trade)
-./build/binary_client 1234 1 --tcp --csv  # Scenario 1
-./build/binary_client 1234 3 --tcp --csv  # Scenario 3 (Cancel)
+# Terminal 2: Run scenario 2, then enter interactive mode
+./build/binary_client 1234 2 --tcp
 
-# Terminal 2: Send CSV messages
-echo "N,1,IBM,100,50,B,1" | nc 127.0.0.1 1234 &
-echo "N,2,IBM,100,50,S,2" | nc 127.0.0.1 1234 &
-echo "F" | nc 127.0.0.1 1234 &
-
+# After scenario completes, type more commands:
+> buy AAPL 150 100 3
+> sell AAPL 150 50 4
+> cancel 3
+> flush
+> quit
 ```
 
-#### TCP + Binary (Need a TCP Binary client)
+**Behavior:** Runs scenario, shows server responses in real-time, then enters interactive mode.
 
+---
+
+### 4. TCP + CSV Protocol (Scenario then Interactive)
+
+Run a predefined scenario with CSV protocol, then enter interactive mode.
+```bash
+# Terminal 1: Start TCP server
+./build/matching_engine --tcp 1234
+
+# Terminal 2: Run scenario 2 with CSV protocol
+./build/binary_client 1234 2 --tcp --csv
+
+# After scenario completes, type more commands:
+> buy IBM 100 50 5
+> sell IBM 100 50 6
+> flush
+> quit
+```
+
+**Behavior:** Runs scenario, shows server responses in real-time, then enters interactive mode.
+
+---
+
+### 5. TCP + Binary Protocol (Interactive only)
+
+Skip scenarios and go directly to interactive mode with binary protocol.
 ```bash
 # Terminal 1: Start server
 ./build/matching_engine --tcp 1234
 
-# Terminal 2: Interactive client (stays connected)
+# Terminal 2: Interactive client
 ./build/binary_client 1234 --tcp
 
-# Then type commands:
+# Type commands:
 > buy IBM 100 50 1
 > sell IBM 100 50 2
 > flush
 > buy AAPL 150 100 3
 > cancel 3
+> help
 > quit
 ```
-#### TCP + CSV Protocol (Interactive Mode)
 
+**Behavior:** Persistent TCP connection, interactive command entry, binary protocol.
+
+---
+
+### 6. TCP + CSV Protocol (Interactive only)
+
+Skip scenarios and go directly to interactive mode with CSV protocol.
 ```bash
 # Terminal 1: Start server
 ./build/matching_engine --tcp 1234
 
-# Terminal 2: Interactive client (stays connected)
+# Terminal 2: Interactive client with CSV
 ./build/binary_client 1234 --tcp --csv
 
-# Then type commands:
+# Type commands:
 > buy IBM 100 50 1
 > sell IBM 100 50 2
 > flush
@@ -341,18 +408,121 @@ echo "F" | nc 127.0.0.1 1234 &
 > quit
 ```
 
-#### TCP + Binary Ouptut (Server outputs binary)
-```bash
-# Terminal 1: Start server with binary output
-./build/matching_engine --tcp --binary 1234
+**Behavior:** Persistent TCP connection, interactive command entry, CSV protocol.
 
-# Terminal 2: Interactive client
+---
+
+### 7. TCP + Binary Output (Server outputs binary, client sends CSV)
+
+Server outputs binary format (decoded), client sends CSV format.
+```bash
+# Terminal 1: Start server with binary output and decoder
+./build/matching_engine --tcp --binary 2>/dev/null | ./build/binary_decoder
+
+# Terminal 2: Interactive client sends CSV
 ./build/binary_client 1234 --tcp --csv
 
-# Server will output binary (gibberish), but client sends CSV
-# To decode server output, pipe through decoder:
-./build/matching_engine --tcp --binary 2>/dev/null | ./build/binary_decoder
+# Type commands (watch decoded output in Terminal 1):
+> buy IBM 100 50 1
+> sell IBM 100 50 2
+> flush
+> quit
 ```
+
+**Behavior:** Mixed protocol - client sends CSV, server responds in binary (decoded for readability).
+
+---
+
+### 8. UDP + Binary Protocol (Default behavior)
+
+Default UDP mode with binary protocol (no flags needed).
+```bash
+# Terminal 1: Server in UDP mode with CSV output
+./build/matching_engine --udp 1234
+
+# Terminal 2: Client sends binary protocol (default)
+./build/binary_client 1234 2
+```
+
+**Behavior:** Fire-and-forget UDP with binary client protocol, CSV server output.
+
+---
+
+## Interactive Commands
+
+When in TCP interactive mode, you can use these commands:
+```
+buy <symbol> <price> <qty> <order_id>    # Place a buy order
+sell <symbol> <price> <qty> <order_id>   # Place a sell order
+cancel <order_id>                         # Cancel an order
+flush                                     # Clear all order books
+help                                      # Show available commands
+quit                                      # Exit (or use Ctrl+C)
+```
+
+**Example session:**
+```
+> buy IBM 100 50 1
+Sent: BUY IBM 50 @ 100 (order 1)
+A, IBM, 1, 1
+B, IBM, B, 100, 50
+
+> sell IBM 100 50 2
+Sent: SELL IBM 50 @ 100 (order 2)
+A, IBM, 1, 2
+T, IBM, 1, 1, 1, 2, 100, 50
+B, IBM, B, -, -
+B, IBM, S, -, -
+
+> quit
+Disconnected.
+```
+
+---
+
+## Quick Reference Table
+
+| Server Command | Client Command | Client Protocol | Server Output | Mode |
+|----------------|----------------|-----------------|---------------|------|
+| `--udp 1234` | `1234 2` | Binary | CSV | Fire & forget |
+| `--udp 1234` | `1234 2 --csv` | CSV | CSV | Fire & forget |
+| `--udp --binary` | `1234 2` | Binary | Binary | Fire & forget |
+| `--tcp 1234` | `1234 --tcp` | Binary | CSV | Interactive |
+| `--tcp 1234` | `1234 --tcp --csv` | CSV | CSV | Interactive |
+| `--tcp 1234` | `1234 2 --tcp` | Binary | CSV | Scenario + Interactive |
+| `--tcp 1234` | `1234 2 --tcp --csv` | CSV | CSV | Scenario + Interactive |
+| `--tcp --binary` | `1234 --tcp --csv` | CSV | Binary | Interactive |
+
+---
+
+## Test Scenarios Explained
+
+### Scenario 1: Simple Orders
+- Places a buy order at 100 for 50 shares
+- Places a sell order at 105 for 50 shares (no match)
+- Flushes the order book
+
+### Scenario 2: Trade Execution
+- Places a buy order at 100 for 50 shares
+- Places a sell order at 100 for 50 shares (match!)
+- Shows trade execution
+- Flushes the order book
+
+### Scenario 3: Order Cancellation
+- Places a buy order at 100 for 50 shares
+- Places a sell order at 105 for 50 shares
+- Cancels the buy order
+- Flushes the order book
+
+---
+
+## Notes
+
+- **UDP Mode**: Always exits after running scenario (fire-and-forget)
+- **TCP Mode**: Stays connected, enters interactive mode (even after scenario)
+- **Protocol Independence**: Client send protocol (`--csv`) is independent from server output protocol (`--binary`)
+- **Message Framing**: TCP mode uses 4-byte length-prefixed framing (handled automatically by `binary_client`)
+- **Real-time Responses**: TCP mode shows server responses immediately as they arrive
 
 ### Graceful Shutdown
 
