@@ -5,6 +5,7 @@
 #include "protocol/message_types.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,33 +14,97 @@ extern "C" {
 /**
  * OrderBook - Single symbol order book with price-time priority
  *
+ * NASA Power of 10 Compliant:
+ * - Rule 2: All loops have fixed upper bounds
+ * - Rule 3: No malloc/free after initialization (memory pools)
+ * - Rule 4: Functions ≤ 60 lines
+ * - Rule 5: Assertions for invariant checking
+ * - Rule 7: All parameters validated, return values checked
+ *
  * Updated for TCP multi-client support:
  * - Tracks client_id with each order for ownership
  * - Includes client_id in trade messages for routing
  * - Supports cancelling all orders for a disconnected client
  *
  * Design decisions:
- * - Fixed array of price levels (10000 slots) - Option B approach
+ * - Fixed array of price levels (10000 slots)
  * - Binary search to find price levels O(log N)
  * - Doubly-linked list for orders at each price (FIFO time priority)
- * - Bids sorted descending (best bid = highest price = highest index)
- * - Asks sorted ascending (best ask = lowest price = lowest index)
+ * - Bids sorted descending (best bid = highest price = index 0)
+ * - Asks sorted ascending (best ask = lowest price = index 0)
  * - Hash table for fast order cancellation lookup
- *
- * Price level strategy:
- * - Since price range is typically ~100 levels, fixed array is optimal
- * - Better cache locality than tree structures
- * - Simple binary search for insertion
+ * - Pre-allocated memory pools for zero runtime allocation
  */
+
+/* ============================================================================
+ * Configuration Constants
+ * ============================================================================ */
 
 /* Maximum price levels we can handle */
 #define MAX_PRICE_LEVELS 10000
 
-/* Maximum orders per price level (for pre-allocation estimate) */
+/* Maximum orders per price level (for capacity planning) */
 #define TYPICAL_ORDERS_PER_LEVEL 20
 
 /* Maximum output messages from a single operation */
 #define MAX_OUTPUT_MESSAGES 1024
+
+/* Hash table size for order lookup */
+#define ORDER_MAP_SIZE 4096
+
+/* Maximum iterations for matching loops (Rule 2 compliance) */
+#define MAX_MATCH_ITERATIONS (MAX_PRICE_LEVELS * TYPICAL_ORDERS_PER_LEVEL)
+#define MAX_ORDERS_AT_PRICE_LEVEL (TYPICAL_ORDERS_PER_LEVEL * 10)
+#define MAX_HASH_CHAIN_LENGTH 100
+
+/* ============================================================================
+ * Memory Pool Structures (Rule 3 Compliance - No malloc after init)
+ * ============================================================================ */
+
+/**
+ * Pre-allocated memory pool for orders
+ * All orders allocated from this pool at runtime (no malloc)
+ */
+#define MAX_ORDERS_IN_POOL 10000
+
+typedef struct {
+    order_t orders[MAX_ORDERS_IN_POOL];           // Pre-allocated order storage
+    uint32_t free_list[MAX_ORDERS_IN_POOL];       // Stack of free indices
+    int free_count;                                // Number of available slots
+    
+    // Statistics (for monitoring)
+    uint32_t total_allocations;
+    uint32_t peak_usage;
+    uint32_t allocation_failures;
+} order_pool_t;
+
+/**
+ * Pre-allocated memory pool for hash table entries
+ */
+#define MAX_HASH_ENTRIES_IN_POOL 10000
+
+typedef struct {
+    order_map_entry_t entries[MAX_HASH_ENTRIES_IN_POOL];
+    uint32_t free_list[MAX_HASH_ENTRIES_IN_POOL];
+    int free_count;
+    
+    // Statistics
+    uint32_t total_allocations;
+    uint32_t peak_usage;
+    uint32_t allocation_failures;
+} hash_entry_pool_t;
+
+/**
+ * Combined memory pools for an order book
+ */
+typedef struct {
+    order_pool_t order_pool;
+    hash_entry_pool_t hash_entry_pool;
+} memory_pools_t;
+
+/* ============================================================================
+ * Core Data Structures
+ * ============================================================================ */
 
 /**
  * Price level - holds orders at a specific price
@@ -62,7 +127,7 @@ typedef struct {
 } order_location_t;
 
 /**
- * Hash table entry for order lookup (replaces std::unordered_map)
+ * Hash table entry for order lookup
  */
 typedef struct order_map_entry {
     uint64_t key;             /* (user_id << 32) | user_order_id */
@@ -73,7 +138,6 @@ typedef struct order_map_entry {
 /**
  * Simple hash table for order lookup
  */
-#define ORDER_MAP_SIZE 4096
 typedef struct {
     order_map_entry_t* buckets[ORDER_MAP_SIZE];
 } order_map_t;
@@ -104,10 +168,13 @@ typedef struct {
     bool bid_side_ever_active;
     bool ask_side_ever_active;
 
+    /* Memory pools - no more malloc/free! */
+    memory_pools_t* pools;
+
 } order_book_t;
 
 /**
- * Output buffer for messages (replaces std::vector<OutputMessage>)
+ * Output buffer for messages
  */
 typedef struct {
     output_msg_t messages[MAX_OUTPUT_MESSAGES];
@@ -115,16 +182,44 @@ typedef struct {
 } output_buffer_t;
 
 /* ============================================================================
- * Public API
+ * Memory Pool API
+ * ============================================================================ */
+
+/**
+ * Initialize all memory pools (called once at startup)
+ */
+void memory_pools_init(memory_pools_t* pools);
+
+/**
+ * Get memory pool statistics
+ */
+typedef struct {
+    uint32_t order_allocations;
+    uint32_t order_peak_usage;
+    uint32_t order_failures;
+    uint32_t hash_allocations;
+    uint32_t hash_peak_usage;
+    uint32_t hash_failures;
+    size_t total_memory_bytes;
+} memory_pool_stats_t;
+
+void memory_pools_get_stats(const memory_pools_t* pools, memory_pool_stats_t* stats);
+
+/* ============================================================================
+ * Order Book Public API
  * ============================================================================ */
 
 /**
  * Initialize order book for a symbol
+ * 
+ * @param book Order book to initialize
+ * @param symbol Symbol name (e.g., "AAPL")
+ * @param pools Pre-initialized memory pools
  */
-void order_book_init(order_book_t* book, const char* symbol);
+void order_book_init(order_book_t* book, const char* symbol, memory_pools_t* pools);
 
 /**
- * Destroy order book and free all memory
+ * Destroy order book and return all memory to pools
  */
 void order_book_destroy(order_book_t* book);
 
@@ -179,7 +274,7 @@ uint32_t order_book_get_best_bid_quantity(const order_book_t* book);
 uint32_t order_book_get_best_ask_quantity(const order_book_t* book);
 
 /* ============================================================================
- * Helper Functions (Internal)
+ * Helper Functions (Inline)
  * ============================================================================ */
 
 /**
