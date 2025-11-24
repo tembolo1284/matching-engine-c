@@ -54,11 +54,34 @@ typedef struct {
 
 static client_context_t* g_ctx = NULL;
 
+/* stdout print lock to prevent interleaving */
+static pthread_mutex_t g_print_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+static void safe_printf(const char *fmt, ...) {
+    va_list args;
+    pthread_mutex_lock(&g_print_mtx);
+    va_start(args, fmt);
+    vprintf(fmt, args);
+    va_end(args);
+    fflush(stdout);
+    pthread_mutex_unlock(&g_print_mtx);
+}
+
+static void safe_fputs_line(const char *s) {
+    pthread_mutex_lock(&g_print_mtx);
+    fputs(s, stdout);
+    /* ensure newline */
+    size_t n = strlen(s);
+    if (n == 0 || s[n-1] != '\n') fputc('\n', stdout);
+    fflush(stdout);
+    pthread_mutex_unlock(&g_print_mtx);
+}
+
 /* Signal handler for graceful shutdown */
 void signal_handler(int sig) {
     (void)sig;
     if (g_ctx) {
-        printf("\n\nShutting down gracefully...\n");
+        safe_printf("\n\nShutting down gracefully...\n");
         g_ctx->running = false;
     }
 }
@@ -134,7 +157,7 @@ static void send_new_order_csv(client_context_t* ctx,
     char msg[MAX_MSG_SIZE];
     int len = snprintf(msg, sizeof(msg), "N,%u,%s,%u,%u,%c,%u\n",
                       user_id, symbol, price, qty, side, order_id);
-    send_data(ctx, msg, len);
+    send_data(ctx, msg, (size_t)len);
 }
 
 /* Send cancel - Binary */
@@ -153,7 +176,7 @@ static void send_cancel_csv(client_context_t* ctx,
                              uint32_t user_id, uint32_t order_id) {
     char msg[MAX_MSG_SIZE];
     int len = snprintf(msg, sizeof(msg), "C,%u,%u\n", user_id, order_id);
-    send_data(ctx, msg, len);
+    send_data(ctx, msg, (size_t)len);
 }
 
 /* Send flush - Binary */
@@ -168,7 +191,7 @@ static void send_flush_binary(client_context_t* ctx) {
 static void send_flush_csv(client_context_t* ctx) {
     char msg[MAX_MSG_SIZE];
     int len = snprintf(msg, sizeof(msg), "F\n");
-    send_data(ctx, msg, len);
+    send_data(ctx, msg, (size_t)len);
 }
 
 /* Wrapper functions */
@@ -207,10 +230,11 @@ void* response_reader_thread(void* arg) {
     size_t buffer_pos = 0;
 
     while (ctx->running) {
-        ssize_t n = recv(ctx->sock, buffer + buffer_pos, sizeof(buffer) - buffer_pos - 1, 0);
+        ssize_t n = recv(ctx->sock, buffer + buffer_pos,
+                         sizeof(buffer) - buffer_pos - 1, 0);
 
         if (n > 0) {
-            buffer_pos += n;
+            buffer_pos += (size_t)n;
 
             // Extract complete framed messages
             while (buffer_pos >= FRAME_HEADER_SIZE) {
@@ -223,11 +247,22 @@ void* response_reader_thread(void* arg) {
                 }
 
                 char* msg_start = buffer + FRAME_HEADER_SIZE;
-                char saved_char = msg_start[msg_len];
-                msg_start[msg_len] = '\0';
-                printf("%s", msg_start);
+
+                // Make a safe null-terminated copy for printing
+                char tmp[MAX_MSG_SIZE + 1];
+                size_t copy_len = msg_len;
+                if (copy_len > MAX_MSG_SIZE) copy_len = MAX_MSG_SIZE;
+                memcpy(tmp, msg_start, copy_len);
+                tmp[copy_len] = '\0';
+
+                // Print as a line (prefix helps separate from prompts)
+                pthread_mutex_lock(&g_print_mtx);
+                printf("[SERVER] %s", tmp);
+                if (copy_len == 0 || tmp[copy_len-1] != '\n') {
+                    printf("\n");
+                }
                 fflush(stdout);
-                msg_start[msg_len] = saved_char;
+                pthread_mutex_unlock(&g_print_mtx);
 
                 size_t remaining = buffer_pos - (FRAME_HEADER_SIZE + msg_len);
                 if (remaining > 0) {
@@ -236,10 +271,11 @@ void* response_reader_thread(void* arg) {
                 buffer_pos = remaining;
             }
         } else if (n == 0) {
-            printf("\n[Server closed connection]\n");
+            safe_printf("\n[Server closed connection]\n");
             ctx->running = false;
             break;
         } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
+            safe_printf("\n[recv error: %s]\n", strerror(errno));
             ctx->running = false;
             break;
         }
@@ -249,14 +285,13 @@ void* response_reader_thread(void* arg) {
 }
 
 void print_help() {
-    printf("\nCommands:\n");
-    printf("  buy <symbol> <price> <qty> <order_id>   - Send buy order\n");
-    printf("  sell <symbol> <price> <qty> <order_id>  - Send sell order\n");
-    printf("  cancel <order_id>                        - Cancel order\n");
-    printf("  flush                                     - Flush order book\n");
-    printf("  help                                      - Show this help\n");
-    printf("  quit                                      - Exit\n");
-    printf("\n");
+    safe_printf("\nCommands:\n");
+    safe_printf("  buy <symbol> <price> <qty> <order_id>   - Send buy order\n");
+    safe_printf("  sell <symbol> <price> <qty> <order_id>  - Send sell order\n");
+    safe_printf("  cancel <order_id>                      - Cancel order\n");
+    safe_printf("  flush                                  - Flush order book\n");
+    safe_printf("  help                                   - Show this help\n");
+    safe_printf("  quit                                   - Exit\n\n");
 }
 
 /* Run interactive mode (TCP only) */
@@ -265,8 +300,10 @@ void run_interactive_mode(client_context_t* ctx) {
     uint32_t user_id = 1;
 
     while (ctx->running) {
+        pthread_mutex_lock(&g_print_mtx);
         printf("> ");
         fflush(stdout);
+        pthread_mutex_unlock(&g_print_mtx);
 
         if (!fgets(line, sizeof(line), stdin)) {
             break;
@@ -276,35 +313,35 @@ void run_interactive_mode(client_context_t* ctx) {
         uint32_t price, qty, order_id;
 
         if (strncmp(line, "buy ", 4) == 0) {
-            if (sscanf(line, "buy %s %u %u %u", symbol, &price, &qty, &order_id) == 4) {
+            if (sscanf(line, "buy %15s %u %u %u", symbol, &price, &qty, &order_id) == 4) {
                 send_new_order(ctx, user_id, symbol, price, qty, 'B', order_id);
-                printf("Sent: BUY %s %u @ %u (order %u)\n", symbol, qty, price, order_id);
+                safe_printf("Sent: BUY %s %u @ %u (order %u)\n", symbol, qty, price, order_id);
             } else {
-                printf("Usage: buy <symbol> <price> <qty> <order_id>\n");
+                safe_printf("Usage: buy <symbol> <price> <qty> <order_id>\n");
             }
         } else if (strncmp(line, "sell ", 5) == 0) {
-            if (sscanf(line, "sell %s %u %u %u", symbol, &price, &qty, &order_id) == 4) {
+            if (sscanf(line, "sell %15s %u %u %u", symbol, &price, &qty, &order_id) == 4) {
                 send_new_order(ctx, user_id, symbol, price, qty, 'S', order_id);
-                printf("Sent: SELL %s %u @ %u (order %u)\n", symbol, qty, price, order_id);
+                safe_printf("Sent: SELL %s %u @ %u (order %u)\n", symbol, qty, price, order_id);
             } else {
-                printf("Usage: sell <symbol> <price> <qty> <order_id>\n");
+                safe_printf("Usage: sell <symbol> <price> <qty> <order_id>\n");
             }
         } else if (strncmp(line, "cancel ", 7) == 0) {
             if (sscanf(line, "cancel %u", &order_id) == 1) {
                 send_cancel(ctx, user_id, order_id);
-                printf("Sent: CANCEL order %u\n", order_id);
+                safe_printf("Sent: CANCEL order %u\n", order_id);
             } else {
-                printf("Usage: cancel <order_id>\n");
+                safe_printf("Usage: cancel <order_id>\n");
             }
         } else if (strncmp(line, "flush", 5) == 0) {
             send_flush(ctx);
-            printf("Sent: FLUSH\n");
+            safe_printf("Sent: FLUSH\n");
         } else if (strncmp(line, "help", 4) == 0) {
             print_help();
         } else if (strncmp(line, "quit", 4) == 0) {
             break;
         } else if (line[0] != '\n') {
-            printf("Unknown command. Type 'help' for commands.\n");
+            safe_printf("Unknown command. Type 'help' for commands.\n");
         }
     }
 }
@@ -314,53 +351,53 @@ void run_scenario(client_context_t* ctx, int scenario) {
     struct timespec ts = {0, 100000000L};  // 100ms
     uint32_t user_id = 1;
 
-    printf("\n=== Running Scenario %d ===\n", scenario);
+    safe_printf("\n=== Running Scenario %d ===\n", scenario);
 
     switch (scenario) {
         case 1:
-            printf("Scenario 1: Simple Orders\n");
+            safe_printf("Scenario 1: Simple Orders\n");
             send_new_order(ctx, user_id, "IBM", 100, 50, 'B', 1);
-            printf("Sent: NEW IBM B 50 @ 100 (order 1)\n");
+            safe_printf("Sent: NEW IBM B 50 @ 100 (order 1)\n");
             nanosleep(&ts, NULL);
             send_new_order(ctx, user_id, "IBM", 105, 50, 'S', 2);
-            printf("Sent: NEW IBM S 50 @ 105 (order 2)\n");
+            safe_printf("Sent: NEW IBM S 50 @ 105 (order 2)\n");
             nanosleep(&ts, NULL);
             send_flush(ctx);
-            printf("Sent: FLUSH\n");
+            safe_printf("Sent: FLUSH\n");
             break;
 
         case 2:
-            printf("Scenario 2: Trade\n");
+            safe_printf("Scenario 2: Trade\n");
             send_new_order(ctx, user_id, "IBM", 100, 50, 'B', 1);
-            printf("Sent: NEW IBM B 50 @ 100 (order 1)\n");
+            safe_printf("Sent: NEW IBM B 50 @ 100 (order 1)\n");
             nanosleep(&ts, NULL);
             send_new_order(ctx, user_id, "IBM", 100, 50, 'S', 2);
-            printf("Sent: NEW IBM S 50 @ 100 (order 2)\n");
+            safe_printf("Sent: NEW IBM S 50 @ 100 (order 2)\n");
             nanosleep(&ts, NULL);
             send_flush(ctx);
-            printf("Sent: FLUSH\n");
+            safe_printf("Sent: FLUSH\n");
             break;
 
         case 3:
-            printf("Scenario 3: Cancel\n");
+            safe_printf("Scenario 3: Cancel\n");
             send_new_order(ctx, user_id, "IBM", 100, 50, 'B', 1);
-            printf("Sent: NEW IBM B 50 @ 100 (order 1)\n");
+            safe_printf("Sent: NEW IBM B 50 @ 100 (order 1)\n");
             nanosleep(&ts, NULL);
             send_new_order(ctx, user_id, "IBM", 105, 50, 'S', 2);
-            printf("Sent: NEW IBM S 50 @ 105 (order 2)\n");
+            safe_printf("Sent: NEW IBM S 50 @ 105 (order 2)\n");
             nanosleep(&ts, NULL);
             send_cancel(ctx, user_id, 1);
-            printf("Sent: CANCEL order 1\n");
+            safe_printf("Sent: CANCEL order 1\n");
             nanosleep(&ts, NULL);
             send_flush(ctx);
-            printf("Sent: FLUSH\n");
+            safe_printf("Sent: FLUSH\n");
             break;
 
         default:
-            printf("Unknown scenario: %d\n", scenario);
+            safe_printf("Unknown scenario: %d\n", scenario);
     }
 
-    printf("=== Scenario Complete ===\n\n");
+    safe_printf("=== Scenario Complete ===\n\n");
 
     // Give server time to respond
     nanosleep(&ts, NULL);
@@ -370,8 +407,9 @@ void run_scenario(client_context_t* ctx, int scenario) {
 void print_usage(const char* progname) {
     printf("Usage: %s <port> [scenario] [options]\n", progname);
     printf("\nOptions:\n");
-    printf("  --tcp         Use TCP (default: UDP)\n");
-    printf("  --csv         Use CSV protocol (default: binary)\n");
+    printf("  --tcp           Use TCP (default: UDP)\n");
+    printf("  --csv           Use CSV protocol (default: binary)\n");
+    printf("  --host <ip>     Server IP/hostname (default: 127.0.0.1)\n");
     printf("\nBehavior:\n");
     printf("  UDP:              Run scenario and exit (fire-and-forget)\n");
     printf("  TCP + scenario:   Run scenario, then enter interactive mode\n");
@@ -381,9 +419,10 @@ void print_usage(const char* progname) {
     printf("  2 - Trade test\n");
     printf("  3 - Cancel test\n");
     printf("\nExamples:\n");
-    printf("  %s 1234 --tcp              # TCP interactive\n", progname);
-    printf("  %s 1234 2 --tcp --csv      # TCP run scenario 2, then interactive\n", progname);
-    printf("  %s 1234 1                  # UDP scenario 1 and exit\n", progname);
+    printf("  %s 1234 --tcp                   # TCP interactive\n", progname);
+    printf("  %s 1234 2 --tcp --csv           # TCP scenario 2, CSV protocol\n", progname);
+    printf("  %s 1234 1                       # UDP scenario 1, binary protocol\n", progname);
+    printf("  %s 1234 1 --host 192.168.1.50   # UDP to remote server\n", progname);
 }
 
 int main(int argc, char* argv[]) {
@@ -396,6 +435,7 @@ int main(int argc, char* argv[]) {
     int scenario = 0;
     bool use_tcp = false;
     bool use_csv = false;
+    const char *host = "127.0.0.1";
 
     // Parse arguments
     for (int i = 2; i < argc; i++) {
@@ -403,6 +443,8 @@ int main(int argc, char* argv[]) {
             use_tcp = true;
         } else if (strcmp(argv[i], "--csv") == 0) {
             use_csv = true;
+        } else if (strcmp(argv[i], "--host") == 0 && i + 1 < argc) {
+            host = argv[++i];
         } else if (scenario == 0 && atoi(argv[i]) > 0) {
             scenario = atoi(argv[i]);
         }
@@ -420,8 +462,18 @@ int main(int argc, char* argv[]) {
     struct sockaddr_in server;
     memset(&server, 0, sizeof(server));
     server.sin_family = AF_INET;
-    server.sin_port = htons(port);
-    server.sin_addr.s_addr = inet_addr("127.0.0.1");
+    server.sin_port = htons((uint16_t)port);
+
+    if (inet_pton(AF_INET, host, &server.sin_addr) != 1) {
+        // try DNS
+        struct in_addr addr;
+        if (inet_aton(host, &addr) == 0) {
+            fprintf(stderr, "Invalid host: %s\n", host);
+            close(sock);
+            return 1;
+        }
+        server.sin_addr = addr;
+    }
 
     // Connect if TCP
     if (use_tcp) {
@@ -432,10 +484,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    printf("=== Trading Client ===\n");
-    printf("Mode:     %s\n", use_tcp ? "TCP" : "UDP");
-    printf("Protocol: %s\n", use_csv ? "CSV" : "Binary");
-    printf("Server:   127.0.0.1:%d\n", port);
+    safe_printf("=== Trading Client ===\n");
+    safe_printf("Mode:     %s\n", use_tcp ? "TCP" : "UDP");
+    safe_printf("Protocol: %s\n", use_csv ? "CSV" : "Binary");
+    safe_printf("Server:   %s:%d\n", host, port);
 
     // Setup context
     client_context_t ctx = {
@@ -464,16 +516,17 @@ int main(int argc, char* argv[]) {
     // UDP: Exit immediately after scenario
     if (use_tcp) {
         if (scenario == 0) {
-            printf("\n");
+            safe_printf("\n");
         }
         print_help();
         run_interactive_mode(&ctx);
-        
+
         ctx.running = false;
         pthread_join(reader_thread, NULL);
     }
 
     close(sock);
-    printf("\nDisconnected.\n");
+    safe_printf("\nDisconnected.\n");
     return 0;
 }
+
