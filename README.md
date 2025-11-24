@@ -1,1100 +1,250 @@
 # Matching Engine - C Implementation
 
-A high-performance, multi-threaded order matching engine ported from C++ to pure C11. Implements price-time priority matching across multiple symbols with UDP input, dual protocol support (CSV/Binary), and real-time stdout output.
+A **production-grade**, high-performance order matching engine written in pure C11. Features zero-allocation hot path using memory pools, TCP multi-client support, and dual protocol support (CSV/Binary).
 
-## Table of Contents
-- [Overview](#overview)
-- [Key Features](#key-features)
-- [Architecture](#architecture)
-- [Protocol Support](#protocol-support)
-- [C Port Details](#c-port-details)
-- [Building](#building)
-- [Running](#running)
-- [Testing](#testing)
-- [Binary Protocol](#binary-protocol)
-- [Project Structure](#project-structure)
-- [Design Decisions](#design-decisions)
-- [Performance Characteristics](#performance-characteristics)
+## 🎯 Key Features
 
----
+### **Zero-Allocation Memory Pools** 
+- **No malloc/free in hot path** - All memory pre-allocated at startup
+- Order pool: 10,000 orders
+- Hash entry pools: 10,000 entries
+- O(1) allocation/deallocation
+- Production-ready memory management
 
-## Overview
-
-This is a **pure C port** of a C++ order matching engine originally designed for high-frequency trading environments. The system processes orders via UDP, maintains separate order books for multiple symbols, and publishes real-time market data to stdout. Now features **dual protocol support** with automatic format detection - accepts both CSV and binary protocols simultaneously for maximum flexibility.
-
-## Key Features
-
-### Core Functionality
+### **Production Architecture**
 - **Price-time priority matching** - Standard exchange algorithm
 - **Multi-symbol support** - Independent order books per symbol
-- **Market & limit orders** - Full and partial fill support
-- **Order cancellation** - O(1) lookup via hash table
-- **Flush command** - Clear all orders with cancel acknowledgements
-- **Top-of-book tracking** - Real-time best bid/ask updates
-- **Graceful shutdown** - Queue draining on exit
+- **TCP multi-client** - Real exchange-like behavior with client isolation
+- **Lock-free queues** - Zero-contention threading model
+- **Dual protocol** - CSV (human-readable) + Binary (high-performance)
+- **Auto protocol detection** - Seamlessly handles both formats
 
-### Protocol Features
-- **Dual protocol support** - CSV and binary protocols
-- **Auto-detection** - Automatically detects message format
-- **Mixed mode** - Accept both formats simultaneously
-- **Backward compatible** - All existing CSV tests still work
-- **Binary efficiency** - 50-70% smaller messages, 5-10x faster parsing
+### **High Performance**
+- 1-5M orders/sec matching throughput
+- 10-50μs end-to-end latency
+- Binary protocol: 50-70% smaller messages, 5-10x faster parsing
+- Bounded loops and defensive programming throughout
 
-### Performance Optimizations
-- **Lock-free queues** - SPSC queues with cache-line padding
-- **Fixed-array price levels** - Binary search O(log N)
-- **Batch processing** - 32 messages per iteration
-- **UDP burst handling** - 10MB receive buffer
-- **Zero-copy** - Minimal allocations in hot path
-- **Adaptive sleep** - 1μs active, 100μs idle
-- **Binary protocol** - Faster parsing, smaller packets
+## 📚 Documentation
 
-### Threading Model
-```
-Thread 1 (UDP Receiver) → Lock-Free Queue → Thread 2 (Processor) → Lock-Free Queue → Thread 3 (Output)
-```
+| Document | Description |
+|----------|-------------|
+| **[Quick Start →](documentation/QUICK_START.md)** | Get running in 5 minutes |
+| **[Architecture →](documentation/ARCHITECTURE.md)** | Memory pools, threading model, data structures |
+| **[Build Guide →](documentation/BUILD.md)** | Build system, CMake, platform notes |
+| **[Testing →](documentation/TESTING.md)** | Unit tests, integration tests, scenarios |
+| **[Protocols →](documentation/PROTOCOLS.md)** | CSV and Binary protocol specifications |
 
----
+## ⚡ Quick Start
 
-## Architecture
+### Build and Run
 
-### Data Flow
-```
-UDP Packets (port 1234)
-    ↓
-[ Thread 1: UDP Receiver ]
-    ↓ (auto-detect format)
-    ├─→ CSV Parser → input_msg_t
-    └─→ Binary Parser → input_msg_t
-    ↓
-[ Lock-Free Input Queue - 16384 capacity ]
-    ↓
-[ Thread 2: Processor ]
-    ↓ (match orders → output_msg_t[])
-[ Lock-Free Output Queue - 16384 capacity ]
-    ↓
-[ Thread 3: Output Publisher ]
-    ↓ (format CSV or Binary)
-stdout
-```
-
-### Core Components
-
-**Data Structures:**
-- `message_types.h` - Tagged unions for messages (replaces `std::variant`)
-- `order.h` - Order struct with nanosecond timestamps
-- `order_book.h` - Fixed-array price levels with binary search
-- `matching_engine.h` - Multi-symbol orchestrator
-
-**Protocol Handling:**
-- `message_parser.h` - CSV input parser
-- `message_formatter.h` - CSV output formatter
-- `binary_message_parser.h` - Binary input parser
-- `binary_message_formatter.h` - Binary output formatter
-- `binary_protocol.h` - Binary message definitions
-
-**Threading:**
-- `udp_receiver.h` - Thread 1: POSIX UDP sockets with format detection
-- `processor.h` - Thread 2: Batch processing with matching engine
-- `output_publisher.h` - Thread 3: Format and publish to stdout
-- `lockfree_queue.h` - SPSC queue implementation (C macro templates)
-
----
-
-## Protocol Support
-
-### CSV Protocol (Human-Readable)
-
-**Input Format:**
-```csv
-N, userId, symbol, price, qty, side, userOrderId  # New order
-C, userId, userOrderId                             # Cancel
-F                                                  # Flush
-```
-
-**Output Format:**
-```csv
-A, symbol, userId, userOrderId                     # Acknowledgement
-C, symbol, userId, userOrderId                     # Cancel ack
-T, symbol, buyUser, buyOrder, sellUser, sellOrder, price, qty  # Trade
-B, symbol, side, price, qty                        # Top of book
-B, symbol, side, -, -                              # TOB eliminated
-```
-
-### Binary Protocol (High-Performance)
-
-**Message Structure:**
-- All messages start with magic byte `0x4D` ('M')
-- Followed by message type byte ('N', 'C', 'F', 'A', 'X', 'T', 'B')
-- Fixed-size structs with network byte order (big endian)
-- 8-byte symbol field (null-padded)
-
-**Message Sizes:**
-```
-New Order:       30 bytes  (vs ~40-50 for CSV)
-Cancel:          11 bytes  (vs ~20-30 for CSV)
-Flush:            2 bytes  (vs ~2 for CSV)
-Acknowledgement: 19 bytes  (vs ~20-30 for CSV)
-Trade:           31 bytes  (vs ~50-70 for CSV)
-Top of Book:     20 bytes  (vs ~30-40 for CSV)
-```
-
-**Advantages:**
-- 50-70% smaller packet size
-- 5-10x faster parsing (memcpy vs string parsing)
-- Deterministic performance (no variable-length fields)
-- Network-efficient for high-frequency trading
-
----
-
-## C Port Details
-
-### How We Replaced C++ Features
-
-| C++ Feature | C Replacement | Implementation |
-|-------------|---------------|----------------|
-| `std::variant` | Tagged unions | `typedef struct { type_t type; union { ... } data; }` |
-| `std::optional` | Bool + output param | `bool func(..., output_t* out)` |
-| `std::string` | Fixed char arrays | `char symbol[MAX_SYMBOL_LENGTH]` |
-| `std::map` | Fixed array + binary search | `price_level_t levels[10000]` |
-| `std::list` | Manual doubly-linked list | `order_t* next; order_t* prev;` |
-| `std::unordered_map` | Hash table with chaining | Custom implementation |
-| `std::vector` | Fixed array + counter | `output_msg_t messages[1024]; int count;` |
-| `std::thread` | pthreads | `pthread_create()`, `pthread_join()` |
-| `std::atomic` | C11 `<stdatomic.h>` | `atomic_bool`, `atomic_uint_fast64_t` |
-| `boost::asio` | POSIX sockets | `socket()`, `recvfrom()`, `bind()` |
-| `std::chrono` | `<time.h>` | `clock_gettime(CLOCK_REALTIME)` |
-| Templates | Macros | `DECLARE_LOCKFREE_QUEUE(type, name)` |
-
----
-
-## Building
-
-### Prerequisites
 ```bash
-# Ubuntu/Debian
-sudo apt-get install build-essential
+# Build everything
+./build.sh build
 
-# macOS
-xcode-select --install
-
-# Required: GCC with C11 support
-gcc --version  # Should be 4.9+
-```
-
-### Quick Build
-```bash
-# Clean build (includes binary tools)
-make clean
-make
-
-# Build only main engine
-make matching_engine
-
-# Build only binary tools
-make binary-tools
-
-# Debug build (with symbols)
-make debug
-
-# View build configuration
-make info
-```
-
-### Build Output
-```
-Compiling src/message_parser.c...
-Compiling src/message_formatter.c...
-Compiling src/binary_message_parser.c...
-Compiling src/binary_message_formatter.c...
-Compiling src/order_book.c...
-Compiling src/matching_engine.c...
-Compiling src/udp_receiver.c...
-Compiling src/processor.c...
-Compiling src/output_publisher.c...
-Compiling src/main.c...
-Linking build/matching_engine...
-Building binary client...
-Building binary decoder...
-
-✓ Build complete!
-  Main executable: build/matching_engine
-  Binary tools:    build/binary_client, build/binary_decoder
-```
-
----
-
-## Running
-
-### Basic Usage
-```bash
-# Run with default port (1234), CSV output
-./build/matching_engine
-
-# Run with binary output
-./build/matching_engine --binary
-
-# Run with binary output and live decoder
-make run-binary-decoded
-
-# Run with custom port
-./build/matching_engine 5000
-
-# Run with custom port and binary output
-./build/matching_engine 5000 --binary
-```
-
-### Command Line Options
-```
-Usage: ./build/matching_engine [port] [--binary]
-  port      : UDP port to listen on (default: 1234)
-  --binary  : Use binary protocol for output (default: CSV)
-
-Examples:
-  ./build/matching_engine              # Port 1234, CSV output
-  ./build/matching_engine 5000         # Port 5000, CSV output
-  ./build/matching_engine --binary     # Port 1234, binary output
-  ./build/matching_engine 5000 --binary # Port 5000, binary output
-```
-
-# Testing Guide
-
-This guide covers all testing combinations for the Matching Engine.
-
-## Building the Project
-
-### Using Make
-```bash
-make clean
-make
-```
-
-### Using CMake + Ninja
-```bash
-cmake -B build -G Ninja
-cmake --build build
-```
-
-All executables will be in the `build/` directory.
-
----
-
-## Test Scenarios
-
-### 1. UDP + Binary Protocol (with decoder)
-
-Server outputs binary format, decoded for human readability.
-```bash
-# Terminal 1: Start server with binary output piped to decoder
-./build/matching_engine --udp --binary 2>/dev/null | ./build/binary_decoder
-
-# Terminal 2: Run test scenarios (fire-and-forget, exits immediately)
-./build/binary_client 1234 1  # Scenario 1: Simple orders
-./build/binary_client 1234 2  # Scenario 2: Trade
-./build/binary_client 1234 3  # Scenario 3: Cancel
-```
-
-**Behavior:** UDP mode runs scenario and exits immediately.
-
----
-
-### 2. UDP + CSV Protocol (human readable)
-
-Server outputs CSV format directly to console.
-```bash
-# Terminal 1: Start server with CSV output
-./build/matching_engine --udp 1234
-
-# Terminal 2: Run test scenarios
-./build/binary_client 1234 1 --csv
-./build/binary_client 1234 2 --csv
-./build/binary_client 1234 3 --csv
-```
-
-**Expected output:**
-```
-A, IBM, 1, 1
-B, IBM, B, 100, 50
-T, IBM, 1, 1, 1, 2, 100, 50
-...
-```
-
-**Behavior:** UDP mode runs scenario and exits immediately.
-
----
-
-### 3. TCP + Binary Protocol (Scenario then Interactive)
-
-Run a predefined scenario, then enter interactive mode.
-```bash
-# Terminal 1: Start TCP server
-./build/matching_engine --tcp 1234
-
-# Terminal 2: Run scenario 2, then enter interactive mode
-./build/binary_client 1234 2 --tcp
-
-# After scenario completes, type more commands:
-> buy AAPL 150 100 3
-> sell AAPL 150 50 4
-> cancel 3
-> flush
-> quit
-```
-
-**Behavior:** Runs scenario, shows server responses in real-time, then enters interactive mode.
-
----
-
-### 4. TCP + CSV Protocol (Scenario then Interactive)
-
-Run a predefined scenario with CSV protocol, then enter interactive mode.
-```bash
-# Terminal 1: Start TCP server
-./build/matching_engine --tcp 1234
-
-# Terminal 2: Run scenario 2 with CSV protocol
-./build/binary_client 1234 2 --tcp --csv
-
-# After scenario completes, type more commands:
-> buy IBM 100 50 5
-> sell IBM 100 50 6
-> flush
-> quit
-```
-
-**Behavior:** Runs scenario, shows server responses in real-time, then enters interactive mode.
-
----
-
-### 5. TCP + Binary Protocol (Interactive only)
-
-Skip scenarios and go directly to interactive mode with binary protocol.
-```bash
-# Terminal 1: Start server
-./build/matching_engine --tcp 1234
-
-# Terminal 2: Interactive client
-./build/binary_client 1234 --tcp
-
-# Type commands:
-> buy IBM 100 50 1
-> sell IBM 100 50 2
-> flush
-> buy AAPL 150 100 3
-> cancel 3
-> help
-> quit
-```
-
-**Behavior:** Persistent TCP connection, interactive command entry, binary protocol.
-
----
-
-### 6. TCP + CSV Protocol (Interactive only)
-
-Skip scenarios and go directly to interactive mode with CSV protocol.
-```bash
-# Terminal 1: Start server
-./build/matching_engine --tcp 1234
-
-# Terminal 2: Interactive client with CSV
-./build/binary_client 1234 --tcp --csv
-
-# Type commands:
-> buy IBM 100 50 1
-> sell IBM 100 50 2
-> flush
-> help
-> quit
-```
-
-**Behavior:** Persistent TCP connection, interactive command entry, CSV protocol.
-
----
-
-### 7. TCP + Binary Output (Server outputs binary, client sends CSV)
-
-Server outputs binary format (decoded), client sends CSV format.
-```bash
-# Terminal 1: Start server with binary output and decoder
-./build/matching_engine --tcp --binary 2>/dev/null | ./build/binary_decoder
-
-# Terminal 2: Interactive client sends CSV
-./build/binary_client 1234 --tcp --csv
-
-# Type commands (watch decoded output in Terminal 1):
-> buy IBM 100 50 1
-> sell IBM 100 50 2
-> flush
-> quit
-```
-
-**Behavior:** Mixed protocol - client sends CSV, server responds in binary (decoded for readability).
-
----
-
-### 8. UDP + Binary Protocol (Default behavior)
-
-Default UDP mode with binary protocol (no flags needed).
-```bash
-# Terminal 1: Server in UDP mode with CSV output
-./build/matching_engine --udp 1234
-
-# Terminal 2: Client sends binary protocol (default)
-./build/binary_client 1234 2
-```
-
-**Behavior:** Fire-and-forget UDP with binary client protocol, CSV server output.
-
----
-
-## Interactive Commands
-
-When in TCP interactive mode, you can use these commands:
-```
-buy <symbol> <price> <qty> <order_id>    # Place a buy order
-sell <symbol> <price> <qty> <order_id>   # Place a sell order
-cancel <order_id>                         # Cancel an order
-flush                                     # Clear all order books
-help                                      # Show available commands
-quit                                      # Exit (or use Ctrl+C)
-```
-
-**Example session:**
-```
-> buy IBM 100 50 1
-Sent: BUY IBM 50 @ 100 (order 1)
-A, IBM, 1, 1
-B, IBM, B, 100, 50
-
-> sell IBM 100 50 2
-Sent: SELL IBM 50 @ 100 (order 2)
-A, IBM, 1, 2
-T, IBM, 1, 1, 1, 2, 100, 50
-B, IBM, B, -, -
-B, IBM, S, -, -
-
-> quit
-Disconnected.
-```
-
----
-
-## Quick Reference Table
-
-| Server Command | Client Command | Client Protocol | Server Output | Mode |
-|----------------|----------------|-----------------|---------------|------|
-| `--udp 1234` | `1234 2` | Binary | CSV | Fire & forget |
-| `--udp 1234` | `1234 2 --csv` | CSV | CSV | Fire & forget |
-| `--udp --binary` | `1234 2` | Binary | Binary | Fire & forget |
-| `--tcp 1234` | `1234 --tcp` | Binary | CSV | Interactive |
-| `--tcp 1234` | `1234 --tcp --csv` | CSV | CSV | Interactive |
-| `--tcp 1234` | `1234 2 --tcp` | Binary | CSV | Scenario + Interactive |
-| `--tcp 1234` | `1234 2 --tcp --csv` | CSV | CSV | Scenario + Interactive |
-| `--tcp --binary` | `1234 --tcp --csv` | CSV | Binary | Interactive |
-
----
-
-## Test Scenarios Explained
-
-### Scenario 1: Simple Orders
-- Places a buy order at 100 for 50 shares
-- Places a sell order at 105 for 50 shares (no match)
-- Flushes the order book
-
-### Scenario 2: Trade Execution
-- Places a buy order at 100 for 50 shares
-- Places a sell order at 100 for 50 shares (match!)
-- Shows trade execution
-- Flushes the order book
-
-### Scenario 3: Order Cancellation
-- Places a buy order at 100 for 50 shares
-- Places a sell order at 105 for 50 shares
-- Cancels the buy order
-- Flushes the order book
-
----
-
-## Notes
-
-- **UDP Mode**: Always exits after running scenario (fire-and-forget)
-- **TCP Mode**: Stays connected, enters interactive mode (even after scenario)
-- **Protocol Independence**: Client send protocol (`--csv`) is independent from server output protocol (`--binary`)
-- **Message Framing**: TCP mode uses 4-byte length-prefixed framing (handled automatically by `binary_client`)
-- **Real-time Responses**: TCP mode shows server responses immediately as they arrive
-
-### Graceful Shutdown
-
-Press `Ctrl+C` to initiate graceful shutdown:
-```
-^C
-Received signal 2, shutting down gracefully...
-
-=== Final Statistics ===
-UDP Receiver:
-  Packets received: 100
-  Messages parsed:  100
-  Messages dropped: 0
-
-Processor:
-  Messages processed: 100
-  Batches processed:  4
-
-Output Publisher:
-  Messages published: 245
-
-=== Matching Engine Stopped ===
-```
-
----
-
-## Testing
-
-### Unity Testing Framework
-
-We use [Unity](https://github.com/ThrowTheSwitch/Unity) - a lightweight C testing framework.
-
-### Build and Run Tests
-```bash
-# Build and run unit tests
-make test
-
-# Test binary protocol (CSV output mode)
-make test-binary
-
-# Test full binary protocol (binary in/out)
-make test-binary-full
-
-# Run all tests
-make test-all
-
-# Run tests with valgrind
-make valgrind-test
-```
-
-### Test Output
-```
-==========================================
-Running Unity Tests
-==========================================
-
-Running test_AddSingleBuyOrder... PASS
-Running test_AddSingleSellOrder... PASS
-Running test_MatchingBuyAndSell... PASS
-Running test_FlushOrderBook... PASS
-Running test_Scenario1_BalancedBook... PASS
-Running test_Scenario2_ShallowBid... PASS
-...
-
------------------------
-55 Tests 0 Failures 0 Ignored
-OK
-```
-
-### Binary Protocol Tests
-```bash
-# Automated binary protocol test
-make test-binary
-```
-
-**Output:**
-```
-==========================================
-Binary Protocol Test - CSV Output
-==========================================
-Starting server (CSV output mode)...
-Sending binary test messages...
-Sent: NEW IBM B 50 @ 100 (order 1)
-Sent: NEW IBM S 50 @ 105 (order 2)
-Sent: FLUSH
-
-Server output:
-A, IBM, 1, 1
-B, IBM, B, 100, 50
-A, IBM, 2, 2
-B, IBM, S, 105, 50
-C, IBM, 1, 1
-C, IBM, 2, 2
-B, IBM, B, -, -
-B, IBM, S, -, -
-
-✓ Binary protocol test complete
-```
-
-### Test Coverage
-
-**Component Tests:**
-- `test_message_parser.c` - CSV parsing validation
-- `test_message_formatter.c` - Output formatting
-- `test_order_book.c` - Matching logic, price-time priority, flush
-- `test_matching_engine.c` - Multi-symbol routing
-
-**Scenario Tests:**
-- `test_scenarios_odd.c` - Scenarios 1, 3, 5, 7, 9, 11, 13, 15
-- `test_scenarios_even.c` - Scenarios 2, 4, 6, 8, 10, 12, 14, 16
-- All scenarios include flush command validation
-
-**Binary Protocol Tests:**
-- Automated testing via `make test-binary`
-- Manual testing via binary client tool
-- Format detection validation
-
----
-
-## Binary Protocol
-
-### Binary Tools
-
-**Binary Client** (`build/binary_client`)
-```bash
-# Usage
-./build/binary_client <port> [scenario]
-
-# Scenarios:
-#   1 - Simple orders (buy + sell + flush)
-#   2 - Trade scenario (matching orders)
-#   3 - Cancel scenario (order cancellation)
-
-# Examples
-./build/binary_client 1234 1   # Simple test
-./build/binary_client 1234 2   # Trade test
-./build/binary_client 1234 3   # Cancel test
-```
-
-**Binary Decoder** (`build/binary_decoder`)
-```bash
-# Decode binary output to human-readable CSV
-./build/matching_engine --binary 2>&1 | ./build/binary_decoder
-```
-
-### Creating Custom Binary Messages
-
-Example in C:
-```c
-#include <arpa/inet.h>
-
-typedef struct __attribute__((packed)) {
-    uint8_t  magic;         // 0x4D
-    uint8_t  msg_type;      // 'N'
-    uint32_t user_id;       // htonl(1)
-    char     symbol[8];     // "IBM\0\0\0\0\0"
-    uint32_t price;         // htonl(100)
-    uint32_t quantity;      // htonl(50)
-    uint8_t  side;          // 'B'
-    uint32_t user_order_id; // htonl(1)
-} binary_new_order_t;
-
-// Send via UDP
-sendto(sock, &msg, sizeof(msg), 0, ...);
-```
-
-### Binary Format Specification
-
-**Magic Byte Detection:**
-```c
-// First byte = 0x4D indicates binary protocol
-if (data[0] == 0x4D) {
-    // Binary message
-} else {
-    // CSV message
-}
-```
-
-**Message Types:**
-- `'N'` - New Order (30 bytes)
-- `'C'` - Cancel (11 bytes)
-- `'F'` - Flush (2 bytes)
-- `'A'` - Acknowledgement (19 bytes)
-- `'X'` - Cancel Ack (19 bytes)
-- `'T'` - Trade (31 bytes)
-- `'B'` - Top of Book (20 bytes)
-
-**All integers are in network byte order (big endian)** - use `htonl()` to convert.
-
----
-
-# TCP Multi-Client Quick Start
-
-## Building
-```bash
-make clean
-make
-```
-
-This builds:
-- `build/matching_engine` - Main server
-- `build/tcp_client` - TCP test client
-- `build/binary_client` - UDP binary test client
-- `build/binary_decoder` - Binary protocol decoder
-
-## Running the TCP Server
-
-### Basic TCP Server (CSV output)
-```bash
+# Start TCP server
 ./build/matching_engine --tcp
-```
 
-### TCP Server on Custom Port
-```bash
-./build/matching_engine --tcp 5000
-```
-
-### TCP Server with Binary Output
-```bash
-./build/matching_engine --tcp --binary
-```
-
-## Testing with TCP Client
-
-### Terminal 1: Start Server
-```bash
-./build/matching_engine --tcp 1234
-```
-
-### Terminal 2: Run Test Scenarios
-
-**Scenario 1 - Simple Orders:**
-```bash
-./build/tcp_client localhost 1234 1
-```
-
-**Scenario 2 - Matching Trade:**
-```bash
+# In another terminal, run test client
 ./build/tcp_client localhost 1234 2
 ```
 
-**Scenario 3 - Cancel Order:**
+### Run Tests
+
 ```bash
-./build/tcp_client localhost 1234 3
-```
-
-**Interactive Mode:**
-```bash
-./build/tcp_client localhost 1234
-```
-
-Then type orders:
-```
-> N, 1, IBM, 100, 50, B, 1
-> N, 1, IBM, 100, 50, S, 2
-> F
-> quit
-```
-
-## Multiple Clients
-
-Each TCP client gets a unique `client_id` (1-based). The server validates that the `userId` in orders matches the assigned `client_id`.
-
-**Terminal 1: Server**
-```bash
-./build/matching_engine --tcp
-```
-
-**Terminal 2: Client 1 (will be assigned client_id=1)**
-```bash
-./build/tcp_client localhost 1234
-> N, 1, IBM, 100, 50, B, 1
-```
-
-**Terminal 3: Client 2 (will be assigned client_id=2)**
-```bash
-./build/tcp_client localhost 1234
-> N, 2, IBM, 100, 50, S, 1
-```
-
-When Client 2's sell order matches Client 1's buy order, **both clients receive the trade message**.
-
-## Expected Output
-
-**Client 1 sends buy order:**
-```
-> N, 1, IBM, 100, 50, B, 1
-
-Server responds:
-A, IBM, 1, 1
-B, IBM, B, 100, 50
-```
-
-**Client 2 sends matching sell order:**
-```
-> N, 2, IBM, 100, 50, S, 1
-
-Server responds to Client 2:
-A, IBM, 2, 1
-T, IBM, 1, 1, 2, 1, 100, 50
-B, IBM, B, -, -
-B, IBM, S, -, -
-
-Server responds to Client 1:
-T, IBM, 1, 1, 2, 1, 100, 50
-B, IBM, B, -, -
-B, IBM, S, -, -
-```
-
-Both clients see the trade!
-
-## Running Tests
-```bash
-# Unit tests
-make test
-
-# TCP integration test
-make test-tcp
-
 # All tests
-make test-all
+./build.sh test
+
+# Individual test suites
+./build.sh test-binary      # Binary protocol test
+./build.sh test-tcp         # TCP integration test
 ```
 
-## Legacy UDP Mode
+See **[Quick Start Guide](documentation/QUICK_START.md)** for detailed examples.
 
-The old UDP mode still works:
-```bash
-# UDP mode
-./build/matching_engine --udp 1234
+## 🏗️ Architecture Highlights
 
-# Send via netcat
-echo "N, 1, IBM, 100, 50, B, 1" | nc -u localhost 1234
-```
-# Test 1: TCP + CSV
-./build/matching_engine --tcp 1234
-./build/binary_client 1234 2 --tcp --csv
+### Memory Pool System (Zero-Allocation Hot Path)
 
-# Test 2: TCP + Binary
-./build/matching_engine --tcp --binary 1234
-./build/binary_client 1234 2 --tcp
+```c
+// All memory pre-allocated at startup
+typedef struct {
+    order_pool_t order_pool;              // 10K orders
+    hash_entry_pool_t hash_entry_pool;    // 10K hash entries
+} memory_pools_t;
 
-# Test 3: UDP + CSV
-./build/matching_engine --udp 1234
-./build/binary_client 1234 2 --csv
-
-# Test 4: UDP + Binary
-./build/matching_engine --udp --binary 1234
-./build/binary_client 1234 2
-
-
-## Protocol Details
-
-### Framing (TCP)
-All messages are length-prefixed:
-```
-[4-byte length (big-endian)][message payload]
+// O(1) allocation - just index manipulation
+order_t* order = order_pool_alloc(&pools->order_pool);
 ```
 
-### Message Format (CSV)
-```
-New Order:  N, userId, symbol, price, qty, side, userOrderId
-Cancel:     C, userId, userOrderId
-Flush:      F
-```
+No malloc/free during order matching = **predictable latency** and **no fragmentation**.
 
-### Security
-- Each TCP client is assigned a unique `client_id` on connection
-- Server validates that `userId` in messages matches the client's assigned `client_id`
-- Prevents clients from spoofing other clients' orders
-- On disconnect, all client's orders are automatically cancelled
+### Three-Thread Pipeline
 
-## Architecture
 ```
-TCP Client 1 ──┐
-TCP Client 2 ──┼──> TCP Listener ──> Input Queue ──> Processor ──> Output Router
-TCP Client 3 ──┘         ↑                                              │
-                         │                                              │
-                         └──────────────────────────────────────────────┘
-                              (per-client output queues)
+TCP/UDP Receiver → Lock-Free Queue → Processor → Output Router → Clients
+   (Thread 1)         (16K msgs)      (Thread 2)    (Thread 3)
 ```
 
-- **TCP Listener**: epoll-based event loop, handles all client I/O
-- **Processor**: Matching engine, generates output with client routing info
-- **Output Router**: Routes messages to appropriate client queues
-- **Lock-free queues**: Zero contention between threads
+Lock-free communication = **zero contention** = consistent performance.
 
-## Project Structure
+### TCP Multi-Client Support
+
+```c
+// Each order tracks its owner
+order->client_id = client_id;
+
+// Auto-cancel on disconnect
+matching_engine_cancel_client_orders(engine, client_id, output);
+```
+
+Real exchange-like behavior with **client isolation** and **automatic cleanup**.
+
+See **[Architecture Guide](documentation/ARCHITECTURE.md)** for complete details.
+
+## 📁 Project Structure
+
 ```
 matching-engine-c/
-├── Makefile                    # Build system
-├── README.md                   # This file
-│
-├── include/                    # Header files (13 files)
-│   ├── message_types.h         # Core types (tagged unions)
-│   ├── order.h                 # Order structure
-│   ├── order_book.h            # Price level management
-│   ├── matching_engine.h       # Multi-symbol orchestrator
-│   ├── message_parser.h        # CSV input parser
-│   ├── message_formatter.h     # CSV output formatter
-│   ├── binary_protocol.h       # Binary message definitions
-│   ├── binary_message_parser.h # Binary input parser
-│   ├── binary_message_formatter.h # Binary output formatter
-│   ├── lockfree_queue.h        # SPSC queue (macros)
-│   ├── udp_receiver.h          # UDP receiver thread
-│   ├── processor.h             # Processor thread
-│   └── output_publisher.h      # Output thread
-│
-├── src/                        # Implementation files (10 files)
-│   ├── main.c                  # Entry point, thread orchestration
-│   ├── order_book.c            # Core matching logic (600+ lines)
-│   ├── matching_engine.c       # Symbol routing
-│   ├── message_parser.c        # CSV parsing
-│   ├── message_formatter.c     # CSV formatting
-│   ├── binary_message_parser.c # Binary parsing
-│   ├── binary_message_formatter.c # Binary formatting
-│   ├── udp_receiver.c          # POSIX UDP sockets + auto-detection
-│   ├── processor.c             # Batch processing
-│   └── output_publisher.c      # Output loop (CSV or binary)
-│
-├── tools/                      # Binary protocol tools
-│   ├── binary_client.c         # Binary message sender
-│   └── binary_decoder.c        # Binary to CSV decoder
-│
-├── tests/                      # Unity test framework
-│   ├── unity.h                 # Unity header
-│   ├── unity.c                 # Unity implementation
-│   ├── unity_internals.h       # Unity internals
-│   ├── test_runner.c           # Test main()
-│   ├── test_order_book.c       # Order book tests
-│   ├── test_message_parser.c   # Parser tests
-│   ├── test_message_formatter.c# Formatter tests
-│   ├── test_matching_engine.c  # Engine tests
-│   ├── test_scenarios_odd.c    # Odd scenario validation
-│   └── test_scenarios_even.c   # Even scenario validation
-│
-├── data/                       # Test data
-│   ├── inputFile.csv           # Test input
-│   └── output_file.csv         # Expected output
-│
-└── build/                      # Build artifacts (generated)
-    ├── matching_engine         # Main executable
-    ├── matching_engine_tests   # Test executable
-    ├── binary_client           # Binary test client
-    ├── binary_decoder          # Binary decoder
-    └── obj/                    # Object files
-        ├── *.o                 # Main object files
-        └── tests/              # Test object files
+├── build.sh              # Build script with test modes
+├── CMakeLists.txt        # CMake build configuration
+├── documentation/        # Comprehensive documentation
+│   ├── ARCHITECTURE.md
+│   ├── BUILD.md
+│   ├── PROTOCOLS.md
+│   ├── QUICK_START.md
+│   └── TESTING.md
+├── include/              # Header files
+│   ├── core/            # Order book, matching engine
+│   ├── network/         # TCP/UDP networking
+│   ├── protocol/        # CSV and Binary protocols
+│   └── threading/       # Lock-free queues, threads
+├── src/                 # Implementation files (mirrors include/)
+├── tests/               # Unity test framework
+│   ├── core/           # Core component tests
+│   ├── protocol/       # Protocol tests
+│   └── scenarios/      # End-to-end scenario tests
+└── tools/              # Binary client, decoder, TCP client
 ```
 
+## 🔬 C Port Details
+
+This project demonstrates how to build production-quality C systems without C++:
+
+| C++ Feature | C Implementation | Benefits |
+|-------------|------------------|----------|
+| `std::vector` + `new`/`delete` | Memory pools | Predictable, no fragmentation |
+| `std::variant` | Tagged unions | Type-safe, zero overhead |
+| `std::map` | Binary search on sorted array | Better cache locality |
+| `std::unordered_map` | Custom hash table + pools | Full control, no malloc |
+| `std::thread` | pthreads | Industry standard |
+| `std::atomic` | C11 `<stdatomic.h>` | Native support |
+| Templates | C macros | Zero runtime cost |
+
+See **[Architecture Guide](documentation/ARCHITECTURE.md)** for implementation details.
+
+## 🧪 Testing
+
+Comprehensive test coverage with Unity framework:
+
+```bash
+# Unit tests (55+ tests)
+./build.sh test
+
+# Integration tests
+./build.sh test-tcp         # TCP multi-client
+./build.sh test-binary      # Binary protocol
+
+# Memory analysis
+./build.sh valgrind         # Linux: valgrind
+                            # macOS: leaks tool
+```
+
+See **[Testing Guide](documentation/TESTING.md)** for full test scenarios.
+
+## 🌐 Protocol Support
+
+### CSV (Human-Readable)
+```csv
+N, 1, IBM, 10000, 50, B, 1    # New buy order: 50 shares @ $100
+```
+
+### Binary (High-Performance)
+```
+[0x4D]['N'][user_id][symbol][price][qty][side][order_id]
+30 bytes vs ~45 bytes CSV = 33% smaller
+```
+
+Auto-detection: First byte = 0x4D → Binary, else CSV
+
+See **[Protocol Guide](documentation/PROTOCOLS.md)** for specifications.
+
+## 🔨 Build Options
+
+```bash
+# Build modes
+./build.sh build            # Release build
+./build.sh debug            # Debug build with symbols
+
+# Test modes (README run-modes for 2-terminal setups)
+./build.sh test-binary      # UDP + binary client
+./build.sh test-tcp         # TCP + scenario
+./build.sh test-tcp-csv     # TCP + CSV protocol
+
+# Run directly
+./build.sh run              # Start server
+./build.sh run-tcp          # TCP mode
+./build.sh run-udp          # UDP mode
+```
+
+See **[Build Guide](documentation/BUILD.md)** for detailed build instructions.
+
+## 💡 Design Philosophy
+
+1. **Memory Pools** - Pre-allocate everything, zero malloc in hot path
+2. **Bounded Loops** - Every loop has explicit iteration limits
+3. **Defensive Programming** - Parameter validation, DEBUG mode checks
+4. **Lock-Free** - SPSC queues for zero contention
+5. **Type Safety** - Tagged unions instead of void pointers
+6. **Explicit Cleanup** - No hidden destructors, clear ownership
+
+Production-quality C without sacrificing safety or performance.
+
+## 📊 Performance Characteristics
+
+- **Throughput**: 1-5M orders/sec (matching engine)
+- **Latency**: 10-50μs end-to-end (UDP → match → output)
+- **Memory**: 10-50MB typical usage, predictable allocation
+- **Binary Protocol**: 5-10x faster parsing than CSV
+
+See **[Architecture Guide](documentation/ARCHITECTURE.md)** for detailed analysis.
+
+## 🎓 Learning Value
+
+This project demonstrates:
+- ✅ Production-grade memory management without garbage collection
+- ✅ Lock-free multi-threading patterns
+- ✅ High-performance networking (TCP + UDP)
+- ✅ Protocol design and implementation
+- ✅ C11 atomics and modern C practices
+- ✅ Comprehensive testing strategies
+- ✅ CMake build systems
+
+Perfect for understanding **systems programming** and **high-frequency trading** systems.
+
+## 📝 License
+
+Educational project demonstrating C systems programming and HFT architecture.
+
+## 🚀 Getting Started
+
+1. **Read**: [Quick Start Guide](documentation/QUICK_START.md)
+2. **Build**: `./build.sh build`
+3. **Test**: `./build.sh test`
+4. **Run**: `./build/matching_engine --tcp`
+5. **Learn**: [Architecture Guide](documentation/ARCHITECTURE.md)
+
 ---
 
-## Design Decisions
-
-### 1. **Fixed Arrays vs Dynamic Allocation**
-
-**Choice:** Fixed-size arrays for price levels (10,000 slots)
-
-**Rationale:**
-- Predictable memory usage
-- Better cache locality
-- No malloc/free in matching hot path
-- Typical order books have ~100 active price levels
-
-### 2. **Binary Search vs Hash Table for Prices**
-
-**Choice:** Binary search on sorted array
-
-**Rationale:**
-- O(log N) lookup is fast for N < 10,000
-- Maintains sorted order naturally
-- Better cache performance than tree structures
-- Simpler than red-black trees
-
-### 3. **Manual Lists vs Library**
-
-**Choice:** Manual doubly-linked lists for orders
-
-**Rationale:**
-- Full control over memory layout
-- No external dependencies
-- O(1) deletion with iterator
-- Simple implementation
-
-### 4. **Dual Protocol Support**
-
-**Choice:** Auto-detection with magic byte
-
-**Rationale:**
-- Zero configuration required
-- Backward compatible with all CSV tests
-- Performance boost for binary clients
-- Mixed-mode operation for gradual migration
-
-### 5. **Macros vs Function Pointers for "Templates"**
-
-**Choice:** C macros for lock-free queue
-
-**Rationale:**
-- Zero runtime overhead
-- Type safety at compile time
-- Similar to C++ templates
-- Explicit code generation
-
-### 6. **pthread vs C11 threads**
-
-**Choice:** POSIX pthreads
-
-**Rationale:**
-- Broader platform support
-- More mature ecosystem
-- Better debugging tools
-- Industry standard for systems programming
-
-### 7. **Flush Command Enhancement**
-
-**Choice:** Generate cancel acknowledgements for all orders
-
-**Rationale:**
-- Visibility into what was cancelled
-- Consistent with individual cancel behavior
-- Helps with audit trails and reconciliation
-- Minimal performance impact (flush is rare)
-
----
-
-## Performance Characteristics
-
-### Throughput
-- **UDP Receiver**: ~1-10M packets/sec (network limited)
-- **Matching Engine**: ~1-5M orders/sec (single-threaded)
-- **Output Publisher**: ~500K-1M messages/sec (stdout limited)
-
-### Latency
-- **Queue hop**: ~100-500ns (lock-free)
-- **CSV parsing**: ~500-2000ns per message
-- **Binary parsing**: ~50-200ns per message (5-10x faster)
-- **Matching**: ~1-10μs (depends on book depth)
-- **End-to-end**: ~10-50μs (UDP → match → stdout)
-
-### Memory
-- **Fixed queues**: 2 × 16,384 × sizeof(msg) ≈ 2-4MB
-- **Order books**: Dynamic (grows with orders)
-- **Typical usage**: 10-100MB
-- **Binary messages**: 50-70% smaller than CSV
-
-### Protocol Comparison
-
-| Metric | CSV | Binary | Improvement |
-|--------|-----|--------|-------------|
-| New Order Size | ~40-50 bytes | 30 bytes | 40-60% smaller |
-| Parsing Time | ~500-2000ns | ~50-200ns | 5-10x faster |
-| Network Bandwidth | Baseline | 50-70% less | 2x more efficient |
-| Human Readable | ✓ | ✗ | Trade-off |
-| Debugging | Easy | Requires decoder | Trade-off |
-
----
-
-## Future Enhancements
-
-### Potential Improvements
-- **TCP support** - For guaranteed delivery
-- **Multi-client mode** - Handle multiple connections
-- **Market data snapshots** - Full book state queries
-- **Historical replay** - Replay past messages
-- **Performance counters** - Detailed latency histograms
-- **Configuration file** - Runtime configuration
-- **Level 2 market data** - Multiple price levels
-
-### Advanced Features
-- **Order types** - Stop-loss, iceberg, time-in-force
-- **Risk limits** - Position limits, rate limiting
-- **Market making** - Special order handling
-- **Cross orders** - Internal matching
-- **Auction mode** - Opening/closing auctions
-
+**Built with**: C11 • CMake • pthreads • Lock-free queues • Memory pools

@@ -44,10 +44,10 @@ The testing strategy includes:
 
 ```bash
 # Build
-make clean && make
+./build.sh build
 
 # Run all tests
-make test-all
+./build.sh test
 
 # Expected output:
 # ==========================================
@@ -85,16 +85,16 @@ We use [Unity](https://github.com/ThrowTheSwitch/Unity) - a lightweight C testin
 
 ```bash
 # Build and run all unit tests
-make test
+./build.sh test
 
-# Run specific test file
+# Run test executable directly
 ./build/matching_engine_tests
 
 # Run with verbose output
 ./build/matching_engine_tests -v
 
 # Run with valgrind (memory leak detection)
-make valgrind-test
+./build.sh valgrind
 ```
 
 ### Unit Test Output
@@ -254,7 +254,7 @@ make test
 Automated TCP server/client testing:
 
 ```bash
-make test-tcp
+./build.sh test-tcp
 ```
 
 **What it tests:**
@@ -289,8 +289,7 @@ Stopping server...
 Automated binary protocol validation:
 
 ```bash
-make test-binary        # CSV output mode
-make test-binary-full   # Binary output mode
+./build.sh test-binary        # UDP mode, CSV output
 ```
 
 **What it tests:**
@@ -322,16 +321,13 @@ C, IBM, 2, 2
 ✓ Binary protocol test complete
 ```
 
-### Run All Integration Tests
+### Run All Tests
 
 ```bash
-make test-all
+./build.sh test       # Unit tests
 ```
 
-Runs:
-1. Unit tests
-2. TCP integration test
-3. Binary protocol tests (CSV + full binary)
+Runs all unit tests with Unity framework.
 
 ---
 
@@ -667,11 +663,13 @@ hexdump -C test_message.bin | head
 
 ### Pre-commit Hook
 
+### Pre-commit Hook
+
 Create `.git/hooks/pre-commit`:
 ```bash
 #!/bin/bash
-make clean
-make test-all
+./build.sh build
+./build.sh test
 
 if [ $? -ne 0 ]; then
     echo "Tests failed. Commit aborted."
@@ -690,12 +688,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
+      - name: Install dependencies
+        run: sudo apt-get install build-essential cmake ninja-build
       - name: Build
-        run: make
+        run: ./build.sh build
       - name: Test
-        run: make test-all
+        run: ./build.sh test
       - name: Valgrind
-        run: make valgrind-test
+        run: ./build.sh valgrind
 ```
 
 ---
@@ -720,12 +720,10 @@ jobs:
 ### Test Commands
 
 ```bash
-make test              # Unit tests
-make test-tcp          # TCP integration
-make test-binary       # Binary protocol (CSV output)
-make test-binary-full  # Binary protocol (binary output)
-make test-all          # All tests
-make valgrind-test     # Memory leak detection
+./build.sh test           # Unit tests
+./build.sh test-tcp       # TCP integration
+./build.sh test-binary    # Binary protocol test
+./build.sh valgrind       # Memory leak detection
 ```
 
 ### Manual Test Scenarios
@@ -752,7 +750,7 @@ make valgrind-test     # Memory leak detection
 
 ## See Also
 
-- [Quick Start Guide](QUICK_START.md) - Basic usage
-- [Architecture](ARCHITECTURE.md) - System design
-- [Protocols](PROTOCOLS.md) - Message formats
-- [Build Instructions](BUILD.md) - Compiler setup
+- [Quick Start Guide](documentation/QUICK_START.md) - Basic usage
+- [Architecture](documentation/ARCHITECTURE.md) - System design
+- [Protocols](documentation/PROTOCOLS.md) - Message formats
+- [Build Instructions](documentation/BUILD.md) - Compiler setup

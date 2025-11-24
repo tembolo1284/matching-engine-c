@@ -650,7 +650,7 @@ B, <sym>, <side>, <price>, <qty>
 
 ## See Also
 
-- [Quick Start Guide](QUICK_START.md) - Get running quickly
-- [Architecture](ARCHITECTURE.md) - System internals
-- [Testing](TESTING.md) - Protocol testing guide
-- [Build Instructions](BUILD.md) - Compiler setup
+- [Quick Start Guide](documentation/QUICK_START.md) - Get running quickly
+- [Architecture](documentation/ARCHITECTURE.md) - System internals
+- [Testing](documentation/TESTING.md) - Protocol testing guide
+- [Build Instructions](documentation/BUILD.md) - Compiler setup

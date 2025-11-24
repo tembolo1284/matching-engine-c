@@ -32,16 +32,17 @@ gcc --version  # Should be 4.9+
 
 ```bash
 # Quick build
-make clean && make
+./build.sh build
 
 # This creates:
 #   build/matching_engine - Main server
 #   build/tcp_client      - TCP test client
 #   build/binary_client   - Binary protocol client
 #   build/binary_decoder  - Binary to CSV decoder
+#   build/matching_engine_tests - Test suite
 ```
 
-For detailed build options, see [BUILD.md](BUILD.md).
+For detailed build options, see [BUILD.md](documentation/BUILD.md).
 
 ---
 
@@ -291,10 +292,10 @@ Processor:
 
 ## What's Next?
 
-- Learn about the system architecture: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Understand the protocols: [PROTOCOLS.md](PROTOCOLS.md)
-- Run comprehensive tests: [TESTING.md](TESTING.md)
-- Explore build options: [BUILD.md](BUILD.md)
+- Learn about the system architecture: [ARCHITECTURE.md](documentation/ARCHITECTURE.md)
+- Understand the protocols: [PROTOCOLS.md](documentation/PROTOCOLS.md)
+- Run comprehensive tests: [TESTING.md](documentation/TESTING.md)
+- Explore build options: [BUILD.md](documentation/BUILD.md)
 
 ---
 
