@@ -1,12 +1,12 @@
 #!/bin/bash
-# build.sh - Build script for Matching Engine
+# build.sh - Build script for Matching Engine (README run-modes)
 
 set -e
 
-# Default values
 BUILD_DIR="build"
 BUILD_TYPE="Release"
 GENERATOR="Ninja"
+DEFAULT_PORT=1234
 
 # Detect platform
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -17,25 +17,12 @@ else
     PLATFORM="Unknown"
 fi
 
-print_status() {
-    echo "[STATUS] $1"
-}
+print_status()  { echo "[STATUS] $1"; }
+print_success() { echo "[OK] $1"; }
+print_error()   { echo "[ERROR] $1"; }
+print_warning() { echo "[WARN] $1"; }
 
-print_success() {
-    echo "[OK] $1"
-}
-
-print_error() {
-    echo "[ERROR] $1"
-}
-
-print_warning() {
-    echo "[WARN] $1"
-}
-
-command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
+command_exists() { command -v "$1" >/dev/null 2>&1; }
 
 detect_generator() {
     if command_exists ninja; then
@@ -56,23 +43,20 @@ configure() {
     echo "  Platform: $PLATFORM"
 
     cmake -B "$BUILD_DIR" -G "$generator" -DCMAKE_BUILD_TYPE="$build_type"
-
     print_success "Configuration complete"
 }
 
 build() {
     local targets=("$@")
-
     if [ ${#targets[@]} -eq 0 ]; then
         print_status "Building all targets..."
         cmake --build "$BUILD_DIR"
     else
         print_status "Building targets: ${targets[*]}..."
-        for target in "${targets[@]}"; do
-            cmake --build "$BUILD_DIR" --target "$target"
+        for t in "${targets[@]}"; do
+            cmake --build "$BUILD_DIR" --target "$t"
         done
     fi
-
     print_success "Build complete"
 }
 
@@ -86,59 +70,189 @@ clean() {
     fi
 }
 
-run_tests() {
-    local type=$1
-    case $type in
-        unit)
-            print_status "Running unit tests..."
-            cmake --build "$BUILD_DIR" --target test-unit
-            ;;
-        binary)
-            print_status "Running binary protocol tests..."
-            cmake --build "$BUILD_DIR" --target test-binary
-            ;;
-        tcp)
-            print_status "Running TCP tests..."
-            cmake --build "$BUILD_DIR" --target test-tcp
-            ;;
-        all)
-            print_status "Running all tests..."
-            cmake --build "$BUILD_DIR" --target test-all
-            ;;
-        *)
-            print_error "Unknown test type: $type"
-            exit 1
-            ;;
-    esac
-}
-
-run_valgrind() {
-    if [ "$PLATFORM" = "Linux" ]; then
-        if ! command_exists valgrind; then
-            print_error "valgrind not found. Install with: sudo apt install valgrind"
-            exit 1
-        fi
-        print_status "Running valgrind..."
-    elif [ "$PLATFORM" = "macOS" ]; then
-        print_status "Running leaks..."
-    else
-        print_error "Memory check not supported on this platform"
-        exit 1
-    fi
-
-    cmake --build "$BUILD_DIR" --target valgrind
-}
-
-run_server() {
-    local args=("$@")
-
-    if [ ! -f "$BUILD_DIR/matching_engine" ]; then
+require_built() {
+    if [ ! -x "$BUILD_DIR/matching_engine" ]; then
         print_error "matching_engine not built. Run ./build.sh build first."
         exit 1
     fi
+    if [ ! -x "$BUILD_DIR/binary_client" ]; then
+        print_error "binary_client not built. Run ./build.sh build first."
+        exit 1
+    fi
+}
 
+# scenarios args: numbers or "all" (default 1 2 3)
+parse_scenarios() {
+    local scenarios=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            all)
+                scenarios=(1 2 3)
+                shift
+                ;;
+            [0-9]*)
+                scenarios+=("$1")
+                shift
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    if [ ${#scenarios[@]} -eq 0 ]; then
+        scenarios=(1 2 3)
+    fi
+
+    echo "${scenarios[@]}"
+}
+
+# -------------------------
+# README run-modes
+# -------------------------
+
+mode_test_binary() {
+    # README "UDP + CSV output, binary client scenarios (default behavior)"
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+    shift || true
+    local scenarios
+    scenarios=($(parse_scenarios "$@"))
+
+    print_status "README mode: test-binary"
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  ./${BUILD_DIR}/matching_engine --udp ${port}"
+    echo ""
+    echo "Terminal 2 (client side):"
+    for s in "${scenarios[@]}"; do
+        echo "  ./${BUILD_DIR}/binary_client ${port} ${s}"
+    done
+    echo ""
+    echo "Notes:"
+    echo "  - Server outputs CSV (human readable)."
+    echo "  - Each binary_client scenario is fire-and-forget."
+    echo ""
+
+    print_status "Starting UDP server now (CSV output). Ctrl+C to stop."
+    "./${BUILD_DIR}/matching_engine" --udp "${port}"
+}
+
+mode_test_binary_full() {
+    # README "UDP + binary output piped to decoder"
+    require_built
+    if [ ! -x "$BUILD_DIR/binary_decoder" ]; then
+        print_error "binary_decoder not built. Run ./build.sh build first."
+        exit 1
+    fi
+
+    local port="${1:-$DEFAULT_PORT}"
+    shift || true
+    local scenarios
+    scenarios=($(parse_scenarios "$@"))
+
+    print_status "README mode: test-binary-full"
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  ./${BUILD_DIR}/matching_engine --udp --binary ${port} 2>/dev/null | ./${BUILD_DIR}/binary_decoder"
+    echo ""
+    echo "Terminal 2 (client side):"
+    for s in "${scenarios[@]}"; do
+        echo "  ./${BUILD_DIR}/binary_client ${port} ${s}"
+    done
+    echo ""
+    echo "Notes:"
+    echo "  - Server outputs binary; decoder makes it readable."
+    echo "  - Each scenario is fire-and-forget."
+    echo ""
+
+    print_status "Starting UDP server now (binary output -> decoder). Ctrl+C to stop."
+    "./${BUILD_DIR}/matching_engine" --udp --binary "${port}" 2>/dev/null | "./${BUILD_DIR}/binary_decoder"
+}
+
+mode_test_tcp() {
+    # README "TCP + Binary protocol (scenario then interactive)"
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+    shift || true
+    local scenarios
+    scenarios=($(parse_scenarios "$@"))
+
+    print_status "README mode: test-tcp"
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  ./${BUILD_DIR}/matching_engine --tcp ${port}"
+    echo ""
+    echo "Terminal 2 (client side):"
+    for s in "${scenarios[@]}"; do
+        echo "  ./${BUILD_DIR}/binary_client ${port} ${s} --tcp"
+    done
+    echo ""
+    echo "Notes:"
+    echo "  - After a scenario, the TCP client enters interactive mode."
+    echo "  - Type 'quit' in the client to exit."
+    echo ""
+
+    print_status "Starting TCP server now (CSV output). Ctrl+C to stop."
+    "./${BUILD_DIR}/matching_engine" --tcp "${port}"
+}
+
+mode_test_tcp_csv() {
+    # README "TCP + CSV protocol (scenario then interactive)"
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+    shift || true
+    local scenarios
+    scenarios=($(parse_scenarios "$@"))
+
+    print_status "README mode: test-tcp-csv"
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  ./${BUILD_DIR}/matching_engine --tcp ${port}"
+    echo ""
+    echo "Terminal 2 (client side):"
+    for s in "${scenarios[@]}"; do
+        echo "  ./${BUILD_DIR}/binary_client ${port} ${s} --tcp --csv"
+    done
+    echo ""
+    echo "Notes:"
+    echo "  - Client sends CSV messages over TCP."
+    echo "  - Client enters interactive mode after scenario."
+    echo ""
+
+    print_status "Starting TCP server now (CSV output). Ctrl+C to stop."
+    "./${BUILD_DIR}/matching_engine" --tcp "${port}"
+}
+
+run_unit_tests() {
+    print_status "Running unit tests..."
+    cmake --build "$BUILD_DIR" --target test-unit
+    print_success "Unit tests complete"
+}
+
+run_valgrind() {
+    if [ "$PLATFORM" != "Linux" ]; then
+        print_error "valgrind only supported on Linux here"
+        exit 1
+    fi
+    if ! command_exists valgrind; then
+        print_error "valgrind not found. Install with: sudo apt install valgrind"
+        exit 1
+    fi
+    require_built
+    print_status "Running valgrind (TCP server). Ctrl+C to stop."
+    valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+        "./${BUILD_DIR}/matching_engine" --tcp "$DEFAULT_PORT"
+}
+
+run_server() {
+    if [ ! -x "$BUILD_DIR/matching_engine" ]; then
+        print_error "matching_engine not built. Run ./build.sh build first."
+        exit 1
+    fi
+    shift
     print_status "Starting matching engine..."
-    "$BUILD_DIR/matching_engine" "${args[@]}"
+    "./${BUILD_DIR}/matching_engine" "$@"
 }
 
 show_info() {
@@ -148,32 +262,37 @@ show_info() {
 show_help() {
     cat << EOF
 Usage:
-  ./build.sh [command]
+  ./build.sh [command] [port] [scenarios...]
 
-Commands:
-  build            Build in Release mode
-  debug            Build in Debug mode
-  release          Build in Release mode
-  rebuild          Clean and rebuild
-  configure        Configure CMake
-  clean            Remove build directory
+Build:
+  build            Build Release
+  debug            Build Debug
+  release          Build Release
+  rebuild          Clean + rebuild
+  configure        Configure only
+  clean            Remove build dir
 
-Testing:
-  test             Run unit tests
-  test-binary      Run binary protocol tests
-  test-tcp         Run TCP tests
-  test-all         Run all tests
-  valgrind         Run memory leak detection
+Real Tests:
+  test             Run Unity unit tests (C tests)
 
-Running:
-  run [args]       Run server with args
-  run-tcp          Run server in TCP mode
-  run-udp          Run server in UDP mode
-  run-binary       Run server in TCP binary mode
+README Run-Modes (2-terminal workflows):
+  test-binary      UDP server CSV output + binary_client scenarios in another terminal
+  test-binary-full UDP server binary output piped to decoder + binary_client scenarios in another terminal
+  test-tcp         TCP server CSV output + binary_client --tcp scenarios in another terminal
+  test-tcp-csv     TCP server CSV output + binary_client --tcp --csv scenarios in another terminal
+  test-all         Prints all README run-modes (does not start anything)
+  valgrind         Run valgrind server (Linux)
 
-Tools:
-  info             Show build info
-  help             Show this message
+Scenario examples:
+  ./build.sh test-binary 1234 all
+  ./build.sh test-binary-full 1234 1 2 3
+  ./build.sh test-tcp 1234 2
+  ./build.sh test-tcp-csv 1234 2
+
+Run:
+  run [args]       Run server directly (same as README)
+  run-tcp          Run TCP server on 1234
+  run-udp          Run UDP server on 1234
 
 EOF
 }
@@ -196,7 +315,7 @@ main() {
 
     GENERATOR=$(detect_generator)
 
-    case $1 in
+    case "$1" in
         build)
             BUILD_TYPE="Release"
             clean
@@ -227,32 +346,60 @@ main() {
             clean
             ;;
         test)
-            run_tests unit
+            run_unit_tests
             ;;
         test-binary)
-            run_tests binary
+            shift
+            mode_test_binary "$@"
+            ;;
+        test-binary-full)
+            shift
+            mode_test_binary_full "$@"
             ;;
         test-tcp)
-            run_tests tcp
+            shift
+            mode_test_tcp "$@"
+            ;;
+        test-tcp-csv)
+            shift
+            mode_test_tcp_csv "$@"
             ;;
         test-all)
-            run_tests all
+            # Print recipes only; don't start servers
+            print_status "README run-modes quick reference:"
+            echo ""
+            echo "1) UDP + Binary (decoded):"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --udp --binary ${DEFAULT_PORT} 2>/dev/null | ./${BUILD_DIR}/binary_decoder"
+            echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 1"
+            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2"
+            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 3"
+            echo ""
+            echo "2) UDP + CSV:"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --udp ${DEFAULT_PORT}"
+            echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 1 --csv"
+            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --csv"
+            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 3 --csv"
+            echo ""
+            echo "3) TCP + Binary scenario then interactive:"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
+            echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --tcp"
+            echo ""
+            echo "4) TCP + CSV scenario then interactive:"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
+            echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --tcp --csv"
+            echo ""
             ;;
         valgrind)
             run_valgrind
             ;;
         run)
-            shift
             run_server "$@"
             ;;
         run-tcp)
-            run_server --tcp
+            run_server run --tcp "$DEFAULT_PORT"
             ;;
         run-udp)
-            run_server --udp
-            ;;
-        run-binary)
-            run_server --tcp --binary
+            run_server run --udp "$DEFAULT_PORT"
             ;;
         info)
             show_info
