@@ -163,23 +163,99 @@ add_custom_target(test-tcp
     COMMENT "Running TCP multi-client test"
 )
 
+# Dual-processor symbol routing test
+add_custom_target(test-dual-processor
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo "Dual-Processor Symbol Routing Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo "Testing symbol partitioning: A-M -> P0, N-Z -> P1"
+    COMMAND bash -c '
+        "${CMAKE_BINARY_DIR}/matching_engine" --tcp 1234 --dual-processor > /tmp/dual_proc_output.txt 2>&1 &
+        SERVER_PID=$$!
+        sleep 1
+        echo "Sending orders to Processor 0 (A-M symbols)..."
+        echo -e "N,1,IBM,100,50,B,1\nN,1,AAPL,150,30,B,2\nN,1,GOOGL,200,20,B,3\n" | nc -q1 localhost 1234 2>/dev/null || \
+        echo -e "N,1,IBM,100,50,B,1\nN,1,AAPL,150,30,B,2\nN,1,GOOGL,200,20,B,3\n" | nc localhost 1234
+        sleep 0.5
+        echo "Sending orders to Processor 1 (N-Z symbols)..."
+        echo -e "N,1,NVDA,300,40,B,4\nN,1,TSLA,180,25,B,5\nN,1,ZM,50,100,B,6\n" | nc -q1 localhost 1234 2>/dev/null || \
+        echo -e "N,1,NVDA,300,40,B,4\nN,1,TSLA,180,25,B,5\nN,1,ZM,50,100,B,6\n" | nc localhost 1234
+        sleep 0.5
+        echo "Sending flush to both processors..."
+        echo -e "F\n" | nc -q1 localhost 1234 2>/dev/null || echo -e "F\n" | nc localhost 1234
+        sleep 1
+        echo ""
+        echo "Stopping server..."
+        kill -TERM $$SERVER_PID 2>/dev/null || true
+        sleep 1
+        kill -9 $$SERVER_PID 2>/dev/null || true
+        wait $$SERVER_PID 2>/dev/null || true
+        echo ""
+        echo "=========================================="
+        echo "Server Output (check per-processor stats):"
+        echo "=========================================="
+        cat /tmp/dual_proc_output.txt
+        rm -f /tmp/dual_proc_output.txt
+        echo ""
+        echo "Expected: ~3 messages to each processor"
+        echo "Dual-processor test complete"
+    '
+    DEPENDS matching_engine
+    COMMENT "Running dual-processor symbol routing test"
+)
+
+# Single-processor comparison test
+add_custom_target(test-single-processor
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo "Single-Processor Mode Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo "All symbols route to single processor"
+    COMMAND bash -c '
+        "${CMAKE_BINARY_DIR}/matching_engine" --tcp 1234 --single-processor > /tmp/single_proc_output.txt 2>&1 &
+        SERVER_PID=$$!
+        sleep 1
+        echo "Sending mixed orders (all to single processor)..."
+        echo -e "N,1,IBM,100,50,B,1\nN,1,NVDA,200,30,B,2\nF\n" | nc -q1 localhost 1234 2>/dev/null || \
+        echo -e "N,1,IBM,100,50,B,1\nN,1,NVDA,200,30,B,2\nF\n" | nc localhost 1234
+        sleep 1
+        echo ""
+        echo "Stopping server..."
+        kill -TERM $$SERVER_PID 2>/dev/null || true
+        sleep 1
+        kill -9 $$SERVER_PID 2>/dev/null || true
+        wait $$SERVER_PID 2>/dev/null || true
+        echo ""
+        echo "Server Output:"
+        cat /tmp/single_proc_output.txt
+        rm -f /tmp/single_proc_output.txt
+        echo ""
+        echo "Single-processor test complete"
+    '
+    DEPENDS matching_engine
+    COMMENT "Running single-processor mode test"
+)
+
 add_custom_target(test-all
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Running Complete Test Suite"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/3: Unit Tests"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/4: Unit Tests"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-unit
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/3: Binary Protocol Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/4: Binary Protocol Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-binary
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/3: TCP Integration Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/4: TCP Integration Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-tcp
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 4/4: Dual-Processor Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
+    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-dual-processor
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "All tests finished"
@@ -229,19 +305,31 @@ endif()
 add_custom_target(run
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode"
+    COMMENT "Running matching engine in TCP mode (dual-processor)"
 )
 
 add_custom_target(run-tcp
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode"
+    COMMENT "Running matching engine in TCP mode (dual-processor)"
 )
 
 add_custom_target(run-udp
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine --udp
     DEPENDS matching_engine
     COMMENT "Running matching engine in UDP mode"
+)
+
+add_custom_target(run-dual
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --dual-processor
+    DEPENDS matching_engine
+    COMMENT "Running matching engine in TCP dual-processor mode"
+)
+
+add_custom_target(run-single
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --single-processor
+    DEPENDS matching_engine
+    COMMENT "Running matching engine in TCP single-processor mode"
 )
 
 add_custom_target(run-binary
@@ -271,6 +359,11 @@ add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "C Flags:        ${CMAKE_C_FLAGS}"
     COMMAND ${CMAKE_COMMAND} -E echo "Build dir:      ${CMAKE_BINARY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Processor Modes:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  --dual-processor   Symbols A-M -> P0, N-Z -> P1 (default)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  --single-processor All symbols -> single processor"
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMENT "Displaying build configuration"
 )
 
@@ -288,12 +381,16 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  test-unit            - Run unit tests"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-binary          - UDP binary protocol test"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-tcp             - TCP multi-client test"
+    COMMAND ${CMAKE_COMMAND} -E echo "  test-dual-processor  - Dual-processor symbol routing test"
+    COMMAND ${CMAKE_COMMAND} -E echo "  test-single-processor - Single-processor mode test"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-all             - Run full test suite"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run                  - Run in TCP mode"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-tcp              - Run in TCP mode"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run                  - Run in TCP mode (dual-processor)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-tcp              - Run in TCP mode (dual-processor)"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-udp              - Run in UDP mode"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-dual             - Run TCP dual-processor mode"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-single           - Run TCP single-processor mode"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-binary           - Run TCP with binary output"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-binary-decoded   - Run TCP with binary output + decoder"
     COMMAND ${CMAKE_COMMAND} -E echo ""
@@ -317,5 +414,5 @@ message(STATUS "Platform:      ${PLATFORM}")
 message(STATUS "Compiler:      ${CMAKE_C_COMPILER}")
 message(STATUS "Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Standard:    C${CMAKE_C_STANDARD}")
+message(STATUS "Processors:    Dual (A-M/N-Z) by default")
 message(STATUS "========================================")
-

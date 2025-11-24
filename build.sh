@@ -224,6 +224,70 @@ mode_test_tcp_csv() {
     "./${BUILD_DIR}/matching_engine" --tcp "${port}"
 }
 
+mode_test_dual_processor() {
+    # Test dual-processor symbol routing
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+
+    print_status "Dual-Processor Symbol Routing Test"
+    echo ""
+    echo "=========================================="
+    echo "Dual-Processor Symbol Routing Test"
+    echo "=========================================="
+    echo ""
+    echo "This test verifies symbol-based routing:"
+    echo "  - Symbols A-M → Processor 0"
+    echo "  - Symbols N-Z → Processor 1"
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  Server starts in dual-processor mode (default)"
+    echo ""
+    echo "Terminal 2 (run these commands):"
+    echo "  ./${BUILD_DIR}/tcp_client localhost ${port}"
+    echo "  > buy IBM 100 50 1      # → Processor 0 (I is A-M)"
+    echo "  > buy NVDA 200 25 2     # → Processor 1 (N is N-Z)"
+    echo "  > buy AAPL 150 30 3     # → Processor 0 (A is A-M)"
+    echo "  > buy TSLA 180 40 4     # → Processor 1 (T is N-Z)"
+    echo "  > flush"
+    echo "  > quit"
+    echo ""
+    echo "After Ctrl+C, check per-processor statistics:"
+    echo "  - Messages to Processor 0: Should show IBM, AAPL orders"
+    echo "  - Messages to Processor 1: Should show NVDA, TSLA orders"
+    echo ""
+
+    print_status "Starting TCP server in DUAL-PROCESSOR mode. Ctrl+C to stop and see stats."
+    "./${BUILD_DIR}/matching_engine" --tcp "${port}" --dual-processor
+}
+
+mode_test_single_processor() {
+    # Test single-processor mode for comparison
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+
+    print_status "Single-Processor Mode Test"
+    echo ""
+    echo "=========================================="
+    echo "Single-Processor Mode Test"
+    echo "=========================================="
+    echo ""
+    echo "All symbols route to a single processor."
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  Server starts in single-processor mode"
+    echo ""
+    echo "Terminal 2 (run these commands):"
+    echo "  ./${BUILD_DIR}/tcp_client localhost ${port}"
+    echo "  > buy IBM 100 50 1"
+    echo "  > buy NVDA 200 25 2"
+    echo "  > flush"
+    echo "  > quit"
+    echo ""
+
+    print_status "Starting TCP server in SINGLE-PROCESSOR mode. Ctrl+C to stop."
+    "./${BUILD_DIR}/matching_engine" --tcp "${port}" --single-processor
+}
+
 run_unit_tests() {
     print_status "Running unit tests..."
     cmake --build "$BUILD_DIR" --target test-unit
@@ -276,23 +340,28 @@ Real Tests:
   test             Run Unity unit tests (C tests)
 
 README Run-Modes (2-terminal workflows):
-  test-binary      UDP server CSV output + binary_client scenarios in another terminal
-  test-binary-full UDP server binary output piped to decoder + binary_client scenarios in another terminal
-  test-tcp         TCP server CSV output + binary_client --tcp scenarios in another terminal
-  test-tcp-csv     TCP server CSV output + binary_client --tcp --csv scenarios in another terminal
-  test-all         Prints all README run-modes (does not start anything)
-  valgrind         Run valgrind server (Linux)
+  test-binary          UDP server CSV output + binary_client scenarios
+  test-binary-full     UDP server binary output piped to decoder
+  test-tcp             TCP server CSV output + binary_client --tcp
+  test-tcp-csv         TCP server CSV output + binary_client --tcp --csv
+  test-dual-processor  TCP server dual-processor mode (symbol routing test)
+  test-single-processor TCP server single-processor mode (comparison)
+  test-all             Prints all README run-modes (does not start anything)
+  valgrind             Run valgrind server (Linux)
 
 Scenario examples:
   ./build.sh test-binary 1234 all
   ./build.sh test-binary-full 1234 1 2 3
   ./build.sh test-tcp 1234 2
   ./build.sh test-tcp-csv 1234 2
+  ./build.sh test-dual-processor 1234
 
 Run:
   run [args]       Run server directly (same as README)
-  run-tcp          Run TCP server on 1234
+  run-tcp          Run TCP server on 1234 (dual-processor, default)
   run-udp          Run UDP server on 1234
+  run-dual         Run TCP server in dual-processor mode (default)
+  run-single       Run TCP server in single-processor mode
 
 EOF
 }
@@ -364,6 +433,14 @@ main() {
             shift
             mode_test_tcp_csv "$@"
             ;;
+        test-dual-processor|test-dual)
+            shift
+            mode_test_dual_processor "$@"
+            ;;
+        test-single-processor|test-single)
+            shift
+            mode_test_single_processor "$@"
+            ;;
         test-all)
             # Print recipes only; don't start servers
             print_status "README run-modes quick reference:"
@@ -388,6 +465,16 @@ main() {
             echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
             echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --tcp --csv"
             echo ""
+            echo "5) Dual-Processor Mode (default):"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
+            echo "   Terminal 2: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
+            echo "               > buy IBM 100 50 1      # → Processor 0 (A-M)"
+            echo "               > buy NVDA 200 25 2     # → Processor 1 (N-Z)"
+            echo ""
+            echo "6) Single-Processor Mode:"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT} --single-processor"
+            echo "   Terminal 2: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
+            echo ""
             ;;
         valgrind)
             run_valgrind
@@ -400,6 +487,12 @@ main() {
             ;;
         run-udp)
             run_server run --udp "$DEFAULT_PORT"
+            ;;
+        run-dual)
+            run_server run --tcp "$DEFAULT_PORT" --dual-processor
+            ;;
+        run-single)
+            run_server run --tcp "$DEFAULT_PORT" --single-processor
             ;;
         info)
             show_info
@@ -421,4 +514,3 @@ if ! command_exists cmake; then
 fi
 
 main "$@"
-

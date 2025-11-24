@@ -7,6 +7,7 @@ Comprehensive testing guide for the Matching Engine covering unit tests, integra
 - [Quick Test](#quick-test)
 - [Unit Testing](#unit-testing)
 - [Integration Testing](#integration-testing)
+- [Dual-Processor Testing](#dual-processor-testing)
 - [Manual Testing Scenarios](#manual-testing-scenarios)
 - [Protocol-Specific Testing](#protocol-specific-testing)
 - [Multi-Client Testing](#multi-client-testing)
@@ -22,6 +23,7 @@ The testing strategy includes:
 - **Integration tests** - End-to-end system tests
 - **Manual tests** - Interactive testing via test clients
 - **Protocol tests** - CSV and Binary protocol validation
+- **Dual-processor tests** - Symbol partitioning verification
 - **Performance tests** - Throughput and latency benchmarks
 
 ### Test Coverage
@@ -35,6 +37,8 @@ The testing strategy includes:
 | Binary Protocol | ✓ | ✓ |
 | TCP Multi-Client | ✗ | ✓ |
 | UDP Mode | ✗ | ✓ |
+| Symbol Router | ✓ | ✓ |
+| Dual-Processor | ✗ | ✓ |
 
 ---
 
@@ -58,7 +62,7 @@ The testing strategy includes:
 ### 5-Minute Test
 
 ```bash
-# Terminal 1: Start server
+# Terminal 1: Start server (dual-processor is default)
 ./build/matching_engine --tcp
 
 # Terminal 2: Run scenarios
@@ -331,6 +335,142 @@ Runs all unit tests with Unity framework.
 
 ---
 
+## Dual-Processor Testing
+
+The matching engine supports dual-processor mode for horizontal scaling. Orders are partitioned by symbol:
+- **Processor 0**: Symbols A-M (AAPL, IBM, GOOGL, META, etc.)
+- **Processor 1**: Symbols N-Z (NVDA, TSLA, UBER, ZM, etc.)
+
+### Quick Dual-Processor Test
+
+```bash
+# Terminal 1: Start server in dual-processor mode (default)
+./build/matching_engine --tcp
+
+# Terminal 2: Send orders to both processors
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1      # → Processor 0 (I is A-M)
+> buy NVDA 200 25 2     # → Processor 1 (N is N-Z)
+> buy AAPL 150 30 3     # → Processor 0 (A is A-M)
+> buy TSLA 180 40 4     # → Processor 1 (T is N-Z)
+> flush
+> quit
+```
+
+### Verifying Symbol Routing
+
+When the server shuts down (Ctrl+C), it prints per-processor statistics:
+
+```
+=== Processor 0 (A-M) Statistics ===
+  Messages processed: 2
+  Orders matched: 0
+  
+=== Processor 1 (N-Z) Statistics ===
+  Messages processed: 2
+  Orders matched: 0
+
+=== TCP Listener Statistics ===
+  Messages to Processor 0: 2
+  Messages to Processor 1: 2
+```
+
+### Symbol Routing Reference
+
+| Symbol | First Letter | Processor |
+|--------|--------------|-----------|
+| AAPL   | A            | 0 (A-M)   |
+| IBM    | I            | 0 (A-M)   |
+| GOOGL  | G            | 0 (A-M)   |
+| META   | M            | 0 (A-M)   |
+| NVDA   | N            | 1 (N-Z)   |
+| TSLA   | T            | 1 (N-Z)   |
+| UBER   | U            | 1 (N-Z)   |
+| ZM     | Z            | 1 (N-Z)   |
+
+### Single-Processor Mode
+
+For comparison or debugging, run in single-processor mode:
+
+```bash
+# Single processor (all symbols to one processor)
+./build/matching_engine --tcp --single-processor
+
+# Dual processor (default)
+./build/matching_engine --tcp --dual-processor
+./build/matching_engine --tcp  # Same as above
+```
+
+### Dual-Processor Test Scenarios
+
+#### Scenario 1: Cross-Processor Independence
+
+Verify that orders on different symbols don't interact:
+
+```bash
+# Terminal 2:
+> buy IBM 100 50 1      # Processor 0
+> sell NVDA 100 50 2    # Processor 1 - should NOT match IBM order
+> flush
+```
+
+**Expected:** No trades (different symbols, different processors)
+
+#### Scenario 2: Same-Processor Matching
+
+Verify matching works within a processor:
+
+```bash
+# Terminal 2:
+> buy IBM 100 50 1      # Processor 0
+> sell IBM 100 50 2     # Processor 0 - should match
+> flush
+```
+
+**Expected:** Trade generated (same symbol, same processor)
+
+#### Scenario 3: Flush Affects Both Processors
+
+```bash
+# Terminal 2:
+> buy IBM 100 50 1      # Processor 0
+> buy NVDA 200 25 2     # Processor 1
+> flush                 # Should cancel orders in BOTH processors
+```
+
+**Expected:** Both orders cancelled, both processors show flush statistics
+
+#### Scenario 4: High-Volume Routing
+
+```bash
+# Send many orders to verify routing under load
+for i in {1..100}; do
+    echo "N, 1, IBM, 100, 50, B, $i"    # All to Processor 0
+done | nc localhost 1234
+
+for i in {101..200}; do
+    echo "N, 1, TSLA, 100, 50, B, $i"   # All to Processor 1
+done | nc localhost 1234
+```
+
+**Expected:** ~100 messages to each processor (check shutdown statistics)
+
+### Automated Dual-Processor Test
+
+```bash
+# Run automated dual-processor test
+./build.sh test-dual-processor
+```
+
+This test:
+1. Starts the server in dual-processor mode
+2. Sends orders to A-M symbols (Processor 0)
+3. Sends orders to N-Z symbols (Processor 1)
+4. Verifies per-processor statistics
+5. Confirms no cross-processor interference
+
+---
+
 ## Manual Testing Scenarios
 
 ### Scenario 1: Simple Orders (No Match)
@@ -572,6 +712,24 @@ for i in {1..1000}; do
 done | nc localhost 1234
 ```
 
+### Dual-Processor Throughput Test
+
+```bash
+# Test parallel throughput across both processors
+# Terminal 1: Server
+./build/matching_engine --tcp
+
+# Terminal 2: Processor 0 load (A-M symbols)
+for i in {1..1000}; do echo "N, 1, IBM, 100, 50, B, $i"; done | nc localhost 1234 &
+
+# Terminal 3: Processor 1 load (N-Z symbols)  
+for i in {1001..2000}; do echo "N, 1, TSLA, 100, 50, B, $i"; done | nc localhost 1234 &
+
+wait
+```
+
+**Expected:** Near-linear scaling (2x throughput vs single-processor)
+
 ### Latency Test
 
 Use the built-in statistics:
@@ -582,10 +740,15 @@ Use the built-in statistics:
 # Ctrl+C to see statistics
 
 === Final Statistics ===
-Processor:
+Processor 0 (A-M):
   Messages processed: 10000
   Batches processed: 313
   Average batch size: 31.95
+
+Processor 1 (N-Z):
+  Messages processed: 10000
+  Batches processed: 315
+  Average batch size: 31.75
 ```
 
 ### Memory Test
@@ -629,6 +792,24 @@ ps aux | grep matching_engine
 telnet localhost 1234
 ```
 
+### Dual-Processor Issues
+
+#### Orders not routing correctly
+```bash
+# Verify symbol routing logic
+# First character determines processor:
+# A-M (ASCII 65-77) → Processor 0
+# N-Z (ASCII 78-90) → Processor 1
+
+# Check shutdown statistics for message counts per processor
+```
+
+#### Flush not cancelling all orders
+```bash
+# Flush should be sent to BOTH processors
+# Check that both processors show flush in statistics
+```
+
 ### Memory Leaks
 
 ```bash
@@ -660,8 +841,6 @@ hexdump -C test_message.bin | head
 ---
 
 ## Continuous Testing
-
-### Pre-commit Hook
 
 ### Pre-commit Hook
 
@@ -711,7 +890,8 @@ jobs:
 | Binary Protocol | 12 | ✓ |
 | Scenarios (1-16) | 16 | ✓ |
 | TCP Integration | 1 | ✓ |
-| **Total** | **62** | ✓ |
+| Dual-Processor | 1 | ✓ |
+| **Total** | **63** | ✓ |
 
 ---
 
@@ -720,10 +900,11 @@ jobs:
 ### Test Commands
 
 ```bash
-./build.sh test           # Unit tests
-./build.sh test-tcp       # TCP integration
-./build.sh test-binary    # Binary protocol test
-./build.sh valgrind       # Memory leak detection
+./build.sh test                 # Unit tests
+./build.sh test-tcp             # TCP integration
+./build.sh test-binary          # Binary protocol test
+./build.sh test-dual-processor  # Dual-processor routing test
+./build.sh valgrind             # Memory leak detection
 ```
 
 ### Manual Test Scenarios
@@ -744,6 +925,16 @@ jobs:
 # Binary
 ./build/matching_engine --tcp --binary | ./build/binary_decoder
 ./build/binary_client 1234 --tcp
+```
+
+### Processor Mode Testing
+
+```bash
+# Dual-processor (default)
+./build/matching_engine --tcp
+
+# Single-processor
+./build/matching_engine --tcp --single-processor
 ```
 
 ---
