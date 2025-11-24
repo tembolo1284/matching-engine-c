@@ -116,7 +116,7 @@ add_custom_target(test-binary
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Binary Protocol Test - UDP Mode"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Starting server (UDP mode, CSV output)..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Starting server - UDP mode, CSV output..."
     COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --udp 1234 > /tmp/binary_test_output.txt 2>&1 & SERVER_PID=$$! && sleep 1 && echo 'Sending binary test messages...' && ${CMAKE_BINARY_DIR}/binary_client 1234 1 && sleep 1 && echo '' && echo 'Server output:' && kill $$SERVER_PID 2>/dev/null || true && wait $$SERVER_PID 2>/dev/null || true && cat /tmp/binary_test_output.txt && rm -f /tmp/binary_test_output.txt && echo '' && echo 'Binary protocol test complete'"
     DEPENDS matching_engine binary_client
     COMMENT "Running binary protocol test"
@@ -126,7 +126,7 @@ add_custom_target(test-tcp
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "TCP Multi-Client Test"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Starting server (TCP mode, port 1234)..."
+    COMMAND ${CMAKE_COMMAND} -E echo "Starting server - TCP mode, port 1234..."
     COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp 1234 2>&1 & SERVER_PID=$$! && sleep 1 && echo 'Connecting test clients...' && ${CMAKE_BINARY_DIR}/tcp_client localhost 1234 & CLIENT_PID=$$! && sleep 2 && echo 'Stopping server...' && kill $$SERVER_PID 2>/dev/null || true && kill $$CLIENT_PID 2>/dev/null || true && wait $$SERVER_PID 2>/dev/null || true && wait $$CLIENT_PID 2>/dev/null || true && echo '' && echo 'TCP test complete'"
     DEPENDS matching_engine tcp_client
     COMMENT "Running TCP multi-client test"
@@ -163,7 +163,7 @@ add_custom_target(test-all
 
 if(UNIX AND NOT APPLE)
     add_custom_target(valgrind
-        COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test (auto-stop after 5 seconds)..."
+        COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test - auto-stop after 5 seconds..."
         COMMAND pkill -9 matching_engine 2>/dev/null || true
         COMMAND sleep 1
         COMMAND bash -c "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ${CMAKE_BINARY_DIR}/matching_engine --tcp 2>&1 & VALGRIND_PID=$$! && sleep 5 && echo '' && echo 'Stopping server...' && pkill -SIGTERM matching_engine 2>/dev/null || true && wait $$VALGRIND_PID 2>/dev/null || true && echo '' && echo 'Valgrind test complete'"
