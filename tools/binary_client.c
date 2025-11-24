@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <time.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
@@ -55,6 +56,7 @@ typedef struct {
 } client_context_t;
 
 static client_context_t* g_ctx = NULL;
+static atomic_bool g_sigint_seen = false;
 
 /* stdout print lock to prevent interleaving */
 static pthread_mutex_t g_print_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -70,12 +72,24 @@ static void safe_printf(const char *fmt, ...) {
 }
 
 /* Signal handler for graceful shutdown */
-void signal_handler(int sig) {
+static void signal_handler(int sig) {
     (void)sig;
-    if (g_ctx) {
-        safe_printf("\n\nShutting down gracefully...\n");
-        g_ctx->running = false;
+
+    // Only run once
+    bool expected = false;
+    if (!atomic_compare_exchange_strong(&g_sigint_seen, &expected, true)) {
+        return;
     }
+
+    if (g_ctx) {
+        g_ctx->running = false;
+
+        // Unblock recv() in reader thread
+        shutdown(g_ctx->sock, SHUT_RDWR);
+    }
+
+    // Message once
+    write(STDOUT_FILENO, "\nShutting down gracefully...\n", 30);
 }
 
 /* Helper to safely copy symbol with padding */
@@ -276,7 +290,7 @@ void* response_reader_thread(void* arg) {
     return NULL;
 }
 
-void print_help() {
+void print_help(void) {
     safe_printf("\nCommands:\n");
     safe_printf("  buy <symbol> <price> <qty> <order_id>   - Send buy order\n");
     safe_printf("  sell <symbol> <price> <qty> <order_id>  - Send sell order\n");
@@ -500,7 +514,14 @@ int main(int argc, char* argv[]) {
     };
 
     g_ctx = &ctx;
-    signal(SIGINT, signal_handler);
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = signal_handler;
+    // IMPORTANT: do NOT set SA_RESTART
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGINT, &sa, NULL);
+
 
     // Start response reader thread for TCP
     pthread_t reader_thread;
