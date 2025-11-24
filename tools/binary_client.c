@@ -89,7 +89,9 @@ static void signal_handler(int sig) {
     }
 
     // Message once
-    write(STDOUT_FILENO, "\nShutting down gracefully...\n", 30);
+    if (write(STDOUT_FILENO, "\nShutting down gracefully...\n", 30) < 0) {
+        /* Cannot handle error in signal handler */
+    }
 }
 
 /* Helper to safely copy symbol with padding */
