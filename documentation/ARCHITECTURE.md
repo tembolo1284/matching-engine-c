@@ -1,15 +1,17 @@
 # Architecture
 
-Comprehensive system design of the Matching Engine, emphasizing **zero-allocation memory pools**, lock-free threading, and production-grade architecture.
+Comprehensive system design of the Matching Engine, emphasizing **zero-allocation memory pools**, lock-free threading, **envelope-based message routing**, and production-grade architecture.
 
 ## Table of Contents
 - [System Overview](#system-overview)
 - [Memory Pool System](#memory-pool-system)
 - [Threading Model](#threading-model)
+- [Envelope Pattern](#envelope-pattern)
 - [Data Flow](#data-flow)
 - [Core Components](#core-components)
 - [Data Structures](#data-structures)
 - [TCP Multi-Client Architecture](#tcp-multi-client-architecture)
+- [Message Framing (TCP)](#message-framing-tcp)
 - [C Port Details](#c-port-details)
 - [Design Decisions](#design-decisions)
 - [Performance Characteristics](#performance-characteristics)
@@ -19,49 +21,67 @@ Comprehensive system design of the Matching Engine, emphasizing **zero-allocatio
 
 ## System Overview
 
-The Matching Engine is a **production-grade** order matching system built in pure C11. The defining characteristic is the **zero-allocation hot path** achieved through pre-allocated memory pools, eliminating malloc/free during order processing.
+The Matching Engine is a **production-grade** order matching system built in pure C11. The defining characteristics are:
+
+1. **Zero-allocation hot path** - All memory pre-allocated in pools
+2. **Envelope-based routing** - Messages wrapped with client metadata for multi-client support
+3. **Lock-free communication** - SPSC queues between threads
+4. **Client isolation** - TCP clients validated and isolated
 
 ### High-Level Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        Matching Engine                                │
-│                  Zero-Allocation Memory Pools                         │
-├──────────────────────────────────────────────────────────────────────┤
-│                                                                        │
-│  ┌──────────────┐    ┌────────────┐    ┌──────────────┐            │
-│  │   TCP/UDP    │───▶│ Lock-Free  │───▶│  Processor   │            │
-│  │   Receiver   │    │   Queue    │    │  (Matching)  │            │
-│  │  (Thread 1)  │    │ (16K msgs) │    │  (Thread 2)  │            │
-│  └──────────────┘    └────────────┘    └──────────────┘            │
-│         │                                       │                     │
-│         │ Format Detection                      │                     │
-│         │ (CSV/Binary)                          ▼                     │
-│         │                              ┌────────────────┐            │
-│         │                              │   Lock-Free    │            │
-│         │                              │  Output Queue  │            │
-│         │                              │  (16K msgs)    │            │
-│         │                              └────────────────┘            │
-│         │                                       │                     │
-│         │                                       ▼                     │
-│         │                              ┌───────────────┐             │
-│         │                              │    Output     │             │
-│         │                              │   Publisher   │             │
-│         │                              │  (Thread 3)   │             │
-│         │                              └───────────────┘             │
-│         │                                       │                     │
-│         └───────────────────────────────────────┘                    │
-│                    (TCP per-client routing)                           │
-│                                                                        │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                           Matching Engine                                     │
+│                     Zero-Allocation Memory Pools                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                               │
+│  TCP MODE:                                                                    │
+│  ┌──────────────┐    ┌────────────────┐    ┌───────────┐    ┌─────────────┐ │
+│  │ TCP Listener │───▶│ Input Envelope │───▶│ Processor │───▶│   Output    │ │
+│  │  (Thread 1)  │    │     Queue      │    │ (Thread 2)│    │  Envelope   │ │
+│  │              │    │                │    │           │    │   Queue     │ │
+│  │ epoll/kqueue │    │ [client_id,    │    │  Unwrap   │    │             │ │
+│  │ event loop   │    │  sequence,     │    │  Route    │    │ [client_id, │ │
+│  │              │    │  message]      │    │  Match    │    │  sequence,  │ │
+│  └──────────────┘    └────────────────┘    └───────────┘    │  message]   │ │
+│         │                                                    └──────┬──────┘ │
+│         │                                                           │        │
+│         │                                                           ▼        │
+│         │                                                   ┌─────────────┐  │
+│         │                                                   │   Output    │  │
+│         │                                                   │   Router    │  │
+│         │                                                   │ (Thread 3)  │  │
+│         │                                                   └──────┬──────┘  │
+│         │                                                          │         │
+│         │         ┌────────────────────────────────────────────────┤         │
+│         │         │                    │                    │      │         │
+│         │         ▼                    ▼                    ▼      │         │
+│         │  ┌────────────┐      ┌────────────┐      ┌────────────┐  │         │
+│         │  │ Client 1 Q │      │ Client 2 Q │      │ Client N Q │  │         │
+│         │  └─────┬──────┘      └─────┬──────┘      └─────┬──────┘  │         │
+│         │        │                   │                   │         │         │
+│         └────────┴───────────────────┴───────────────────┘         │         │
+│                  TCP Listener writes to client sockets             │         │
+│                                                                    │         │
+│  UDP MODE:                                                         │         │
+│  ┌──────────────┐    ┌────────────────┐    ┌───────────┐    ┌─────────────┐ │
+│  │ UDP Receiver │───▶│ Input Envelope │───▶│ Processor │───▶│   Output    │ │
+│  │  (Thread 1)  │    │     Queue      │    │ (Thread 2)│    │  Publisher  │ │
+│  │              │    │                │    │           │    │ (Thread 3)  │ │
+│  │ client_id=0  │    │ [0, seq, msg]  │    │           │    │    stdout   │ │
+│  └──────────────┘    └────────────────┘    └───────────┘    └─────────────┘ │
+│                                                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Design Principles:**
-- **Zero malloc/free in hot path** - All memory pre-allocated
+- **Zero malloc/free in hot path** - All memory pre-allocated in pools
+- **Envelope-based routing** - Messages carry routing metadata
 - **Lock-free communication** - SPSC queues between threads
 - **Bounded loops** - Every loop has explicit iteration limits
 - **Defensive programming** - Parameter validation, bounds checking
-- **Client isolation** - TCP clients can't affect each other
+- **Client isolation** - TCP clients validated and can't spoof each other
 
 ---
 
@@ -204,11 +224,11 @@ void memory_pools_init(memory_pools_t* pools) {
 }
 
 // At startup
-memory_pools_t global_pools;
-memory_pools_init(&global_pools);
+memory_pools_t* pools = malloc(sizeof(memory_pools_t));
+memory_pools_init(pools);
 
 matching_engine_t engine;
-matching_engine_init(&engine, &global_pools);  // Share pools
+matching_engine_init(&engine, pools);  // Share pools
 ```
 
 ### Memory Pool Statistics
@@ -226,7 +246,7 @@ typedef struct {
 
 // Query at any time
 memory_pool_stats_t stats;
-memory_pools_get_stats(&global_pools, &stats);
+memory_pools_get_stats(pools, &stats);
 ```
 
 **Typical Usage**:
@@ -238,37 +258,81 @@ memory_pools_get_stats(&global_pools, &stats);
 
 ## Threading Model
 
-### Three-Thread Pipeline
+### TCP Mode: Three-Thread Pipeline
 
-**Thread 1: TCP/UDP Receiver**
-- Handles network I/O (epoll for TCP, recvfrom for UDP)
-- Detects message format (CSV vs Binary)
-- Parses messages into internal format
-- Enqueues to input queue (lock-free write)
+```
+┌──────────────┐    ┌───────────────────┐    ┌───────────┐    ┌────────────────────┐    ┌───────────────┐
+│ TCP Listener │───▶│ input_envelope_q  │───▶│ Processor │───▶│ output_envelope_q  │───▶│ Output Router │
+│  (Thread 1)  │    │     (16K msgs)    │    │ (Thread 2)│    │     (16K msgs)     │    │  (Thread 3)   │
+└──────────────┘    └───────────────────┘    └───────────┘    └────────────────────┘    └───────┬───────┘
+                                                                                                │
+                                                              ┌─────────────────────────────────┼─────────────────┐
+                                                              ▼                                 ▼                 ▼
+                                                     [client_1.output_q]              [client_2.output_q]    [client_n...]
+                                                              │                                 │
+                                                              ▼                                 ▼
+                                                     TCP Listener writes             TCP Listener writes
+```
+
+**Thread 1: TCP Listener**
+- epoll (Linux) or kqueue (macOS) event loop
+- Accepts new connections, assigns client_id
+- Reads framed messages, parses CSV/Binary
+- Creates input envelopes with client_id
+- Writes output messages from per-client queues
 
 **Thread 2: Processor**
-- Dequeues messages in batches (up to 32)
+- Dequeues input envelopes in batches (up to 32)
+- Extracts client_id for routing
 - Routes to appropriate order book (by symbol)
-- Executes matching logic (price-time priority)
-- Allocates orders/hash entries from pools (NO malloc!)
-- Generates output messages
-- Enqueues to output queue (lock-free read/write)
+- Allocates from memory pools (NO malloc!)
+- Creates output envelopes with routing info
+- Trades get TWO envelopes (buyer + seller)
+
+**Thread 3: Output Router**
+- Dequeues output envelopes
+- Routes to per-client output queues based on client_id
+- Drops messages for disconnected clients
+
+### UDP Mode: Three-Thread Pipeline
+
+```
+┌──────────────┐    ┌───────────────────┐    ┌───────────┐    ┌────────────────────┐    ┌──────────────────┐
+│ UDP Receiver │───▶│ input_envelope_q  │───▶│ Processor │───▶│ output_envelope_q  │───▶│ Output Publisher │
+│  (Thread 1)  │    │     (16K msgs)    │    │ (Thread 2)│    │     (16K msgs)     │    │   (Thread 3)     │
+└──────────────┘    └───────────────────┘    └───────────┘    └────────────────────┘    └──────────────────┘
+   client_id=0                                                                                  │
+                                                                                                ▼
+                                                                                             stdout
+```
+
+**Thread 1: UDP Receiver**
+- recvfrom() on UDP socket
+- Parses CSV/Binary (auto-detect)
+- Creates envelopes with client_id=0
+
+**Thread 2: Processor**
+- Same as TCP mode
+- client_id=0 for all messages
 
 **Thread 3: Output Publisher**
-- Dequeues output messages
+- Dequeues output envelopes
 - Formats as CSV or Binary
-- Routes to appropriate client(s) in TCP mode
-- Publishes to stdout or TCP sockets (lock-free read)
+- Writes to stdout
 
 ### Lock-Free Communication
 
 ```c
 // Single Producer, Single Consumer (SPSC) Queue
 typedef struct {
-    _Alignas(64) atomic_uint_fast64_t read_pos;   // Consumer cache line
-    _Alignas(64) atomic_uint_fast64_t write_pos;  // Producer cache line
-    _Alignas(64) input_msg_t data[16384];         // Data cache lines
-} input_queue_t;
+    _Alignas(64) atomic_size_t head;    // Consumer cache line
+    char _pad1[64];                      // Prevent false sharing
+    _Alignas(64) atomic_size_t tail;    // Producer cache line
+    char _pad2[64];
+    input_msg_envelope_t buffer[16384]; // Ring buffer
+    size_t capacity;
+    size_t index_mask;                  // For fast modulo
+} input_envelope_queue_t;
 ```
 
 **Key Properties:**
@@ -279,43 +343,228 @@ typedef struct {
 
 ---
 
+## Envelope Pattern
+
+### What is an Envelope?
+
+An **envelope wraps a message with metadata** needed for routing, tracking, and coordination. The core message (order, trade, etc.) doesn't know about TCP clients - the envelope handles that.
+
+```
+┌─────────────────────────────────────┐
+│  ENVELOPE                           │
+│  ┌─────────────────────────────┐   │
+│  │  To: Client #3              │   │  ← Routing metadata
+│  │  Sequence: 12345            │   │  ← Tracking metadata
+│  └─────────────────────────────┘   │
+│                                     │
+│  ┌─────────────────────────────┐   │
+│  │  ACTUAL MESSAGE             │   │
+│  │  (Order, Trade, Ack, etc.)  │   │  ← Business payload
+│  └─────────────────────────────┘   │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+### Envelope Structures
+
+```c
+/* Input envelope - wraps orders/cancels with sender info */
+typedef struct {
+    input_msg_t msg;           // The actual order/cancel/flush message
+    uint32_t client_id;        // Which client sent this (1-based, 0=UDP)
+    uint64_t sequence;         // Sequence number for debugging/ordering
+} input_msg_envelope_t;
+
+/* Output envelope - wraps responses with routing info */
+typedef struct {
+    output_msg_t msg;          // The actual ack/trade/TOB message
+    uint32_t client_id;        // Which client should receive this
+    uint64_t sequence;         // Sequence number
+} output_msg_envelope_t;
+```
+
+### Why Envelopes?
+
+#### 1. Separation of Concerns
+
+| Concern | Where It Lives |
+|---------|---------------|
+| What the message IS | `input_msg_t` / `output_msg_t` |
+| Who SENT it | `envelope.client_id` |
+| Who RECEIVES it | `envelope.client_id` |
+| Message ORDERING | `envelope.sequence` |
+
+The matching engine only cares about **WHAT** - it doesn't need to know about TCP clients.
+
+#### 2. Single Queue Scales to Many Clients
+
+**Without envelopes (bad):**
+```c
+// One queue per client - O(n) polling!
+input_queue_t client_queues[MAX_CLIENTS];
+
+for (int i = 0; i < MAX_CLIENTS; i++) {
+    if (!input_queue_empty(&client_queues[i])) {
+        // process...
+    }
+}
+```
+
+**With envelopes (good):**
+```c
+// One queue for all - O(1) dequeue!
+input_envelope_queue_t single_queue;
+
+input_msg_envelope_t envelope;
+if (input_envelope_queue_dequeue(&single_queue, &envelope)) {
+    // Client ID travels WITH the message
+    process(envelope.client_id, &envelope.msg);
+}
+```
+
+#### 3. Enables Per-Client Routing
+
+Trades must be sent to BOTH buyer and seller:
+
+```c
+// In processor.c
+if (out_msg->type == OUTPUT_MSG_TRADE) {
+    uint32_t buy_client = out_msg->data.trade.buy_client_id;
+    uint32_t sell_client = out_msg->data.trade.sell_client_id;
+    
+    // Send to buyer
+    output_msg_envelope_t env1 = create_output_envelope(out_msg, buy_client, seq);
+    output_envelope_queue_enqueue(&output_queue, &env1);
+    
+    // Send to seller (if different client)
+    if (buy_client != sell_client) {
+        output_msg_envelope_t env2 = create_output_envelope(out_msg, sell_client, seq);
+        output_envelope_queue_enqueue(&output_queue, &env2);
+    }
+}
+```
+
+#### 4. Sequence Numbers for Debugging
+
+```c
+envelope.sequence = 12345;
+
+// In logs:
+// [Processor] Processing message seq=12345 from client=3
+// [Router] Routed trade seq=12346 to clients 1,3
+// [Router] Client 3 disconnected, dropped message seq=12347
+```
+
+### Helper Functions
+
+```c
+/* Create input envelope from parsed message */
+static inline input_msg_envelope_t
+create_input_envelope(const input_msg_t* msg,
+                      uint32_t client_id,
+                      uint64_t sequence) {
+    input_msg_envelope_t envelope;
+    envelope.msg = *msg;
+    envelope.client_id = client_id;
+    envelope.sequence = sequence;
+    return envelope;
+}
+
+/* Create output envelope */
+static inline output_msg_envelope_t
+create_output_envelope(const output_msg_t* msg,
+                       uint32_t client_id,
+                       uint64_t sequence) {
+    output_msg_envelope_t envelope;
+    envelope.msg = *msg;
+    envelope.client_id = client_id;
+    envelope.sequence = sequence;
+    return envelope;
+}
+```
+
+### Queue Types
+
+```c
+/* Declare envelope queues using macro templates */
+DECLARE_LOCKFREE_QUEUE(input_msg_envelope_t, input_envelope_queue)
+DECLARE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
+
+/* Usage */
+input_envelope_queue_t input_queue;
+input_envelope_queue_init(&input_queue);
+
+output_envelope_queue_t output_queue;
+output_envelope_queue_init(&output_queue);
+```
+
+---
+
 ## Data Flow
 
-### End-to-End Flow
+### TCP Mode: End-to-End Flow
 
 ```
-1. TCP Client sends: "N, 1, IBM, 100, 50, B, 1"
-2. TCP Listener (epoll) receives message
-3. Parse CSV → input_msg_t
-4. Enqueue to input_queue (lock-free)
-   
-5. Processor dequeues (batch of 32)
-6. Route to IBM order book
-7. Allocate order from pool (O(1), no malloc!)
-8. Match order → Generate trade
-9. Enqueue output_msg_t[] to output_queue
-   
-10. Output Publisher dequeues
-11. Route to appropriate TCP client socket(s)
-12. Both clients receive trade notification
+1. TCP Client connects → assigned client_id=3
+2. Client sends framed message: [len][N, 3, IBM, 100, 50, B, 1]
+3. TCP Listener reads, parses CSV → input_msg_t
+4. Validate: user_id (3) == client_id (3) ✓
+5. Create envelope: {msg, client_id=3, seq=1000}
+6. Enqueue to input_envelope_queue
+
+7. Processor dequeues envelope
+8. Extract client_id=3 for routing
+9. Route to IBM order book
+10. Allocate order from pool, set order->client_id=3
+11. Match order → Generate trade with Client 1
+12. Create trade_msg with buy_client_id=1, sell_client_id=3
+13. Create TWO output envelopes:
+    - {trade_msg, client_id=1, seq=2000}  → for buyer
+    - {trade_msg, client_id=3, seq=2000}  → for seller
+14. Enqueue both to output_envelope_queue
+
+15. Output Router dequeues envelope for client_id=1
+16. Get client 1's per-client queue
+17. Enqueue trade_msg (no envelope needed - queue IS routing)
+
+18. Output Router dequeues envelope for client_id=3
+19. Get client 3's per-client queue
+20. Enqueue trade_msg
+
+21. TCP Listener polls client queues
+22. Dequeue from client 1's queue, format, frame, write to socket
+23. Dequeue from client 3's queue, format, frame, write to socket
+24. Both clients receive trade notification!
 ```
 
-### TCP Multi-Client Data Flow
+### Message Routing Rules
+
+| Message Type | Routing | Destination |
+|--------------|---------|-------------|
+| **Ack** | Unicast | Originating client only |
+| **Cancel Ack** | Unicast | Originating client only |
+| **Trade** | Multicast | BOTH buyer and seller |
+| **Top-of-Book** | Unicast | Originating client only |
+
+### Two-Stage Queuing (TCP Mode)
 
 ```
-Client 1 (Buy) ───┐
-                  ├──▶ TCP Listener ──▶ Input Queue ──▶ Processor ──▶ Output Router
-Client 2 (Sell) ──┘         │                              │               │
-                           │                              │               │
-                           │                              │               ▼
-                           │                              │        ┌────────────┐
-                           │                              │        │ Client 1 Q │
-                           │                              │        │ Client 2 Q │
-                           │                              │        └────────────┘
-                           │                              │               │
-                           └──────────────────────────────┴───────────────┘
-                                    (Trade sent to both clients)
+STAGE 1: Envelope Queues (routing info embedded)
+┌──────────────────┐         ┌──────────────────┐
+│ Input Envelope Q │   →→→   │ Output Envelope Q│
+│ [client_id, msg] │         │ [client_id, msg] │
+└──────────────────┘         └──────────────────┘
+
+STAGE 2: Per-Client Queues (no envelope needed)
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│ Client 1 Queue  │  │ Client 2 Queue  │  │ Client N Queue  │
+│ [msg, msg, ...] │  │ [msg, msg, ...] │  │ [msg, msg, ...] │
+└─────────────────┘  └─────────────────┘  └─────────────────┘
 ```
+
+**Why two stages?**
+1. **Envelope queues** - Single queue, envelope carries client_id for routing
+2. **Per-client queues** - Once routed, no envelope needed (queue IS the routing)
 
 ---
 
@@ -329,6 +578,7 @@ Client 2 (Sell) ──┘         │                              │          
 - Track best bid/ask (top-of-book)
 - Generate output messages (acks, trades, TOB updates)
 - Use memory pools for all allocations
+- Track client_id for cancel-on-disconnect
 
 **Key Data Structures:**
 ```c
@@ -351,10 +601,11 @@ typedef struct {
 
 **Matching Algorithm:**
 1. Allocate order from pool
-2. Try to match against opposite side
-3. If fully matched → free order back to pool
-4. If partially matched → add remainder to book
-5. Update top-of-book if needed
+2. Set `order->client_id` for tracking
+3. Try to match against opposite side
+4. If fully matched → free order back to pool
+5. If partially matched → add remainder to book
+6. Update top-of-book if needed
 
 ### Matching Engine (`src/core/matching_engine.c`)
 
@@ -387,24 +638,103 @@ typedef struct {
 } matching_engine_t;
 ```
 
-### Price Level Management
+### Processor (`src/threading/processor.c`)
 
-**Binary Search on Sorted Array:**
+**Responsibilities:**
+- Dequeue input envelopes in batches
+- Extract client_id for routing
+- Call matching engine
+- Create output envelopes with routing logic
+- Handle client disconnect cancellations
+
 ```c
-// Find price level (O(log N))
-int find_price_level(const price_level_t* levels, int num_levels, 
-                     uint32_t price, bool descending);
-
-// Insert maintaining sort order
-int insert_price_level(price_level_t* levels, int* num_levels, 
-                       uint32_t price, bool descending);
+void* processor_thread(void* arg) {
+    processor_t* processor = (processor_t*)arg;
+    input_msg_envelope_t input_batch[PROCESSOR_BATCH_SIZE];
+    output_buffer_t output_buffer;
+    
+    while (!atomic_load(processor->shutdown_flag)) {
+        // Dequeue batch
+        size_t count = 0;
+        for (size_t i = 0; i < PROCESSOR_BATCH_SIZE; i++) {
+            if (input_envelope_queue_dequeue(processor->input_queue, &input_batch[count])) {
+                count++;
+            } else {
+                break;
+            }
+        }
+        
+        // Process each message
+        for (size_t i = 0; i < count; i++) {
+            input_msg_envelope_t* envelope = &input_batch[i];
+            uint32_t client_id = envelope->client_id;
+            
+            output_buffer_init(&output_buffer);
+            matching_engine_process_message(processor->engine, &envelope->msg, 
+                                           client_id, &output_buffer);
+            
+            // Create output envelopes with routing logic
+            for (int j = 0; j < output_buffer.count; j++) {
+                output_msg_t* out_msg = &output_buffer.messages[j];
+                
+                if (out_msg->type == OUTPUT_MSG_TRADE) {
+                    // Trade → route to BOTH buyer and seller
+                    // ... (see envelope pattern section)
+                } else {
+                    // Ack, Cancel, TOB → route to originating client
+                    // ...
+                }
+            }
+        }
+    }
+}
 ```
 
-**Why not hash table for prices?**
-- O(log N) is fast for N < 10,000
-- Maintains natural price ordering
-- Better cache locality
-- Simpler implementation
+### Output Router (`src/threading/output_router.c`)
+
+**Responsibilities:**
+- Dequeue output envelopes
+- Route to per-client queues based on client_id
+- Drop messages for disconnected clients
+- Track statistics
+
+```c
+void* output_router_thread(void* arg) {
+    output_router_context_t* ctx = (output_router_context_t*)arg;
+    output_msg_envelope_t batch[BATCH_SIZE];
+    
+    while (!atomic_load(ctx->shutdown_flag)) {
+        // Dequeue batch of output envelopes
+        size_t count = 0;
+        for (size_t i = 0; i < BATCH_SIZE; i++) {
+            if (output_envelope_queue_dequeue(ctx->input_queue, &batch[count])) {
+                count++;
+            } else {
+                break;
+            }
+        }
+        
+        // Route each message
+        for (size_t i = 0; i < count; i++) {
+            output_msg_envelope_t* envelope = &batch[i];
+            
+            tcp_client_t* client = tcp_client_get(ctx->client_registry, 
+                                                   envelope->client_id);
+            
+            if (client) {
+                // Enqueue to client's output queue (no envelope needed)
+                if (tcp_client_enqueue_output(client, &envelope->msg)) {
+                    ctx->messages_routed++;
+                } else {
+                    ctx->messages_dropped++;  // Queue full
+                }
+            } else {
+                ctx->messages_dropped++;  // Client disconnected
+            }
+        }
+    }
+}
+```
 
 ---
 
@@ -438,16 +768,22 @@ typedef struct order {
 } order_t;
 ```
 
-### Price Level
+### Trade Message (with client routing)
 
 ```c
 typedef struct {
+    char symbol[MAX_SYMBOL_LENGTH];
+    uint32_t user_id_buy;
+    uint32_t user_order_id_buy;
+    uint32_t user_id_sell;
+    uint32_t user_order_id_sell;
     uint32_t price;
-    uint32_t total_quantity;     // Sum of all orders at this price
-    order_t* orders_head;        // FIFO list for time priority
-    order_t* orders_tail;
-    bool active;
-} price_level_t;
+    uint32_t quantity;
+
+    /* TCP routing - which clients to send trade to */
+    uint32_t buy_client_id;
+    uint32_t sell_client_id;
+} trade_msg_t;
 ```
 
 ### Output Buffer
@@ -458,7 +794,6 @@ typedef struct {
     int count;
 } output_buffer_t;
 
-// Helper functions
 static inline void output_buffer_init(output_buffer_t* buf) {
     buf->count = 0;
 }
@@ -477,60 +812,234 @@ static inline void output_buffer_add(output_buffer_t* buf, const output_msg_t* m
 ### Client Connection Management
 
 ```c
-// Each TCP client gets unique ID
+#define MAX_TCP_CLIENTS 100
+
 typedef struct {
-    int socket_fd;
-    uint32_t client_id;          // 1-based
-    bool active;
-    char read_buffer[BUFFER_SIZE];
-    size_t read_offset;
+    /* Network state */
+    int socket_fd;                      // Client socket (-1 if inactive)
+    uint32_t client_id;                 // Unique ID (1-based)
+    struct sockaddr_in addr;            // Client address
+    bool active;                        // true if connected
+    
+    /* Input framing state */
+    framing_read_state_t read_state;    // Handles partial reads
+    
+    /* Output queue (lock-free SPSC) */
+    output_queue_t output_queue;        // Producer: output_router
+                                        // Consumer: tcp_listener
+    
+    /* Output framing state */
+    framing_write_state_t write_state;  // Handles partial writes
+    bool has_pending_write;
+    
+    /* Statistics */
+    time_t connected_at;
+    uint64_t messages_received;
+    uint64_t messages_sent;
+    uint64_t bytes_received;
+    uint64_t bytes_sent;
 } tcp_client_t;
 ```
 
-### Client Isolation
+### Client Registry
 
-**Order Ownership:**
 ```c
-// When placing order
-order->client_id = client_id;
+typedef struct {
+    tcp_client_t clients[MAX_TCP_CLIENTS];
+    size_t active_count;
+    pthread_mutex_t lock;  // Protects add/remove only
+} tcp_client_registry_t;
 
-// Validation: user_id must match client_id
-if (msg->user_id != client_id) {
-    fprintf(stderr, "User ID mismatch: msg=%u, client=%u\n",
-            msg->user_id, client_id);
-    return;
-}
+/* API */
+bool tcp_client_add(tcp_client_registry_t* registry, int socket_fd,
+                    struct sockaddr_in addr, uint32_t* client_id);
+void tcp_client_remove(tcp_client_registry_t* registry, uint32_t client_id);
+tcp_client_t* tcp_client_get(tcp_client_registry_t* registry, uint32_t client_id);
 ```
 
-**Auto-Cancel on Disconnect:**
-```c
-// When client disconnects
-size_t cancelled = matching_engine_cancel_client_orders(engine, 
-                                                        client_id, 
-                                                        &output);
-fprintf(stderr, "Client %u disconnected, cancelled %zu orders\n",
-        client_id, cancelled);
-```
+### Security: Anti-Spoofing Validation
 
-### Message Routing
+The TCP listener validates that `user_id` in messages matches the assigned `client_id`:
 
-**Broadcast to Affected Clients:**
 ```c
-// Trade affects both buyer and seller
-if (msg->type == OUTPUT_MSG_TRADE) {
-    uint32_t buy_client = msg->data.trade.buy_client_id;
-    uint32_t sell_client = msg->data.trade.sell_client_id;
+// In tcp_listener.c - handle_client_read()
+if (parsed) {
+    bool valid = true;
+    switch (input_msg.type) {
+        case INPUT_MSG_NEW_ORDER:
+            if (input_msg.data.new_order.user_id != client_id) {
+                fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
+                        client_id, input_msg.data.new_order.user_id);
+                valid = false;
+            }
+            break;
+        case INPUT_MSG_CANCEL:
+            if (input_msg.data.cancel.user_id != client_id) {
+                fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
+                        client_id, input_msg.data.cancel.user_id);
+                valid = false;
+            }
+            break;
+    }
     
-    send_to_client(buy_client, msg);
-    send_to_client(sell_client, msg);
+    if (valid) {
+        // Create envelope and enqueue
+    }
 }
 ```
 
-**Unicast for Others:**
+**This prevents:**
+- Client A placing orders as Client B
+- Client A cancelling Client B's orders
+- Any form of client impersonation
+
+### Auto-Cancel on Disconnect
+
+When a TCP client disconnects, all their orders are automatically cancelled:
+
 ```c
-// Ack, cancel ack → only to originating client
-if (msg->type == OUTPUT_MSG_ACK || msg->type == OUTPUT_MSG_CANCEL_ACK) {
-    send_to_client(msg->client_id, msg);
+// In main.c - graceful shutdown
+uint32_t disconnected_clients[MAX_TCP_CLIENTS];
+size_t num_disconnected = tcp_client_disconnect_all(client_registry,
+                                                    disconnected_clients,
+                                                    MAX_TCP_CLIENTS);
+
+// Cancel all orders for each disconnected client
+for (size_t i = 0; i < num_disconnected; i++) {
+    processor_cancel_client_orders(&processor_ctx, disconnected_clients[i]);
+}
+
+// In order_book.c
+size_t order_book_cancel_client_orders(order_book_t* book,
+                                       uint32_t client_id,
+                                       output_buffer_t* output) {
+    size_t cancelled_count = 0;
+    
+    // Iterate all price levels and orders
+    for (int i = 0; i < book->num_bid_levels; i++) {
+        order_t* order = book->bids[i].orders_head;
+        while (order != NULL) {
+            order_t* next = order->next;
+            if (order->client_id == client_id) {
+                order_book_cancel_order(book, order->user_id, 
+                                       order->user_order_id, output);
+                cancelled_count++;
+            }
+            order = next;
+        }
+    }
+    // Similar for asks...
+    
+    return cancelled_count;
+}
+```
+
+---
+
+## Message Framing (TCP)
+
+### Wire Format
+
+TCP streams don't have message boundaries, so we use length-prefixed framing:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  4 bytes (big-endian)  │         N bytes                   │
+│      Message Length    │       Message Payload             │
+└────────────────────────────────────────────────────────────┘
+```
+
+**Example:**
+```
+CSV message: "N, 1, IBM, 100, 50, B, 1\n" (26 bytes)
+Wire format: [0x00][0x00][0x00][0x1A]["N, 1, IBM, 100, 50, B, 1\n"]
+```
+
+### Framing Structures
+
+```c
+#define MAX_FRAMED_MESSAGE_SIZE 16384
+#define FRAME_HEADER_SIZE 4
+
+/* Read state - handles partial TCP reads */
+typedef struct {
+    char buffer[MAX_FRAMED_MESSAGE_SIZE];
+    size_t buffer_pos;
+    uint32_t expected_length;
+    bool reading_header;    // true = reading length, false = reading body
+} framing_read_state_t;
+
+/* Write state - handles partial TCP writes */
+typedef struct {
+    char buffer[MAX_FRAMED_MESSAGE_SIZE + FRAME_HEADER_SIZE];
+    size_t total_len;
+    size_t written;
+} framing_write_state_t;
+```
+
+### Framing API
+
+```c
+/* Initialize read state for new message */
+void framing_read_state_init(framing_read_state_t* state);
+
+/* Process incoming bytes, return true when complete message ready */
+bool framing_read_process(framing_read_state_t* state,
+                          const char* incoming_data,
+                          size_t incoming_len,
+                          const char** msg_data,
+                          size_t* msg_len);
+
+/* Initialize write state with framed message */
+bool framing_write_state_init(framing_write_state_t* state,
+                               const char* msg_data,
+                               size_t msg_len);
+
+/* Get remaining data to write */
+void framing_write_get_remaining(framing_write_state_t* state,
+                                 const char** data,
+                                 size_t* len);
+
+/* Mark bytes as written */
+void framing_write_mark_written(framing_write_state_t* state,
+                                size_t bytes_written);
+
+/* Check if write complete */
+bool framing_write_is_complete(framing_write_state_t* state);
+```
+
+### Usage Pattern
+
+```c
+// Reading
+framing_read_state_t state;
+framing_read_state_init(&state);
+
+while (running) {
+    ssize_t n = read(sock, buffer, sizeof(buffer));
+    const char* msg;
+    size_t msg_len;
+    
+    if (framing_read_process(&state, buffer, n, &msg, &msg_len)) {
+        // Complete message ready - process it
+        handle_message(msg, msg_len);
+        framing_read_state_init(&state);  // Reset for next
+    }
+}
+
+// Writing
+framing_write_state_t state;
+framing_write_state_init(&state, msg_data, msg_len);
+
+while (!framing_write_is_complete(&state)) {
+    const char* data;
+    size_t len;
+    framing_write_get_remaining(&state, &data, &len);
+    
+    ssize_t n = write(sock, data, len);
+    if (n > 0) {
+        framing_write_mark_written(&state, n);
+    }
 }
 ```
 
@@ -594,66 +1103,54 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 
 **Trade-off:** Fixed maximum capacity (10K orders, etc.)
 
-### 2. Binary Search vs Hash Table for Prices
+### 2. Envelope Pattern for Routing
 
-**Decision:** Binary search on sorted array
-
-**Rationale:**
-- O(log N) is fast for N < 10,000 (~13 comparisons max)
-- Maintains natural price ordering
-- Better cache performance than trees
-- Simpler implementation
-- Modern CPUs make small arrays very fast
-
-**Benchmark:** ~500ns average for 100 levels
-
-### 3. Manual Doubly-Linked Lists
-
-**Decision:** Hand-coded lists for orders at each price
+**Decision:** Wrap messages with routing metadata
 
 **Rationale:**
-- Full control over memory layout
-- O(1) deletion with pointer
-- No external dependencies
-- Simple implementation (~30 lines)
-- Cache-friendly node packing
+- **Separation of concerns** - Business logic doesn't know about TCP
+- **Single queue scales** - O(1) dequeue regardless of client count
+- **Flexible routing** - Trades go to multiple clients easily
+- **Debugging** - Sequence numbers for tracing
 
-### 4. Lock-Free Queues
+**Trade-off:** Slightly larger message size (8 bytes overhead)
 
-**Decision:** SPSC queues with cache-line alignment
+### 3. Two-Stage Queuing (TCP Mode)
 
-**Rationale:**
-- **Zero lock contention** - Each thread owns one end
-- **Cache-line isolation** - Prevents false sharing
-- ~100-500ns latency per hop
-- Simple atomic operations
-
-**Why not lock-based:**
-- Locks add 1-10μs latency
-- Potential for priority inversion
-- More complex error handling
-
-### 5. TCP Multi-Client with epoll
-
-**Decision:** Event-driven I/O with client isolation
+**Decision:** Envelope queues → per-client queues
 
 **Rationale:**
-- **Scales to 100s of clients** - O(active fds), not O(total fds)
-- **Non-blocking** - No thread per client
-- **Client isolation** - Orders track ownership
-- **Auto-cleanup** - Cancel orders on disconnect
+- **Fan-out** - One output can go to multiple clients
+- **Backpressure** - Per-client queues prevent one slow client from blocking others
+- **Isolation** - Client disconnection doesn't affect queue state
 
-### 6. Fixed Array Price Levels
+### 4. Anti-Spoofing Validation
 
-**Decision:** 10,000 price level slots per side
+**Decision:** Validate user_id == client_id
 
 **Rationale:**
-- Typical order books: < 100 active levels
-- Avoids dynamic allocation
-- Predictable memory usage
-- Fast binary search
+- **Security** - Clients can't impersonate others
+- **Integrity** - Order ownership is guaranteed
+- **Production-grade** - Essential for multi-tenant systems
 
-**Memory:** ~800KB per order book (acceptable)
+### 5. Length-Prefixed Framing
+
+**Decision:** 4-byte big-endian length prefix
+
+**Rationale:**
+- **Simple** - Easy to implement
+- **Efficient** - Single length read
+- **Compatible** - Works with both CSV and binary
+- **Standard** - Common pattern in network protocols
+
+### 6. epoll/kqueue Event Loop
+
+**Decision:** Platform-specific event multiplexing
+
+**Rationale:**
+- **Scalable** - O(active fds), not O(total fds)
+- **Non-blocking** - Single thread handles 100+ clients
+- **Efficient** - No thread-per-client overhead
 
 ---
 
@@ -667,6 +1164,7 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 | TCP Receiver | 100K-1M msgs/sec | System call limited |
 | Matching Engine | 1-5M orders/sec | CPU limited |
 | Memory Pool Alloc | 100M ops/sec | Just index manipulation |
+| Output Router | 1-5M msgs/sec | Lock-free queues |
 
 ### Latency
 
@@ -681,6 +1179,7 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 | Full matching (no fill) | 500-1000ns | Add to book |
 | Full matching (fill) | 1-10μs | Depends on book depth |
 | End-to-end (UDP) | 10-50μs | Network + processing |
+| End-to-end (TCP) | 20-100μs | +framing overhead |
 
 ### Memory Usage
 
@@ -688,11 +1187,12 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 |-----------|--------|-------|
 | Order pool | ~1.5MB | 10K × 150 bytes |
 | Hash entry pool | ~800KB | 10K × 80 bytes |
-| Input queue | ~2MB | 16K × 128 bytes |
-| Output queue | ~2MB | 16K × 128 bytes |
+| Input envelope queue | ~3MB | 16K × 200 bytes |
+| Output envelope queue | ~3MB | 16K × 200 bytes |
+| Per-client queue | ~500KB | 4K × 128 bytes each |
 | Order book (empty) | ~800KB | 2 × 10K × 40 bytes |
-| Order book (1000 orders) | ~900KB | +100KB for orders |
-| **Total (typical)** | **10-20MB** | Predictable, pre-allocated |
+| Client registry | ~60MB | 100 × 600KB (incl queues) |
+| **Total (typical)** | **70-100MB** | Predictable, pre-allocated |
 
 ---
 
@@ -700,667 +1200,78 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 
 ```
 matching-engine-c/
-├── build.sh                         # Build script with test modes
-├── CMakeLists.txt                   # CMake configuration
+├── include/                         # Header files
+│   ├── core/
+│   │   ├── order.h                  # Order structure
+│   │   ├── order_book.h             # Order book + memory pools
+│   │   └── matching_engine.h        # Multi-symbol orchestrator
+│   ├── protocol/
+│   │   ├── message_types.h          # Core message definitions
+│   │   ├── message_types_extended.h # Envelope types
+│   │   ├── csv/
+│   │   │   ├── message_parser.h     # CSV input parser
+│   │   │   └── message_formatter.h  # CSV output formatter
+│   │   └── binary/
+│   │       ├── binary_protocol.h    # Binary message specs
+│   │       ├── binary_message_parser.h
+│   │       └── binary_message_formatter.h
+│   ├── network/
+│   │   ├── tcp_listener.h           # TCP multi-client (epoll/kqueue)
+│   │   ├── tcp_connection.h         # Per-client state + registry
+│   │   ├── message_framing.h        # Length-prefix framing
+│   │   └── udp_receiver.h           # UDP receiver
+│   └── threading/
+│       ├── lockfree_queue.h         # SPSC queue macros
+│       ├── queues.h                 # Queue type declarations
+│       ├── processor.h              # Processor thread
+│       ├── output_router.h          # Output router (TCP)
+│       └── output_publisher.h       # Output publisher (UDP)
+│
+├── src/                             # Implementation files
+│   ├── main.c                       # Entry point (~400 lines)
+│   ├── core/
+│   │   ├── order_book.c             # Matching logic (~900 lines)
+│   │   └── matching_engine.c        # Symbol routing (~200 lines)
+│   ├── protocol/...
+│   ├── network/
+│   │   ├── tcp_listener.c           # Event loop (~600 lines)
+│   │   ├── tcp_connection.c         # Client management
+│   │   ├── message_framing.c        # Framing logic
+│   │   └── udp_receiver.c
+│   └── threading/
+│       ├── processor.c              # Batch processing (~150 lines)
+│       ├── output_router.c          # Per-client routing (~100 lines)
+│       └── output_publisher.c
+│
+├── tools/                           # Test/debug tools
+│   ├── binary_client.c
+│   ├── tcp_client.c
+│   └── binary_decoder.c
+│
+├── tests/                           # Unity test framework
+│   ├── core/
+│   ├── protocol/
+│   └── scenarios/
 │
 ├── documentation/                   # All documentation
-│   ├── ARCHITECTURE.md             # This file
+│   ├── ARCHITECTURE.md              # This file
 │   ├── BUILD.md
 │   ├── PROTOCOLS.md
 │   ├── QUICK_START.md
 │   └── TESTING.md
 │
-├── include/                         # Header files
-│   ├── core/                       # Core matching logic
-│   │   ├── matching_engine.h
-│   │   ├── order_book.h
-│   │   └── order.h
-│   ├── network/                    # Network I/O
-│   │   ├── message_framing.h
-│   │   ├── tcp_connection.h
-│   │   ├── tcp_listener.h
-│   │   └── udp_receiver.h
-│   ├── protocol/                   # Message protocols
-│   │   ├── binary/                 # Binary protocol
-│   │   │   ├── binary_message_formatter.h
-│   │   │   ├── binary_message_parser.h
-│   │   │   └── binary_protocol.h
-│   │   ├── csv/                    # CSV protocol
-│   │   │   ├── message_formatter.h
-│   │   │   └── message_parser.h
-│   │   ├── message_types.h
-│   │   └── message_types_extended.h
-│   └── threading/                  # Threading components
-│       ├── lockfree_queue.h
-│       ├── output_publisher.h
-│       ├── output_router.h
-│       ├── processor.h
-│       └── queues.h
-│
-├── src/                            # Implementation (mirrors include/)
-│   ├── core/
-│   │   ├── matching_engine.c       # ~400 lines
-│   │   └── order_book.c            # ~900 lines
-│   ├── network/
-│   │   ├── message_framing.c
-│   │   ├── tcp_connection.c
-│   │   ├── tcp_listener.c
-│   │   └── udp_receiver.c
-│   ├── protocol/
-│   │   ├── binary/
-│   │   │   ├── binary_message_formatter.c
-│   │   │   └── binary_message_parser.c
-│   │   └── csv/
-│   │       ├── message_formatter.c
-│   │       └── message_parser.c
-│   ├── threading/
-│   │   ├── lockfree_queue.c
-│   │   ├── output_publisher.c
-│   │   ├── output_router.c
-│   │   ├── processor.c
-│   │   └── queues.c
-│   └── main.c
-│
-├── tests/                          # Unity test framework
-│   ├── core/
-│   │   ├── test_matching_engine.c
-│   │   └── test_order_book.c
-│   ├── protocol/
-│   │   ├── test_message_formatter.c
-│   │   └── test_message_parser.c
-│   ├── scenarios/
-│   │   ├── test_scenarios_even.c
-│   │   └── test_scenarios_odd.c
-│   ├── test_runner.c
-│   ├── unity.c
-│   └── unity.h
-│
-└── tools/                          # Test clients and tools
-    ├── binary_client.c
-    ├── binary_decoder.c
-    └── tcp_client.c
+├── build.sh                         # Build script
+├── CMakeLists.txt                   # CMake configuration
+└── README.md                        # Project overview
 ```
 
-**Total:** ~5,500 lines of production code, ~2,500 lines of tests
-
----
-
-## Future Enhancements
-
-### Potential Improvements
-
-**Performance:**
-- SIMD optimization for batch operations
-- Kernel-bypass networking (DPDK, io_uring)
-- Huge pages for memory pools
-- CPU pinning for threads
-
-**Features:**
-- Level 2 market data (full book snapshots)
-- Order types (stop-loss, iceberg, IOC, FOK)
-- Market making support
-- Cross orders (internal matching)
-- Auction modes (opening/closing)
-
-**Reliability:**
-- Persistent order book (crash recovery)
-- Message replay from log
-- Hot standby failover
-- Checkpointing
-
-**Observability:**
-- Latency histograms (p50, p99, p99.9)
-- Memory pool utilization graphs
-- Order book depth metrics
-- Per-client statistics
+**Total:** ~6,000 lines of production code, ~2,000 lines of tests
 
 ---
 
 ## See Also
 
 - [Quick Start Guide](QUICK_START.md) - Get up and running
-- [Protocols](PROTOCOLS.md) - Message format specifications
-- [Testing](TESTING.md) - Comprehensive testing guide
-- [Build Instructions](BUILD.md) - Detailed build guide
-- [System Overview](#system-overview)
-- [Threading Model](#threading-model)
-- [Data Flow](#data-flow)
-- [Core Components](#core-components)
-- [Data Structures](#data-structures)
-- [C Port Details](#c-port-details)
-- [Design Decisions](#design-decisions)
-- [Performance Characteristics](#performance-characteristics)
-- [Project Structure](#project-structure)
-
----
-
-## System Overview
-
-The Matching Engine is a multi-threaded, lock-free system that processes orders through three primary threads communicating via lock-free queues. It supports both TCP (multi-client) and UDP (high-throughput) modes with automatic protocol detection.
-
-### High-Level Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Matching Engine                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                   │
-│  ┌──────────────┐   ┌────────────┐   ┌───────────────┐         │
-│  │   TCP/UDP    │──▶│  Lock-Free │──▶│   Processor   │         │
-│  │   Receiver   │   │   Queue    │   │  (Matching)   │         │
-│  │  (Thread 1)  │   │ (16K msgs) │   │  (Thread 2)   │         │
-│  └──────────────┘   └────────────┘   └───────────────┘         │
-│         │                                      │                 │
-│         │ Format Detection                     │                 │
-│         │ (CSV/Binary)                         │                 │
-│         │                                      ▼                 │
-│         │                            ┌────────────────┐          │
-│         │                            │   Lock-Free    │          │
-│         │                            │  Output Queue  │          │
-│         │                            │  (16K msgs)    │          │
-│         │                            └────────────────┘          │
-│         │                                      │                 │
-│         │                                      ▼                 │
-│         │                            ┌───────────────┐           │
-│         │                            │    Output     │           │
-│         │                            │   Publisher   │           │
-│         │                            │  (Thread 3)   │           │
-│         │                            └───────────────┘           │
-│         │                                      │                 │
-│         └──────────────────────────────────────┘                 │
-│                    (TCP per-client routing)                      │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## Threading Model
-
-### Three-Thread Pipeline
-
-**Thread 1: TCP/UDP Receiver**
-- Handles network I/O (epoll for TCP, recvfrom for UDP)
-- Detects message format (CSV vs Binary)
-- Parses messages into internal format
-- Enqueues to input queue
-- Lock-free queue write (single producer)
-
-**Thread 2: Processor**
-- Dequeues messages in batches (up to 32)
-- Routes to appropriate order book (by symbol)
-- Executes matching logic (price-time priority)
-- Generates output messages
-- Enqueues to output queue
-- Lock-free queue read/write (single consumer/producer)
-
-**Thread 3: Output Publisher**
-- Dequeues output messages
-- Formats as CSV or Binary
-- Routes to appropriate client(s) in TCP mode
-- Publishes to stdout or TCP sockets
-- Lock-free queue read (single consumer)
-
-### Lock-Free Communication
-
-```c
-// Single Producer, Single Consumer (SPSC) Queue
-typedef struct {
-    _Alignas(64) atomic_uint_fast64_t read_pos;   // Consumer cache line
-    _Alignas(64) atomic_uint_fast64_t write_pos;  // Producer cache line
-    _Alignas(64) input_msg_t data[16384];         // Data cache lines
-} input_queue_t;
-```
-
-**Key Properties:**
-- Cache-line aligned (64 bytes) to prevent false sharing
-- Atomic operations for synchronization
-- No locks or mutexes
-- Typical latency: 100-500ns per hop
-
----
-
-## Data Flow
-
-### TCP Multi-Client Mode
-
-```
-Client 1 ─┐
-Client 2 ─┼──▶ TCP Listener ──▶ Input Queue ──▶ Processor ──▶ Output Router
-Client 3 ─┘    (epoll)          (lock-free)     (matching)    (per-client)
-    │                                                │
-    └────────────────────────────────────────────────┘
-              (routed output messages)
-```
-
-### UDP High-Throughput Mode
-
-```
-UDP Packets ──▶ UDP Receiver ──▶ Input Queue ──▶ Processor ──▶ Output Publisher
-(port 1234)    (recvfrom)       (lock-free)     (matching)        (stdout)
-```
-
-### Message Flow Example
-
-```
-1. Client sends: "N, 1, IBM, 100, 50, B, 1"
-2. Receiver parses → input_msg_t{type=NEW_ORDER, ...}
-3. Enqueue to input queue
-4. Processor dequeues batch of 32 messages
-5. Route to IBM order book
-6. Match order → Generate output_msg_t[]
-7. Enqueue to output queue (with client routing info)
-8. Publisher dequeues and formats
-9. Route to client's TCP socket or stdout
-```
-
----
-
-## Core Components
-
-### Message Types (`message_types.h`)
-
-Tagged unions replace C++ `std::variant`:
-
-```c
-typedef enum {
-    MSG_NEW_ORDER,
-    MSG_CANCEL_ORDER,
-    MSG_FLUSH
-} input_msg_type_t;
-
-typedef struct {
-    input_msg_type_t type;
-    union {
-        struct { uint32_t user_id; char symbol[16]; ... } new_order;
-        struct { uint32_t user_id; uint32_t user_order_id; } cancel;
-        // flush has no data
-    } data;
-} input_msg_t;
-```
-
-### Order Book (`order_book.h`)
-
-**Price Levels:**
-```c
-typedef struct {
-    uint32_t price;
-    order_t* head;  // Doubly-linked list of orders
-    order_t* tail;
-    uint32_t total_quantity;
-} price_level_t;
-
-typedef struct {
-    price_level_t buy_levels[10000];   // Fixed array
-    price_level_t sell_levels[10000];
-    int num_buy_levels;
-    int num_sell_levels;
-    // Hash table for O(1) order lookup
-    order_hash_table_t order_lookup;
-} order_book_t;
-```
-
-**Matching Algorithm:**
-1. Binary search for price level
-2. Time priority within price level (FIFO)
-3. Partial fills supported
-4. Generate trade messages
-5. Update top-of-book
-
-### Matching Engine (`matching_engine.h`)
-
-Multi-symbol orchestrator:
-
-```c
-typedef struct {
-    order_book_t order_books[MAX_SYMBOLS];  // Fixed array of books
-    char symbols[MAX_SYMBOLS][16];
-    int num_symbols;
-} matching_engine_t;
-```
-
-Routes messages to appropriate order book by symbol.
-
-### Lock-Free Queue (`lockfree_queue.h`)
-
-SPSC queue implemented as C macro "template":
-
-```c
-#define DECLARE_LOCKFREE_QUEUE(type, name) \
-    typedef struct { \
-        _Alignas(64) atomic_uint_fast64_t read_pos; \
-        _Alignas(64) atomic_uint_fast64_t write_pos; \
-        _Alignas(64) type data[QUEUE_CAPACITY]; \
-    } name##_t;
-```
-
-Usage:
-```c
-DECLARE_LOCKFREE_QUEUE(input_msg_t, input_queue)
-DECLARE_LOCKFREE_QUEUE(output_msg_t, output_queue)
-```
-
----
-
-## Data Structures
-
-### Order Structure
-
-```c
-typedef struct order {
-    uint32_t user_id;
-    uint32_t user_order_id;
-    uint32_t price;
-    uint32_t quantity;
-    char side;  // 'B' or 'S'
-    uint64_t timestamp_ns;  // Nanosecond precision
-    struct order* next;     // Doubly-linked list
-    struct order* prev;
-} order_t;
-```
-
-### Price Level Management
-
-**Binary Search:**
-```c
-// O(log N) lookup in sorted array
-int find_price_level(price_level_t* levels, int num_levels, uint32_t price);
-```
-
-**Insertion:**
-```c
-// Maintain sorted order, shift array if needed
-void insert_price_level(order_book_t* book, uint32_t price, char side);
-```
-
-### Order Hash Table
-
-```c
-typedef struct {
-    order_t* buckets[ORDER_HASH_SIZE];  // 10007 buckets (prime)
-} order_hash_table_t;
-
-// O(1) average case lookup for cancellation
-order_t* hash_table_find(order_hash_table_t* table, uint32_t user_order_id);
-```
-
----
-
-## C Port Details
-
-### How C++ Features Were Replaced
-
-| C++ Feature | C Replacement | Implementation |
-|-------------|---------------|----------------|
-| `std::variant<A,B,C>` | Tagged union | `struct { type_t type; union { A a; B b; C c; } data; }` |
-| `std::optional<T>` | Bool + out param | `bool func(..., T* out)` |
-| `std::string` | Fixed char array | `char symbol[16]` with bounds checking |
-| `std::map<K,V>` | Sorted array | Binary search on `price_level_t levels[10000]` |
-| `std::list<T>` | Manual list | `struct node { T data; node *next, *prev; }` |
-| `std::unordered_map<K,V>` | Hash table | Custom chaining implementation |
-| `std::vector<T>` | Fixed array | `T arr[MAX]; int count;` |
-| `std::thread` | pthreads | `pthread_create()`, `pthread_join()` |
-| `std::atomic<T>` | C11 atomics | `_Atomic(T)` or `atomic_uint_fast64_t` |
-| `std::chrono` | POSIX time | `clock_gettime(CLOCK_REALTIME)` |
-| Templates | Macros | `#define DECLARE_TYPE(T) ...` |
-| Namespaces | Prefixes | `order_book_create()`, `order_book_add()` |
-| Destructors | Explicit cleanup | `order_book_destroy(book)` |
-
-### Memory Management
-
-**No STL containers means:**
-- Manual memory management (malloc/free)
-- Explicit cleanup functions
-- More control over allocation patterns
-- Potential for memory leaks if not careful
-
-**Best practices:**
-```c
-// Create
-order_book_t* book = order_book_create("IBM");
-
-// Use
-order_book_add_order(book, ...);
-
-// Cleanup
-order_book_destroy(book);
-```
-
----
-
-## Design Decisions
-
-### 1. Fixed Arrays vs Dynamic Allocation
-
-**Decision:** Fixed-size arrays for price levels (10,000 slots)
-
-**Rationale:**
-- Predictable memory usage (~800KB per order book)
-- Better cache locality (contiguous memory)
-- No malloc/free in matching hot path
-- Typical order books have < 100 active price levels
-- Avoids fragmentation
-
-**Trade-off:** Maximum 10,000 distinct price levels per symbol
-
-### 2. Binary Search vs Hash Table for Prices
-
-**Decision:** Binary search on sorted array
-
-**Rationale:**
-- O(log N) is acceptable for N < 10,000
-- Maintains natural price ordering
-- Better cache performance than trees
-- Simpler than red-black trees
-- Modern CPUs make small arrays very fast
-
-**Benchmark:** ~500ns average for 100 levels
-
-### 3. Manual Doubly-Linked Lists
-
-**Decision:** Hand-coded doubly-linked lists for orders at each price
-
-**Rationale:**
-- Full control over memory layout
-- O(1) deletion with pointer
-- No external dependencies
-- Simple implementation (~50 lines)
-- Cache-friendly node packing
-
-### 4. Lock-Free Queues
-
-**Decision:** Single Producer Single Consumer (SPSC) queues
-
-**Rationale:**
-- Zero lock contention
-- Cache-line alignment prevents false sharing
-- ~100-500ns latency per hop
-- Simple implementation (atomic read/write pointers)
-
-**Why not lock-based:**
-- Locks add ~1-10μs latency
-- Potential for priority inversion
-- More complex error handling
-
-### 5. Dual Protocol Support
-
-**Decision:** Auto-detection via magic byte (0x4D)
-
-**Rationale:**
-- Zero configuration required
-- Backward compatible with CSV tests
-- Performance boost for binary clients (5-10x)
-- Mixed-mode operation for gradual migration
-
-### 6. Macro "Templates" for Queues
-
-**Decision:** C macros instead of void* or code generation
-
-**Rationale:**
-- Type safety at compile time
-- Zero runtime overhead
-- Similar to C++ templates
-- Explicit code generation (visible in preprocessed output)
-
-**Example:**
-```c
-DECLARE_LOCKFREE_QUEUE(input_msg_t, input_queue)
-// Expands to full input_queue_t struct definition
-```
-
-### 7. TCP Multi-Client Architecture
-
-**Decision:** epoll-based event loop with per-client isolation
-
-**Rationale:**
-- Scales to hundreds of clients
-- Non-blocking I/O
-- Per-client order ownership validation
-- Automatic cleanup on disconnect
-
----
-
-## Performance Characteristics
-
-### Throughput
-
-| Component | Throughput | Bottleneck |
-|-----------|-----------|------------|
-| UDP Receiver | 1-10M packets/sec | Network bandwidth |
-| TCP Receiver | 100K-1M messages/sec | System calls (epoll) |
-| Processor | 1-5M orders/sec | Matching logic |
-| Output Publisher | 500K-1M messages/sec | stdout/TCP write |
-
-### Latency
-
-| Operation | Latency | Notes |
-|-----------|---------|-------|
-| Lock-free queue hop | 100-500ns | Cache-line aligned atomics |
-| CSV parsing | 500-2000ns | String parsing overhead |
-| Binary parsing | 50-200ns | Memcpy + ntohl |
-| Order book lookup | 100-500ns | Binary search + hash |
-| Matching (no fill) | 500-1000ns | Add to order book |
-| Matching (full fill) | 1-10μs | Depends on book depth |
-| End-to-end (UDP) | 10-50μs | Network + processing |
-
-### Memory Usage
-
-| Component | Memory | Notes |
-|-----------|--------|-------|
-| Input queue | ~2MB | 16,384 × ~128 bytes |
-| Output queue | ~2MB | 16,384 × ~128 bytes |
-| Order book (empty) | ~800KB | 2 × 10,000 × 40 bytes |
-| Order book (1000 orders) | ~900KB | +100KB for orders |
-| Total (10 symbols) | 10-50MB | Typical usage |
-
-### Protocol Comparison
-
-| Metric | CSV | Binary | Improvement |
-|--------|-----|--------|-------------|
-| New Order Size | 40-50 bytes | 30 bytes | 40-60% smaller |
-| Cancel Size | 20-30 bytes | 11 bytes | 60-70% smaller |
-| Parsing Time | 500-2000ns | 50-200ns | 5-10x faster |
-| Network Bandwidth | Baseline | 50-70% of CSV | 2x more efficient |
-| Human Readable | ✓ | ✗ | Trade-off |
-
-### Scalability
-
-**Vertical (single machine):**
-- CPU-bound at ~5M orders/sec
-- Memory: ~50MB per 10K active orders
-- Network: ~1-2Gbps saturated
-
-**Horizontal (theoretical):**
-- Shard by symbol (independent order books)
-- Replicate for high availability
-- Aggregate market data
-
----
-
-## Project Structure
-
-```
-matching-engine-c/
-├── include/                    # Header files
-│   ├── message_types.h         # Core message definitions
-│   ├── order.h                 # Order structure
-│   ├── order_book.h            # Order book (price levels + hash)
-│   ├── matching_engine.h       # Multi-symbol orchestrator
-│   ├── message_parser.h        # CSV input parser
-│   ├── message_formatter.h     # CSV output formatter
-│   ├── binary_protocol.h       # Binary message specs
-│   ├── binary_message_parser.h # Binary input parser
-│   ├── binary_message_formatter.h # Binary output formatter
-│   ├── lockfree_queue.h        # SPSC queue macros
-│   ├── udp_receiver.h          # UDP receiver thread
-│   ├── tcp_listener.h          # TCP multi-client thread
-│   ├── processor.h             # Processor thread
-│   └── output_publisher.h      # Output thread
-│
-├── src/                        # Implementation files
-│   ├── main.c                  # Entry point (400 lines)
-│   ├── order_book.c            # Matching logic (800+ lines)
-│   ├── matching_engine.c       # Symbol routing (200 lines)
-│   ├── message_parser.c        # CSV parsing (300 lines)
-│   ├── message_formatter.c     # CSV formatting (200 lines)
-│   ├── binary_message_parser.c # Binary parsing (150 lines)
-│   ├── binary_message_formatter.c # Binary formatting (150 lines)
-│   ├── udp_receiver.c          # UDP logic (300 lines)
-│   ├── tcp_listener.c          # TCP epoll logic (600 lines)
-│   ├── processor.c             # Batch processing (200 lines)
-│   └── output_publisher.c      # Output routing (250 lines)
-│
-├── tools/                      # Binary protocol tools
-│   ├── binary_client.c         # Binary test client
-│   ├── tcp_client.c            # TCP test client
-│   └── binary_decoder.c        # Binary→CSV decoder
-│
-└── tests/                      # Unity test framework
-    ├── unity.[ch]              # Unity framework
-    ├── test_runner.c           # Test main()
-    ├── test_order_book.c       # Core matching tests
-    ├── test_message_parser.c   # Parser validation
-    └── ...                     # More test files
-```
-
-**Total:** ~5,000 lines of production code, ~2,000 lines of tests
-
----
-
-## Future Enhancements
-
-### Potential Improvements
-
-**Performance:**
-- SIMD optimization for batch operations
-- Kernel-bypass networking (DPDK, io_uring)
-- Lock-free hash table for order lookup
-- Memory pool allocator for orders
-
-**Features:**
-- Level 2 market data (full book snapshots)
-- Order types (stop-loss, iceberg, IOC, FOK)
-- Market making support
-- Cross orders (internal matching)
-- Auction modes (opening/closing)
-
-**Reliability:**
-- Persistent order book (crash recovery)
-- Message replay from log
-- Hot standby failover
-- Checkpointing
-
-**Observability:**
-- Latency histograms
-- Performance counters
-- Order book depth metrics
-- Client session tracking
-
----
-
-## See Also
-
-- [Quick Start Guide](QUICK_START.md) - Get up and running
-- [Protocols](PROTOCOLS.md) - Message format specifications
+- [Protocols](PROTOCOLS.md) - Message format specifications (CSV, Binary, TCP Framing)
 - [Testing](TESTING.md) - Comprehensive testing guide
 - [Build Instructions](BUILD.md) - Detailed build guide

@@ -7,6 +7,7 @@ Complete documentation for CSV and Binary protocols supported by the Matching En
 - [CSV Protocol](#csv-protocol)
 - [Binary Protocol](#binary-protocol)
 - [Protocol Detection](#protocol-detection)
+- [TCP Framing Protocol](#tcp-framing-protocol)
 - [Binary Tools](#binary-tools)
 - [Creating Custom Messages](#creating-custom-messages)
 - [Protocol Comparison](#protocol-comparison)
@@ -306,27 +307,165 @@ if (data[0] == 0x4D) {
 }
 ```
 
-### TCP Framing
+### TCP Framing Protocol
 
-TCP mode uses length-prefixed framing to handle message boundaries:
+TCP streams don't have message boundaries, so we use **length-prefixed framing**.
+
+#### Wire Format
 
 ```
-┌────────────────┬──────────────────────┐
-│  Length (4B)   │  Message Payload     │
-│  (big endian)  │  (CSV or Binary)     │
-└────────────────┴──────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  4 bytes (big-endian)  │           N bytes                  │
+│     Message Length     │        Message Payload              │
+│                        │       (CSV or Binary)               │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-**Example:**
+#### Examples
+
+**CSV message:**
 ```
-00 00 00 1E  4D 4E 00 00 00 01 49 42 4D ...
-└─────────┘  └────────────────────────────
-length=30    binary new order message
+Message: "N, 1, IBM, 10000, 50, B, 1\n" (28 bytes)
+
+Wire format:
+00 00 00 1C   4E 2C 20 31 2C 20 49 42 4D 2C 20 31 ...
+└─────────┘   └─────────────────────────────────────
+length=28     CSV payload
+```
+
+**Binary message:**
+```
+Message: Binary new order (30 bytes)
+
+Wire format:
+00 00 00 1E   4D 4E 00 00 00 01 49 42 4D 00 00 00 ...
+└─────────┘   └─────────────────────────────────────
+length=30     Binary payload (starts with 0x4D magic)
+```
+
+#### Framing State Machine
+
+The receiver maintains state across partial reads:
+
+```c
+typedef struct {
+    char buffer[MAX_FRAMED_MESSAGE_SIZE];
+    size_t buffer_pos;
+    uint32_t expected_length;
+    bool reading_header;    // true = reading 4-byte length
+                            // false = reading message body
+} framing_read_state_t;
+```
+
+**State transitions:**
+1. `reading_header=true` → Read 4 bytes → Parse length → `reading_header=false`
+2. `reading_header=false` → Read `expected_length` bytes → Deliver message → Reset
+
+#### Client Implementation (Python)
+
+```python
+import struct
+import socket
+
+def send_framed_message(sock, message):
+    """Send a length-prefixed message over TCP."""
+    data = message.encode('utf-8')
+    length = struct.pack('>I', len(data))  # 4-byte big-endian
+    sock.sendall(length + data)
+
+def recv_framed_message(sock):
+    """Receive a length-prefixed message from TCP."""
+    # Read 4-byte length header
+    header = sock.recv(4)
+    if len(header) < 4:
+        return None
+    length = struct.unpack('>I', header)[0]
+    
+    # Read message body
+    data = b''
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            return None
+        data += chunk
+    
+    return data.decode('utf-8')
+
+# Usage
+sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+sock.connect(('localhost', 1234))
+
+send_framed_message(sock, "N, 1, IBM, 10000, 50, B, 1\n")
+response = recv_framed_message(sock)
+print(response)  # "A, IBM, 1, 1"
+```
+
+#### Client Implementation (C)
+
+```c
+#include <arpa/inet.h>
+#include <string.h>
+
+/* Send framed message */
+bool send_framed(int sock, const char* msg, size_t len) {
+    uint32_t net_len = htonl(len);
+    
+    // Send length header
+    if (send(sock, &net_len, 4, 0) != 4) return false;
+    
+    // Send message body
+    if (send(sock, msg, len, 0) != (ssize_t)len) return false;
+    
+    return true;
+}
+
+/* Receive framed message */
+ssize_t recv_framed(int sock, char* buf, size_t buf_size) {
+    uint32_t net_len;
+    
+    // Read length header
+    if (recv(sock, &net_len, 4, MSG_WAITALL) != 4) return -1;
+    
+    uint32_t len = ntohl(net_len);
+    if (len > buf_size) return -1;
+    
+    // Read message body
+    if (recv(sock, buf, len, MSG_WAITALL) != (ssize_t)len) return -1;
+    
+    return len;
+}
+```
+
+#### Handling Partial Reads/Writes
+
+TCP may deliver data in chunks. The server handles this with:
+
+```c
+// Reading: accumulate until complete message
+bool framing_read_process(framing_read_state_t* state,
+                          const char* incoming_data,
+                          size_t incoming_len,
+                          const char** msg_data,
+                          size_t* msg_len);
+
+// Writing: track what's been sent
+void framing_write_get_remaining(framing_write_state_t* state,
+                                 const char** data,
+                                 size_t* len);
+void framing_write_mark_written(framing_write_state_t* state,
+                                size_t bytes_written);
+```
+
+#### Constants
+
+```c
+#define MAX_FRAMED_MESSAGE_SIZE 16384   // 16KB max message
+#define FRAME_HEADER_SIZE 4             // 4-byte length prefix
 ```
 
 ### UDP Operation
 
-UDP mode does not use length framing (UDP packets have built-in boundaries). Format detection still applies.
+UDP mode does **not** use length framing - UDP packets have built-in boundaries. Format detection (CSV vs Binary) still applies based on the first byte.
 
 ---
 
