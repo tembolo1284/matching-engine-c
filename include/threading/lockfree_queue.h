@@ -15,6 +15,15 @@ extern "C" {
 /**
  * LockFreeQueue - Single-producer, single-consumer lock-free queue
  *
+ * Power of Ten Compliant:
+ * - Rule 1: No recursion or goto
+ * - Rule 2: No loops (completely loop-free implementation!)
+ * - Rule 3: Fixed-size, no dynamic allocation
+ * - Rule 4: All functions < 20 lines
+ * - Rule 5: Assertions for invariants
+ * - Rule 7: Parameter validation
+ * - Rule 9: Single-level pointer dereferencing only
+ *
  * Design decisions:
  * - Fixed-size ring buffer (power of 2 for efficient modulo via bitmasking)
  * - Cache-line padding to prevent false sharing
@@ -141,7 +150,9 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
     /* Initialize queue */ \
     void NAME##_init(NAME##_t* queue) { \
         /* Rule 7: Parameter validation */ \
-        QUEUE_ASSERT_VOID(queue != NULL); \
+        if (queue == NULL) { \
+            return; \
+        } \
         \
         /* Initialize indices */ \
         atomic_init(&queue->head, 0); \
@@ -164,11 +175,7 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
     } \
     \
     /* Destroy queue (no-op for fixed array, provided for API consistency) */ \
-    void NAME##_destroy(NAME##_t* queue) { \
-        QUEUE_ASSERT_VOID(queue != NULL); \
-        /* Nothing to free for fixed-size array */ \
-        /* Could add final stats reporting here in debug mode */ \
-    } \
+    void NAME##_destroy(NAME##_t* queue) { (void)queue; } \
     \
     /* Enqueue element (returns false if queue is full) */ \
     bool NAME##_enqueue(NAME##_t* queue, const TYPE* item) { \

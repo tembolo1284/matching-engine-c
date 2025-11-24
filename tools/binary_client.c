@@ -11,6 +11,8 @@
 #include <errno.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdarg.h>
+#include <netdb.h>
 
 #define BINARY_MAGIC 0x4D
 #define BINARY_SYMBOL_LEN 8
@@ -63,16 +65,6 @@ static void safe_printf(const char *fmt, ...) {
     va_start(args, fmt);
     vprintf(fmt, args);
     va_end(args);
-    fflush(stdout);
-    pthread_mutex_unlock(&g_print_mtx);
-}
-
-static void safe_fputs_line(const char *s) {
-    pthread_mutex_lock(&g_print_mtx);
-    fputs(s, stdout);
-    /* ensure newline */
-    size_t n = strlen(s);
-    if (n == 0 || s[n-1] != '\n') fputc('\n', stdout);
     fflush(stdout);
     pthread_mutex_unlock(&g_print_mtx);
 }
@@ -465,14 +457,23 @@ int main(int argc, char* argv[]) {
     server.sin_port = htons((uint16_t)port);
 
     if (inet_pton(AF_INET, host, &server.sin_addr) != 1) {
-        // try DNS
-        struct in_addr addr;
-        if (inet_aton(host, &addr) == 0) {
-            fprintf(stderr, "Invalid host: %s\n", host);
+        // DNS resolve (portable)
+        struct addrinfo hints, *res = NULL;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;      // IPv4 only (matches server)
+        hints.ai_socktype = sock_type;  // TCP or UDP
+
+        int rc = getaddrinfo(host, NULL, &hints, &res);
+        if (rc != 0 || !res) {
+            fprintf(stderr, "Invalid host '%s': %s\n",
+                    host, rc == 0 ? "no results" : gai_strerror(rc));
             close(sock);
             return 1;
         }
-        server.sin_addr = addr;
+
+        struct sockaddr_in *addr_in = (struct sockaddr_in*)res->ai_addr;
+        server.sin_addr = addr_in->sin_addr;
+        freeaddrinfo(res);
     }
 
     // Connect if TCP
