@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
+
 #include "network/tcp_connection.h"
 #include "protocol/message_types_extended.h"
 #include "threading/lockfree_queue.h"
@@ -18,15 +19,20 @@
  *   - Writing output messages to clients
  *   - Detecting client disconnections
  * 
+ * Updated for dual-processor support:
+ *   - Routes messages by symbol to appropriate processor queue
+ *   - A-M symbols → input_queue_0
+ *   - N-Z symbols → input_queue_1
+ *   - Flush commands → BOTH queues
+ *   - Cancels without symbol → BOTH queues
+ * 
  * Architecture:
  *   Single thread uses epoll/kqueue to multiplex I/O across all clients
  *   No thread-per-client overhead
  *   Scales efficiently to 100+ clients
- * 
- * Flow:
- *   Accept → Read (framed) → Parse → Enqueue to processor
- *   Processor → Output router → Client queues → Write (framed)
  */
+
+#define MAX_INPUT_QUEUES 2
 
 /**
  * TCP listener configuration
@@ -57,8 +63,12 @@ typedef struct {
     // Client registry
     tcp_client_registry_t* client_registry;
     
-    // Input queue (to processor)
-    input_envelope_queue_t* input_queue;
+    // Input queues - supports dual-processor mode
+    input_envelope_queue_t* input_queues[MAX_INPUT_QUEUES];
+    int num_input_queues;                   // 1 = single, 2 = dual
+    
+    // Legacy single-queue pointer for backward compatibility
+    input_envelope_queue_t* input_queue;    // Points to input_queues[0]
     
     // Shutdown coordination
     atomic_bool* shutdown_flag;
@@ -69,11 +79,12 @@ typedef struct {
     uint64_t total_messages_sent;           // Total messages sent
     uint64_t total_bytes_received;          // Total bytes received
     uint64_t total_bytes_sent;              // Total bytes sent
+    uint64_t messages_to_processor[MAX_INPUT_QUEUES];  // Per-processor stats
     
 } tcp_listener_context_t;
 
 /**
- * Initialize TCP listener context
+ * Initialize TCP listener context (single processor mode - backward compatible)
  * 
  * @param ctx Context to initialize
  * @param config Configuration
@@ -87,6 +98,24 @@ bool tcp_listener_init(tcp_listener_context_t* ctx,
                        tcp_client_registry_t* client_registry,
                        input_envelope_queue_t* input_queue,
                        atomic_bool* shutdown_flag);
+
+/**
+ * Initialize TCP listener context for dual-processor mode
+ * 
+ * @param ctx Context to initialize
+ * @param config Configuration
+ * @param client_registry Shared client registry
+ * @param input_queue_0 Input queue for A-M symbols (processor 0)
+ * @param input_queue_1 Input queue for N-Z symbols (processor 1)
+ * @param shutdown_flag Shutdown coordination flag
+ * @return true on success
+ */
+bool tcp_listener_init_dual(tcp_listener_context_t* ctx,
+                            const tcp_listener_config_t* config,
+                            tcp_client_registry_t* client_registry,
+                            input_envelope_queue_t* input_queue_0,
+                            input_envelope_queue_t* input_queue_1,
+                            atomic_bool* shutdown_flag);
 
 /**
  * Cleanup TCP listener context

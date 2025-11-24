@@ -5,6 +5,7 @@
 #include "protocol/csv/message_parser.h"
 #include "protocol/binary/binary_message_parser.h"
 #include "threading/queues.h"
+
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -17,16 +18,18 @@ extern "C" {
 /**
  * UdpReceiver - Thread 1: Receive UDP messages and parse them
  *
- * Updated for unified envelope architecture:
- * - Now outputs input_msg_envelope_t with client_id = 0
- * - Compatible with TCP multi-client processor
- * - Maintains backward compatibility with existing UDP tests
+ * Updated for dual-processor support:
+ * - Routes messages by symbol to appropriate processor queue
+ * - A-M symbols → input_queue_0
+ * - N-Z symbols → input_queue_1
+ * - Flush commands → BOTH queues
+ * - Cancels without symbol → BOTH queues
  *
  * Design decisions:
  * - Uses raw POSIX sockets (replaces boost::asio)
  * - Runs in separate pthread
  * - Parses incoming CSV/binary messages (auto-detect)
- * - Pushes parsed messages wrapped in envelopes to lock-free queue
+ * - Pushes parsed messages wrapped in envelopes to lock-free queue(s)
  * - Graceful shutdown via atomic flag
  * - Large receive buffer (10MB) to handle bursts
  */
@@ -34,13 +37,18 @@ extern "C" {
 #define MAX_UDP_PACKET_SIZE 65507
 #define UDP_RECV_BUFFER_SIZE (10 * 1024 * 1024)  /* 10MB socket buffer */
 #define MAX_INPUT_LINE_LENGTH 256
+#define MAX_INPUT_QUEUES 2
 
 /**
  * UDP receiver state
  */
 typedef struct {
-    /* Output queue - NOW USES ENVELOPES */
-    input_envelope_queue_t* output_queue;
+    /* Output queues - supports dual-processor mode */
+    input_envelope_queue_t* output_queues[MAX_INPUT_QUEUES];
+    int num_output_queues;          /* 1 = single processor, 2 = dual processor */
+    
+    /* Legacy single-queue pointer for backward compatibility */
+    input_envelope_queue_t* output_queue;  /* Points to output_queues[0] */
     
     /* Network configuration */
     uint16_t port;
@@ -54,10 +62,11 @@ typedef struct {
     atomic_bool running;
     atomic_bool started;
     
-    /* Statistics */
+    /* Statistics - per processor */
     atomic_uint_fast64_t packets_received;
     atomic_uint_fast64_t messages_parsed;
     atomic_uint_fast64_t messages_dropped;
+    atomic_uint_fast64_t messages_to_processor[MAX_INPUT_QUEUES];
     
     /* Message sequence number */
     atomic_uint_fast64_t sequence;
@@ -73,11 +82,24 @@ typedef struct {
  * ============================================================================ */
 
 /**
- * Initialize UDP receiver
+ * Initialize UDP receiver (single processor mode - backward compatible)
  */
 void udp_receiver_init(udp_receiver_t* receiver, 
-                      input_envelope_queue_t* output_queue, 
-                      uint16_t port);
+                       input_envelope_queue_t* output_queue, 
+                       uint16_t port);
+
+/**
+ * Initialize UDP receiver for dual-processor mode
+ * 
+ * @param receiver Receiver to initialize
+ * @param output_queue_0 Queue for A-M symbols (processor 0)
+ * @param output_queue_1 Queue for N-Z symbols (processor 1)
+ * @param port UDP port to listen on
+ */
+void udp_receiver_init_dual(udp_receiver_t* receiver,
+                            input_envelope_queue_t* output_queue_0,
+                            input_envelope_queue_t* output_queue_1,
+                            uint16_t port);
 
 /**
  * Destroy UDP receiver and cleanup resources
@@ -106,6 +128,11 @@ bool udp_receiver_is_running(const udp_receiver_t* receiver);
 uint64_t udp_receiver_get_packets_received(const udp_receiver_t* receiver);
 uint64_t udp_receiver_get_messages_parsed(const udp_receiver_t* receiver);
 uint64_t udp_receiver_get_messages_dropped(const udp_receiver_t* receiver);
+
+/**
+ * Print detailed statistics including per-processor routing
+ */
+void udp_receiver_print_stats(const udp_receiver_t* receiver);
 
 /* ============================================================================
  * Internal Functions (used by thread)

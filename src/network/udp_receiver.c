@@ -1,6 +1,8 @@
 #include "network/udp_receiver.h"
 #include "protocol/binary/binary_protocol.h"
 #include "protocol/binary/binary_message_parser.h"
+#include "protocol/symbol_router.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,25 +16,156 @@
 #include <sched.h>
 
 /**
- * Initialize UDP receiver
+ * Get symbol from input message for routing
+ */
+static const char* get_symbol_from_input_msg(const input_msg_t* msg) {
+    switch (msg->type) {
+        case INPUT_MSG_NEW_ORDER:
+            return msg->data.new_order.symbol;
+        case INPUT_MSG_CANCEL:
+            return msg->data.cancel.symbol;
+        case INPUT_MSG_FLUSH:
+            return NULL;  // Flush has no symbol
+        default:
+            return NULL;
+    }
+}
+
+/**
+ * Route message to appropriate queue(s)
+ * Returns true if message was successfully enqueued
+ */
+static bool route_message(udp_receiver_t* receiver, 
+                          const input_msg_envelope_t* envelope,
+                          const input_msg_t* msg) {
+    
+    if (receiver->num_output_queues == 1) {
+        // Single processor mode - send to the only queue
+        int retry_count = 0;
+        const int MAX_RETRIES = 1000;
+        
+        while (!input_envelope_queue_enqueue(receiver->output_queues[0], envelope)) {
+            retry_count++;
+            if (retry_count >= MAX_RETRIES) {
+                return false;
+            }
+            sched_yield();
+        }
+        atomic_fetch_add(&receiver->messages_to_processor[0], 1);
+        return true;
+    }
+    
+    // Dual processor mode - route by symbol
+    const char* symbol = get_symbol_from_input_msg(msg);
+    
+    if (msg->type == INPUT_MSG_FLUSH || !symbol_is_valid(symbol)) {
+        // Flush or cancel without symbol → send to BOTH queues
+        bool success_0 = false;
+        bool success_1 = false;
+        
+        int retry_count = 0;
+        const int MAX_RETRIES = 1000;
+        
+        // Send to queue 0
+        while (!success_0 && retry_count < MAX_RETRIES) {
+            if (input_envelope_queue_enqueue(receiver->output_queues[0], envelope)) {
+                success_0 = true;
+                atomic_fetch_add(&receiver->messages_to_processor[0], 1);
+            } else {
+                retry_count++;
+                sched_yield();
+            }
+        }
+        
+        // Send to queue 1
+        retry_count = 0;
+        while (!success_1 && retry_count < MAX_RETRIES) {
+            if (input_envelope_queue_enqueue(receiver->output_queues[1], envelope)) {
+                success_1 = true;
+                atomic_fetch_add(&receiver->messages_to_processor[1], 1);
+            } else {
+                retry_count++;
+                sched_yield();
+            }
+        }
+        
+        return success_0 && success_1;
+    }
+    
+    // Route by symbol
+    int processor_id = get_processor_id_for_symbol(symbol);
+    
+    int retry_count = 0;
+    const int MAX_RETRIES = 1000;
+    
+    while (!input_envelope_queue_enqueue(receiver->output_queues[processor_id], envelope)) {
+        retry_count++;
+        if (retry_count >= MAX_RETRIES) {
+            return false;
+        }
+        sched_yield();
+    }
+    
+    atomic_fetch_add(&receiver->messages_to_processor[processor_id], 1);
+    return true;
+}
+
+/**
+ * Initialize UDP receiver (single processor mode)
  */
 void udp_receiver_init(udp_receiver_t* receiver, 
-                      input_envelope_queue_t* output_queue, 
-                      uint16_t port) {
-    receiver->output_queue = output_queue;
+                       input_envelope_queue_t* output_queue, 
+                       uint16_t port) {
+    memset(receiver, 0, sizeof(*receiver));
+    
+    receiver->output_queues[0] = output_queue;
+    receiver->output_queues[1] = NULL;
+    receiver->num_output_queues = 1;
+    receiver->output_queue = output_queue;  // Backward compatibility
+    
     receiver->port = port;
     receiver->sockfd = -1;
     
     message_parser_init(&receiver->csv_parser);
     binary_message_parser_init(&receiver->binary_parser);
     
-    memset(receiver->recv_buffer, 0, MAX_UDP_PACKET_SIZE);
+    atomic_init(&receiver->running, false);
+    atomic_init(&receiver->started, false);
+    atomic_init(&receiver->packets_received, 0);
+    atomic_init(&receiver->messages_parsed, 0);
+    atomic_init(&receiver->messages_dropped, 0);
+    atomic_init(&receiver->messages_to_processor[0], 0);
+    atomic_init(&receiver->messages_to_processor[1], 0);
+    atomic_init(&receiver->sequence, 0);
+}
+
+/**
+ * Initialize UDP receiver for dual-processor mode
+ */
+void udp_receiver_init_dual(udp_receiver_t* receiver,
+                            input_envelope_queue_t* output_queue_0,
+                            input_envelope_queue_t* output_queue_1,
+                            uint16_t port) {
+    memset(receiver, 0, sizeof(*receiver));
+    
+    receiver->output_queues[0] = output_queue_0;
+    receiver->output_queues[1] = output_queue_1;
+    receiver->num_output_queues = 2;
+    receiver->output_queue = output_queue_0;  // Backward compatibility
+    
+    receiver->port = port;
+    receiver->sockfd = -1;
+    
+    message_parser_init(&receiver->csv_parser);
+    binary_message_parser_init(&receiver->binary_parser);
     
     atomic_init(&receiver->running, false);
     atomic_init(&receiver->started, false);
     atomic_init(&receiver->packets_received, 0);
     atomic_init(&receiver->messages_parsed, 0);
     atomic_init(&receiver->messages_dropped, 0);
+    atomic_init(&receiver->messages_to_processor[0], 0);
+    atomic_init(&receiver->messages_to_processor[1], 0);
     atomic_init(&receiver->sequence, 0);
 }
 
@@ -115,7 +248,9 @@ bool udp_receiver_setup_socket(udp_receiver_t* receiver) {
 void* udp_receiver_thread_func(void* arg) {
     udp_receiver_t* receiver = (udp_receiver_t*)arg;
     
-    fprintf(stderr, "UDP Receiver thread started on port %d\n", receiver->port);
+    fprintf(stderr, "UDP Receiver thread started on port %d (mode: %s)\n", 
+            receiver->port,
+            receiver->num_output_queues == 2 ? "dual-processor" : "single-processor");
     
     char buffer[MAX_UDP_PACKET_SIZE];
     struct sockaddr_in6 client_addr;
@@ -124,11 +259,11 @@ void* udp_receiver_thread_func(void* arg) {
     while (atomic_load_explicit(&receiver->running, memory_order_acquire)) {
         // Receive UDP packet
         ssize_t bytes_received = recvfrom(receiver->sockfd,
-                                         buffer,
-                                         MAX_UDP_PACKET_SIZE - 1,
-                                         0,
-                                         (struct sockaddr*)&client_addr,
-                                         &client_len);
+                                          buffer,
+                                          MAX_UDP_PACKET_SIZE - 1,
+                                          0,
+                                          (struct sockaddr*)&client_addr,
+                                          &client_len);
         
         if (bytes_received < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -193,28 +328,17 @@ void* udp_receiver_thread_func(void* arg) {
                 }
                 
                 if (parse_success) {
-                    // CRITICAL: Wrap message in envelope with client_id = 0 (UDP mode)
+                    // Create envelope with client_id = 0 (UDP mode)
                     uint64_t seq = atomic_fetch_add(&receiver->sequence, 1);
                     input_msg_envelope_t envelope = create_input_envelope(&msg, 0, seq);
                     
-                    // Push envelope to input queue with retry logic
-                    int retry_count = 0;
-                    const int MAX_RETRIES = 1000;
-                    
-                    while (!input_envelope_queue_enqueue(receiver->output_queue, &envelope)) {
-                        retry_count++;
-                        if (retry_count >= MAX_RETRIES) {
-                            fprintf(stderr, "WARNING: Input queue full, dropping message!\n");
-                            atomic_fetch_add(&receiver->messages_dropped, 1);
-                            break;
-                        }
-                        // Very brief wait
-                        sched_yield();
-                    }
-                    
-                    if (retry_count < MAX_RETRIES) {
+                    // Route message to appropriate queue(s)
+                    if (route_message(receiver, &envelope, &msg)) {
                         atomic_fetch_add_explicit(&receiver->messages_parsed, 1, 
-                                                 memory_order_relaxed);
+                                                  memory_order_relaxed);
+                    } else {
+                        fprintf(stderr, "WARNING: Input queue full, dropping message!\n");
+                        atomic_fetch_add(&receiver->messages_dropped, 1);
                     }
                 }
             }
@@ -230,10 +354,8 @@ void* udp_receiver_thread_func(void* arg) {
         }
     }
     
-    fprintf(stderr, "UDP Receiver thread stopped. Packets: %llu, Parsed: %llu, Dropped: %llu\n",
-            (unsigned long long)atomic_load(&receiver->packets_received),
-            (unsigned long long)atomic_load(&receiver->messages_parsed),
-           (unsigned long long) atomic_load(&receiver->messages_dropped));
+    fprintf(stderr, "UDP Receiver thread stopped.\n");
+    udp_receiver_print_stats(receiver);
     
     return NULL;
 }
@@ -309,4 +431,24 @@ uint64_t udp_receiver_get_messages_parsed(const udp_receiver_t* receiver) {
 
 uint64_t udp_receiver_get_messages_dropped(const udp_receiver_t* receiver) {
     return atomic_load(&receiver->messages_dropped);
+}
+
+/**
+ * Print detailed statistics
+ */
+void udp_receiver_print_stats(const udp_receiver_t* receiver) {
+    fprintf(stderr, "\n=== UDP Receiver Statistics ===\n");
+    fprintf(stderr, "Packets received:      %llu\n",
+            (unsigned long long)atomic_load(&receiver->packets_received));
+    fprintf(stderr, "Messages parsed:       %llu\n",
+            (unsigned long long)atomic_load(&receiver->messages_parsed));
+    fprintf(stderr, "Messages dropped:      %llu\n",
+            (unsigned long long)atomic_load(&receiver->messages_dropped));
+    
+    if (receiver->num_output_queues == 2) {
+        fprintf(stderr, "Messages to Proc 0 (A-M): %llu\n",
+                (unsigned long long)atomic_load(&receiver->messages_to_processor[0]));
+        fprintf(stderr, "Messages to Proc 1 (N-Z): %llu\n",
+                (unsigned long long)atomic_load(&receiver->messages_to_processor[1]));
+    }
 }

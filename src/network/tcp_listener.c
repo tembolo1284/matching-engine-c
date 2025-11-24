@@ -3,6 +3,8 @@
 #include "protocol/csv/message_formatter.h"
 #include "protocol/binary/binary_message_parser.h"
 #include "protocol/binary/binary_message_formatter.h"
+#include "protocol/symbol_router.h"
+
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -40,11 +42,71 @@ static void handle_client_write(tcp_listener_context_t* ctx, uint32_t client_id)
 static void disconnect_client(tcp_listener_context_t* ctx, uint32_t client_id);
 static bool set_nonblocking(int fd);
 static void process_output_queues(tcp_listener_context_t* ctx);
+static bool route_message_to_queues(tcp_listener_context_t* ctx, 
+                                     const input_msg_envelope_t* envelope,
+                                     const input_msg_t* msg);
 
 #ifdef USE_KQUEUE
 static bool add_fd_to_kqueue(int kq, int fd, int filter);
 static bool modify_fd_in_kqueue(int kq, int fd, int filter, bool enable);
 #endif
+
+/**
+ * Get symbol from input message for routing
+ */
+static const char* get_symbol_from_input_msg(const input_msg_t* msg) {
+    switch (msg->type) {
+        case INPUT_MSG_NEW_ORDER:
+            return msg->data.new_order.symbol;
+        case INPUT_MSG_CANCEL:
+            return msg->data.cancel.symbol;
+        case INPUT_MSG_FLUSH:
+            return NULL;  // Flush has no symbol
+        default:
+            return NULL;
+    }
+}
+
+/**
+ * Route message to appropriate queue(s)
+ */
+static bool route_message_to_queues(tcp_listener_context_t* ctx,
+                                     const input_msg_envelope_t* envelope,
+                                     const input_msg_t* msg) {
+    
+    if (ctx->num_input_queues == 1) {
+        // Single processor mode - send to the only queue
+        if (input_envelope_queue_enqueue(ctx->input_queues[0], envelope)) {
+            ctx->messages_to_processor[0]++;
+            return true;
+        }
+        return false;
+    }
+    
+    // Dual processor mode - route by symbol
+    const char* symbol = get_symbol_from_input_msg(msg);
+    
+    if (msg->type == INPUT_MSG_FLUSH || !symbol_is_valid(symbol)) {
+        // Flush or cancel without symbol → send to BOTH queues
+        bool success_0 = input_envelope_queue_enqueue(ctx->input_queues[0], envelope);
+        bool success_1 = input_envelope_queue_enqueue(ctx->input_queues[1], envelope);
+        
+        if (success_0) ctx->messages_to_processor[0]++;
+        if (success_1) ctx->messages_to_processor[1]++;
+        
+        return success_0 && success_1;
+    }
+    
+    // Route by symbol
+    int processor_id = get_processor_id_for_symbol(symbol);
+    
+    if (input_envelope_queue_enqueue(ctx->input_queues[processor_id], envelope)) {
+        ctx->messages_to_processor[processor_id]++;
+        return true;
+    }
+    
+    return false;
+}
 
 bool tcp_listener_init(tcp_listener_context_t* ctx,
                        const tcp_listener_config_t* config,
@@ -55,7 +117,40 @@ bool tcp_listener_init(tcp_listener_context_t* ctx,
 
     ctx->config = *config;
     ctx->client_registry = client_registry;
-    ctx->input_queue = input_queue;
+    ctx->input_queues[0] = input_queue;
+    ctx->input_queues[1] = NULL;
+    ctx->num_input_queues = 1;
+    ctx->input_queue = input_queue;  // Backward compatibility
+    ctx->shutdown_flag = shutdown_flag;
+    ctx->listen_fd = -1;
+#ifdef USE_EPOLL
+    ctx->epoll_fd = -1;
+#elif defined(USE_KQUEUE)
+    ctx->kqueue_fd = -1;
+#endif
+
+    message_parser_init(&g_csv_parser);
+    binary_message_parser_init(&g_binary_parser);
+    message_formatter_init(&g_csv_formatter);
+    binary_message_formatter_init(&g_binary_formatter);
+
+    return true;
+}
+
+bool tcp_listener_init_dual(tcp_listener_context_t* ctx,
+                            const tcp_listener_config_t* config,
+                            tcp_client_registry_t* client_registry,
+                            input_envelope_queue_t* input_queue_0,
+                            input_envelope_queue_t* input_queue_1,
+                            atomic_bool* shutdown_flag) {
+    memset(ctx, 0, sizeof(*ctx));
+
+    ctx->config = *config;
+    ctx->client_registry = client_registry;
+    ctx->input_queues[0] = input_queue_0;
+    ctx->input_queues[1] = input_queue_1;
+    ctx->num_input_queues = 2;
+    ctx->input_queue = input_queue_0;  // Backward compatibility
     ctx->shutdown_flag = shutdown_flag;
     ctx->listen_fd = -1;
 #ifdef USE_EPOLL
@@ -94,7 +189,9 @@ void tcp_listener_cleanup(tcp_listener_context_t* ctx) {
 void* tcp_listener_thread(void* arg) {
     tcp_listener_context_t* ctx = (tcp_listener_context_t*)arg;
 
-    fprintf(stderr, "[TCP Listener] Starting on port %u\n", ctx->config.port);
+    fprintf(stderr, "[TCP Listener] Starting on port %u (mode: %s)\n", 
+            ctx->config.port,
+            ctx->num_input_queues == 2 ? "dual-processor" : "single-processor");
 
     // Setup listening socket
     if (!setup_listening_socket(ctx)) {
@@ -500,7 +597,7 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
                     &input_msg, client_id, client->messages_received
                 );
 
-                if (input_envelope_queue_enqueue(ctx->input_queue, &envelope)) {
+                if (route_message_to_queues(ctx, &envelope, &input_msg)) {
                     client->messages_received++;
                     ctx->total_messages_received++;
                 } else {
@@ -693,4 +790,11 @@ void tcp_listener_print_stats(const tcp_listener_context_t* ctx) {
     fprintf(stderr, "Messages sent:         %llu\n", (unsigned long long)ctx->total_messages_sent);
     fprintf(stderr, "Bytes received:        %llu\n", (unsigned long long)ctx->total_bytes_received);
     fprintf(stderr, "Bytes sent:            %llu\n", (unsigned long long)ctx->total_bytes_sent);
+    
+    if (ctx->num_input_queues == 2) {
+        fprintf(stderr, "Messages to Proc 0 (A-M): %llu\n", 
+                (unsigned long long)ctx->messages_to_processor[0]);
+        fprintf(stderr, "Messages to Proc 1 (N-Z): %llu\n", 
+                (unsigned long long)ctx->messages_to_processor[1]);
+    }
 }
