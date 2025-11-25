@@ -5,17 +5,18 @@
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <pthread.h>
+#include <netinet/in.h>
 
 #include "protocol/message_types_extended.h"
 #include "threading/queues.h"
 
 /**
  * Multicast Publisher Thread
- * 
+ *
  * Broadcasts output messages to a UDP multicast group for market data distribution.
  * This is how real exchanges (CME, NASDAQ, ICE) distribute market data - one send,
  * thousands of subscribers receive simultaneously.
- * 
+ *
  * Features:
  *   - UDP multicast broadcasting (true one-to-many)
  *   - Supports both CSV and Binary protocols
@@ -24,7 +25,7 @@
  *   - Configurable multicast group and port
  *   - Sequence numbers for gap detection
  *   - Statistics tracking
- * 
+ *
  * Architecture:
  *   Processor 0 → Output Queue 0 ┐
  *                                 ├→ Multicast Publisher → Multicast Group
@@ -33,13 +34,13 @@
  *                                                   ┌───────────┼───────────┐
  *                                                   ↓           ↓           ↓
  *                                              Subscriber 1  Subscriber 2  Subscriber N
- * 
+ *
  * Usage:
  *   ./matching_engine --tcp --multicast 239.255.0.1:5000
- *   
+ *
  *   In another terminal (same or different machine):
  *   ./multicast_subscriber 239.255.0.1 5000
- * 
+ *
  * Benefits:
  *   - Zero server overhead per subscriber (vs N × TCP sends)
  *   - Unlimited subscribers (network handles distribution)
@@ -67,31 +68,31 @@ typedef struct {
 typedef struct {
     // Configuration
     multicast_publisher_config_t config;
-    
+
     // Input queues (from processors) - supports dual-processor mode
     output_envelope_queue_t* input_queues[MAX_OUTPUT_QUEUES_MCAST];
     int num_input_queues;           // 1 = single, 2 = dual processor
-    
+
     // Network state
     int sockfd;                     // UDP socket
     struct sockaddr_in mcast_addr;  // Multicast group address
-    
+
     // Shutdown coordination
     atomic_bool* shutdown_flag;
     pthread_t thread;
-    
+
     // Statistics
     atomic_uint_fast64_t packets_sent;
     atomic_uint_fast64_t messages_broadcast;
     atomic_uint_fast64_t messages_from_processor[MAX_OUTPUT_QUEUES_MCAST];
     atomic_uint_fast64_t sequence;  // Sequence number for gap detection
     atomic_uint_fast64_t send_errors;
-    
+
 } multicast_publisher_context_t;
 
 /**
  * Initialize multicast publisher (single processor mode)
- * 
+ *
  * @param ctx Context to initialize
  * @param config Configuration
  * @param input_queue Output envelope queue (from processor)
@@ -99,13 +100,13 @@ typedef struct {
  * @return true on success
  */
 bool multicast_publisher_init(multicast_publisher_context_t* ctx,
-                               const multicast_publisher_config_t* config,
-                               output_envelope_queue_t* input_queue,
-                               atomic_bool* shutdown_flag);
+                              const multicast_publisher_config_t* config,
+                              output_envelope_queue_t* input_queue,
+                              atomic_bool* shutdown_flag);
 
 /**
  * Initialize multicast publisher for dual-processor mode
- * 
+ *
  * @param ctx Context to initialize
  * @param config Configuration
  * @param input_queue_0 Output envelope queue from processor 0 (A-M)
@@ -114,10 +115,10 @@ bool multicast_publisher_init(multicast_publisher_context_t* ctx,
  * @return true on success
  */
 bool multicast_publisher_init_dual(multicast_publisher_context_t* ctx,
-                                    const multicast_publisher_config_t* config,
-                                    output_envelope_queue_t* input_queue_0,
-                                    output_envelope_queue_t* input_queue_1,
-                                    atomic_bool* shutdown_flag);
+                                   const multicast_publisher_config_t* config,
+                                   output_envelope_queue_t* input_queue_0,
+                                   output_envelope_queue_t* input_queue_1,
+                                   atomic_bool* shutdown_flag);
 
 /**
  * Cleanup multicast publisher context
@@ -126,7 +127,7 @@ void multicast_publisher_cleanup(multicast_publisher_context_t* ctx);
 
 /**
  * Multicast publisher thread entry point
- * 
+ *
  * @param arg Pointer to multicast_publisher_context_t
  * @return NULL
  */
@@ -143,3 +144,4 @@ void multicast_publisher_print_stats(const multicast_publisher_context_t* ctx);
 bool multicast_publisher_setup_socket(multicast_publisher_context_t* ctx);
 
 #endif // MULTICAST_PUBLISHER_H
+

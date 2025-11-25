@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
+#include "core/order_book.h"
 /**
  * Application configuration
  */
@@ -20,6 +20,6 @@ typedef struct {
 /**
  * Helper: Print memory pool statistics
  */
-void print_memory_stats(const char* label, const struct memory_pools* pools);
+void print_memory_stats(const char* label, const memory_pools_t* pools);
 
 #endif // RUN_MODES_H
