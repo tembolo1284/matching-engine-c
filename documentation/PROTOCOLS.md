@@ -8,6 +8,7 @@ Complete documentation for CSV and Binary protocols supported by the Matching En
 - [Binary Protocol](#binary-protocol)
 - [Protocol Detection](#protocol-detection)
 - [TCP Framing Protocol](#tcp-framing-protocol)
+- [Dual-Processor Routing](#dual-processor-routing)
 - [Binary Tools](#binary-tools)
 - [Creating Custom Messages](#creating-custom-messages)
 - [Protocol Comparison](#protocol-comparison)
@@ -22,6 +23,8 @@ The Matching Engine supports two protocols:
 2. **Binary Protocol** - High-performance, fixed-size structs
 
 Both protocols can be used simultaneously through automatic format detection. This allows for mixed-mode operation where some clients use CSV (for debugging) while others use Binary (for performance).
+
+**Note:** Protocol format is independent of processor routing. Both protocols work identically in single-processor and dual-processor modes.
 
 ---
 
@@ -48,6 +51,8 @@ N, 1, IBM, 10000, 50, B, 1
 # User 1 places buy order: 50 shares of IBM at $100.00, order ID 1
 ```
 
+**Dual-Processor Routing:** Symbol's first character determines processor (A-M → P0, N-Z → P1).
+
 #### Cancel Order
 ```csv
 C, userId, userOrderId
@@ -63,6 +68,8 @@ C, 1, 1
 # User 1 cancels order ID 1
 ```
 
+**Dual-Processor Routing:** Cancel is sent to **both processors** (order could be on either).
+
 #### Flush All Orders
 ```csv
 F
@@ -75,6 +82,8 @@ Cancels all orders in all order books. Generates cancel acknowledgements for eac
 F
 # Cancel all orders system-wide
 ```
+
+**Dual-Processor Routing:** Flush is sent to **both processors** (affects all symbols).
 
 ### Output Messages
 
@@ -307,11 +316,13 @@ if (data[0] == 0x4D) {
 }
 ```
 
-### TCP Framing Protocol
+---
+
+## TCP Framing Protocol
 
 TCP streams don't have message boundaries, so we use **length-prefixed framing**.
 
-#### Wire Format
+### Wire Format
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -321,7 +332,7 @@ TCP streams don't have message boundaries, so we use **length-prefixed framing**
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### Examples
+### Examples
 
 **CSV message:**
 ```
@@ -343,25 +354,7 @@ Wire format:
 length=30     Binary payload (starts with 0x4D magic)
 ```
 
-#### Framing State Machine
-
-The receiver maintains state across partial reads:
-
-```c
-typedef struct {
-    char buffer[MAX_FRAMED_MESSAGE_SIZE];
-    size_t buffer_pos;
-    uint32_t expected_length;
-    bool reading_header;    // true = reading 4-byte length
-                            // false = reading message body
-} framing_read_state_t;
-```
-
-**State transitions:**
-1. `reading_header=true` → Read 4 bytes → Parse length → `reading_header=false`
-2. `reading_header=false` → Read `expected_length` bytes → Deliver message → Reset
-
-#### Client Implementation (Python)
+### Client Implementation (Python)
 
 ```python
 import struct
@@ -400,7 +393,7 @@ response = recv_framed_message(sock)
 print(response)  # "A, IBM, 1, 1"
 ```
 
-#### Client Implementation (C)
+### Client Implementation (C)
 
 ```c
 #include <arpa/inet.h>
@@ -436,27 +429,7 @@ ssize_t recv_framed(int sock, char* buf, size_t buf_size) {
 }
 ```
 
-#### Handling Partial Reads/Writes
-
-TCP may deliver data in chunks. The server handles this with:
-
-```c
-// Reading: accumulate until complete message
-bool framing_read_process(framing_read_state_t* state,
-                          const char* incoming_data,
-                          size_t incoming_len,
-                          const char** msg_data,
-                          size_t* msg_len);
-
-// Writing: track what's been sent
-void framing_write_get_remaining(framing_write_state_t* state,
-                                 const char** data,
-                                 size_t* len);
-void framing_write_mark_written(framing_write_state_t* state,
-                                size_t bytes_written);
-```
-
-#### Constants
+### Constants
 
 ```c
 #define MAX_FRAMED_MESSAGE_SIZE 16384   // 16KB max message
@@ -466,6 +439,56 @@ void framing_write_mark_written(framing_write_state_t* state,
 ### UDP Operation
 
 UDP mode does **not** use length framing - UDP packets have built-in boundaries. Format detection (CSV vs Binary) still applies based on the first byte.
+
+---
+
+## Dual-Processor Routing
+
+In dual-processor mode, messages are routed based on symbol:
+
+### Routing Rules
+
+| Message Type | Symbol Available | Routing |
+|--------------|------------------|---------|
+| New Order | Yes (in message) | Route by symbol: A-M → P0, N-Z → P1 |
+| Cancel | No (just order ID) | Send to **BOTH** processors |
+| Flush | N/A | Send to **BOTH** processors |
+
+### Symbol Routing Logic
+
+```c
+// First character of symbol determines processor
+char first = symbol[0];
+
+// Normalize to uppercase
+if (first >= 'a' && first <= 'z') {
+    first = first - 'a' + 'A';
+}
+
+// Route
+if (first >= 'A' && first <= 'M') {
+    return PROCESSOR_0;  // A-M
+} else if (first >= 'N' && first <= 'Z') {
+    return PROCESSOR_1;  // N-Z
+} else {
+    return PROCESSOR_0;  // Default for non-alphabetic
+}
+```
+
+### Example Routing
+
+| Order | Symbol | First Char | Processor |
+|-------|--------|------------|-----------|
+| `N, 1, AAPL, 100, 50, B, 1` | AAPL | A | Processor 0 |
+| `N, 1, IBM, 100, 50, B, 2` | IBM | I | Processor 0 |
+| `N, 1, NVDA, 100, 50, B, 3` | NVDA | N | Processor 1 |
+| `N, 1, TSLA, 100, 50, B, 4` | TSLA | T | Processor 1 |
+| `C, 1, 3` | (unknown) | - | Both |
+| `F` | (all) | - | Both |
+
+### Transparent to Clients
+
+**Clients don't need to know about processor routing.** The routing is handled entirely by the server. Clients send orders normally and receive responses normally - the dual-processor architecture is transparent.
 
 ---
 
@@ -602,18 +625,6 @@ def create_new_order(user_id, symbol, price, qty, side, order_id):
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 msg = create_new_order(1, "IBM", 10000, 50, "B", 1)
 sock.sendto(msg, ('localhost', 1234))
-```
-
-### Testing Your Messages
-
-```bash
-# Start server in binary mode with decoder
-./build/matching_engine --udp --binary 2>/dev/null | ./build/binary_decoder
-
-# Send your custom message
-python send_order.py
-
-# Verify decoded output matches expectation
 ```
 
 ---
@@ -785,11 +796,13 @@ B, <sym>, <side>, <price>, <qty>
 
 **Binary:** All structs in `binary_protocol.h`, all integers in network byte order.
 
+**Dual-Processor:** Symbol routing (A-M → P0, N-Z → P1) is transparent to clients.
+
 ---
 
 ## See Also
 
 - [Quick Start Guide](documentation/QUICK_START.md) - Get running quickly
-- [Architecture](documentation/ARCHITECTURE.md) - System internals
+- [Architecture](documentation/ARCHITECTURE.md) - System internals and dual-processor design
 - [Testing](documentation/TESTING.md) - Protocol testing guide
 - [Build Instructions](documentation/BUILD.md) - Compiler setup

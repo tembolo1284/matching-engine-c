@@ -1,11 +1,13 @@
 # Architecture
 
-Comprehensive system design of the Matching Engine, emphasizing **zero-allocation memory pools**, lock-free threading, **envelope-based message routing**, and production-grade architecture.
+Comprehensive system design of the Matching Engine, emphasizing **zero-allocation memory pools**, lock-free threading, **dual-processor symbol partitioning**, **envelope-based message routing**, and production-grade architecture.
 
 ## Table of Contents
 - [System Overview](#system-overview)
+- [Dual-Processor Architecture](#dual-processor-architecture)
 - [Memory Pool System](#memory-pool-system)
 - [Threading Model](#threading-model)
+- [Symbol Router](#symbol-router)
 - [Envelope Pattern](#envelope-pattern)
 - [Data Flow](#data-flow)
 - [Core Components](#core-components)
@@ -23,65 +25,208 @@ Comprehensive system design of the Matching Engine, emphasizing **zero-allocatio
 
 The Matching Engine is a **production-grade** order matching system built in pure C11. The defining characteristics are:
 
-1. **Zero-allocation hot path** - All memory pre-allocated in pools
-2. **Envelope-based routing** - Messages wrapped with client metadata for multi-client support
-3. **Lock-free communication** - SPSC queues between threads
-4. **Client isolation** - TCP clients validated and isolated
+1. **Dual-processor symbol partitioning** - Horizontal scaling via A-M / N-Z routing
+2. **Zero-allocation hot path** - All memory pre-allocated in pools
+3. **Envelope-based routing** - Messages wrapped with client metadata for multi-client support
+4. **Lock-free communication** - SPSC queues between threads
+5. **Client isolation** - TCP clients validated and isolated
 
-### High-Level Architecture
+### High-Level Architecture (Dual-Processor Mode)
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                      Matching Engine - Dual Processor Mode                        │
+│                        Zero-Allocation Memory Pools                               │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│  TCP MODE (4 Threads):                                                            │
+│                                                                                   │
+│  ┌──────────────┐                                                                 │
+│  │ TCP Listener │                                                                 │
+│  │  (Thread 1)  │                                                                 │
+│  │              │                                                                 │
+│  │ epoll/kqueue │         Symbol-Based Routing                                    │
+│  │ event loop   │        ┌─────────────────────┐                                  │
+│  │              │        │  First char A-M?    │                                  │
+│  └──────┬───────┘        │  → Processor 0      │                                  │
+│         │                │  First char N-Z?    │                                  │
+│         │                │  → Processor 1      │                                  │
+│         │                └─────────────────────┘                                  │
+│         │                                                                         │
+│         ├──────────────────────┬──────────────────────┐                          │
+│         │                      │                      │                          │
+│         ▼                      ▼                      │                          │
+│  ┌─────────────────┐    ┌─────────────────┐          │                          │
+│  │ Input Queue 0   │    │ Input Queue 1   │          │                          │
+│  │  (A-M symbols)  │    │  (N-Z symbols)  │          │                          │
+│  └────────┬────────┘    └────────┬────────┘          │                          │
+│           │                      │                    │                          │
+│           ▼                      ▼                    │                          │
+│  ┌─────────────────┐    ┌─────────────────┐          │                          │
+│  │  Processor 0    │    │  Processor 1    │          │                          │
+│  │   (Thread 2)    │    │   (Thread 3)    │          │                          │
+│  │                 │    │                 │          │                          │
+│  │ Memory Pool 0   │    │ Memory Pool 1   │          │                          │
+│  │ Engine 0 (A-M)  │    │ Engine 1 (N-Z)  │          │                          │
+│  └────────┬────────┘    └────────┬────────┘          │                          │
+│           │                      │                    │                          │
+│           ▼                      ▼                    │                          │
+│  ┌─────────────────┐    ┌─────────────────┐          │                          │
+│  │ Output Queue 0  │    │ Output Queue 1  │          │                          │
+│  └────────┬────────┘    └────────┬────────┘          │                          │
+│           │                      │                    │                          │
+│           └──────────┬───────────┘                    │                          │
+│                      │                                │                          │
+│                      ▼                                │                          │
+│              ┌───────────────┐                        │                          │
+│              │ Output Router │                        │                          │
+│              │  (Thread 4)   │                        │                          │
+│              │               │                        │                          │
+│              │ Round-robin   │                        │                          │
+│              │ from queues   │                        │                          │
+│              └───────┬───────┘                        │                          │
+│                      │                                │                          │
+│         ┌────────────┼────────────┐                   │                          │
+│         │            │            │                   │                          │
+│         ▼            ▼            ▼                   │                          │
+│  ┌────────────┐ ┌────────────┐ ┌────────────┐        │                          │
+│  │ Client 1 Q │ │ Client 2 Q │ │ Client N Q │        │                          │
+│  └─────┬──────┘ └─────┬──────┘ └─────┬──────┘        │                          │
+│        │              │              │                │                          │
+│        └──────────────┴──────────────┘                │                          │
+│                       │                               │                          │
+│                       └───────────────────────────────┘                          │
+│                    TCP Listener writes to client sockets                         │
+│                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Single-Processor Mode (Backward Compatible)
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                           Matching Engine                                     │
-│                     Zero-Allocation Memory Pools                              │
+│                     Matching Engine - Single Processor Mode                   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                               │
-│  TCP MODE:                                                                    │
 │  ┌──────────────┐    ┌────────────────┐    ┌───────────┐    ┌─────────────┐ │
 │  │ TCP Listener │───▶│ Input Envelope │───▶│ Processor │───▶│   Output    │ │
-│  │  (Thread 1)  │    │     Queue      │    │ (Thread 2)│    │  Envelope   │ │
-│  │              │    │                │    │           │    │   Queue     │ │
-│  │ epoll/kqueue │    │ [client_id,    │    │  Unwrap   │    │             │ │
-│  │ event loop   │    │  sequence,     │    │  Route    │    │ [client_id, │ │
-│  │              │    │  message]      │    │  Match    │    │  sequence,  │ │
-│  └──────────────┘    └────────────────┘    └───────────┘    │  message]   │ │
-│         │                                                    └──────┬──────┘ │
-│         │                                                           │        │
-│         │                                                           ▼        │
-│         │                                                   ┌─────────────┐  │
-│         │                                                   │   Output    │  │
-│         │                                                   │   Router    │  │
-│         │                                                   │ (Thread 3)  │  │
-│         │                                                   └──────┬──────┘  │
-│         │                                                          │         │
-│         │         ┌────────────────────────────────────────────────┤         │
-│         │         │                    │                    │      │         │
-│         │         ▼                    ▼                    ▼      │         │
-│         │  ┌────────────┐      ┌────────────┐      ┌────────────┐  │         │
-│         │  │ Client 1 Q │      │ Client 2 Q │      │ Client N Q │  │         │
-│         │  └─────┬──────┘      └─────┬──────┘      └─────┬──────┘  │         │
-│         │        │                   │                   │         │         │
-│         └────────┴───────────────────┴───────────────────┘         │         │
-│                  TCP Listener writes to client sockets             │         │
-│                                                                    │         │
-│  UDP MODE:                                                         │         │
-│  ┌──────────────┐    ┌────────────────┐    ┌───────────┐    ┌─────────────┐ │
-│  │ UDP Receiver │───▶│ Input Envelope │───▶│ Processor │───▶│   Output    │ │
-│  │  (Thread 1)  │    │     Queue      │    │ (Thread 2)│    │  Publisher  │ │
+│  │  (Thread 1)  │    │     Queue      │    │ (Thread 2)│    │   Router    │ │
 │  │              │    │                │    │           │    │ (Thread 3)  │ │
-│  │ client_id=0  │    │ [0, seq, msg]  │    │           │    │    stdout   │ │
 │  └──────────────┘    └────────────────┘    └───────────┘    └─────────────┘ │
 │                                                                               │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Key Design Principles:**
+- **Horizontal scaling** - Dual processors double throughput potential
 - **Zero malloc/free in hot path** - All memory pre-allocated in pools
-- **Envelope-based routing** - Messages carry routing metadata
+- **Symbol-based partitioning** - Orders route by symbol's first character
 - **Lock-free communication** - SPSC queues between threads
-- **Bounded loops** - Every loop has explicit iteration limits
-- **Defensive programming** - Parameter validation, bounds checking
-- **Client isolation** - TCP clients validated and can't spoof each other
+- **Separate memory pools** - Each processor has isolated memory
+- **Round-robin output** - Fair scheduling from multiple output queues
+
+---
+
+## Dual-Processor Architecture
+
+### Overview
+
+The dual-processor architecture enables **horizontal scaling** by partitioning orders based on symbol. Each processor handles a distinct set of symbols, allowing true parallel processing without locks.
+
+### Why Symbol Partitioning?
+
+**Matching MUST be single-threaded per symbol** for price-time priority correctness. You cannot have two threads matching orders for the same symbol - it would break FIFO ordering.
+
+**Solution:** Partition symbols across processors so each symbol is handled by exactly one processor.
+
+### Partitioning Scheme
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Symbol Partitioning                       │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│   Processor 0 (A-M)              Processor 1 (N-Z)          │
+│   ─────────────────              ─────────────────          │
+│   AAPL  → Processor 0            NVDA  → Processor 1        │
+│   IBM   → Processor 0            TSLA  → Processor 1        │
+│   GOOGL → Processor 0            UBER  → Processor 1        │
+│   META  → Processor 0            ZM    → Processor 1        │
+│                                                              │
+│   First char: A-M (65-77)        First char: N-Z (78-90)    │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Routing Logic
+
+```c
+/* Symbol router - O(1) routing decision */
+static inline int get_processor_id_for_symbol(const char* symbol) {
+    if (symbol == NULL || symbol[0] == '\0') {
+        return 0;  // Default to processor 0
+    }
+    
+    char first = symbol[0];
+    
+    // Normalize to uppercase
+    if (first >= 'a' && first <= 'z') {
+        first = first - 'a' + 'A';
+    }
+    
+    // A-M (65-77) → Processor 0
+    // N-Z (78-90) → Processor 1
+    if (first >= 'A' && first <= 'M') {
+        return PROCESSOR_ID_A_TO_M;  // 0
+    } else if (first >= 'N' && first <= 'Z') {
+        return PROCESSOR_ID_N_TO_Z;  // 1
+    }
+    
+    return 0;  // Non-alphabetic defaults to processor 0
+}
+```
+
+### Special Message Handling
+
+| Message Type | Routing |
+|--------------|---------|
+| New Order | Route by symbol |
+| Cancel (with symbol) | Route by symbol |
+| Cancel (without symbol) | Send to BOTH processors |
+| Flush | Send to BOTH processors |
+
+**Why flush goes to both?** Flush affects all symbols across all order books.
+
+### Thread Model Comparison
+
+| Mode | Threads | Description |
+|------|---------|-------------|
+| Single-Processor | 3 | Receiver → Processor → Output |
+| Dual-Processor | 4 | Receiver → [Processor 0, Processor 1] → Output Router |
+
+### Resource Isolation
+
+Each processor has **completely isolated resources**:
+
+```c
+// Processor 0
+memory_pools_t* pools_0;
+matching_engine_t engine_0;
+input_envelope_queue_t input_queue_0;
+output_envelope_queue_t output_queue_0;
+
+// Processor 1  
+memory_pools_t* pools_1;
+matching_engine_t engine_1;
+input_envelope_queue_t input_queue_1;
+output_envelope_queue_t output_queue_1;
+```
+
+**Benefits:**
+- Zero contention between processors
+- Independent memory pool statistics
+- Isolated failure domains
+- Better cache locality
 
 ---
 
@@ -124,6 +269,28 @@ typedef struct {
     uint32_t allocation_failures;
 } memory_pools_t;
 ```
+
+### Dual-Processor Memory Pools
+
+In dual-processor mode, **each processor has its own memory pools**:
+
+```c
+// Separate pools for isolation and cache locality
+memory_pools_t* pools[NUM_PROCESSORS];
+
+pools[0] = memory_pools_create();  // Processor 0 (A-M)
+pools[1] = memory_pools_create();  // Processor 1 (N-Z)
+
+// Each matching engine uses its own pool
+matching_engine_init(&engine[0], pools[0]);
+matching_engine_init(&engine[1], pools[1]);
+```
+
+**Benefits of separate pools:**
+- Zero contention (no shared state)
+- Independent peak usage tracking
+- Better cache locality per processor
+- Isolated failure domains
 
 ### Allocation Mechanism
 
@@ -209,116 +376,105 @@ typedef struct {
 
 **Used for**: Cancel operations (find which symbol an order belongs to)
 
-### Memory Pool Initialization
-
-```c
-// One-time initialization at startup
-void memory_pools_init(memory_pools_t* pools) {
-    // Initialize all free lists
-    for (int i = 0; i < MAX_ORDERS_IN_POOL; i++) {
-        pools->order_pool.free_list[i] = i;
-    }
-    pools->order_pool.free_count = MAX_ORDERS_IN_POOL;
-    
-    // Similar for other pools...
-}
-
-// At startup
-memory_pools_t* pools = malloc(sizeof(memory_pools_t));
-memory_pools_init(pools);
-
-matching_engine_t engine;
-matching_engine_init(&engine, pools);  // Share pools
-```
-
 ### Memory Pool Statistics
 
 ```c
-typedef struct {
-    uint32_t order_allocations;      // Total orders allocated
-    uint32_t order_peak_usage;       // Max simultaneous orders
-    uint32_t order_failures;         // Allocation failures
-    uint32_t hash_allocations;
-    uint32_t hash_peak_usage;
-    uint32_t hash_failures;
-    size_t total_memory_bytes;       // Total pre-allocated memory
-} memory_pool_stats_t;
+// Per-processor statistics in dual-processor mode
+=== Processor 0 (A-M) Memory Statistics ===
+  Order allocations: 5,234
+  Order peak usage: 1,247 (12.5%)
+  Order failures: 0
 
-// Query at any time
-memory_pool_stats_t stats;
-memory_pools_get_stats(pools, &stats);
+=== Processor 1 (N-Z) Memory Statistics ===
+  Order allocations: 4,891
+  Order peak usage: 1,156 (11.6%)
+  Order failures: 0
 ```
-
-**Typical Usage**:
-- Peak usage: 500-2000 orders
-- Memory: ~10-20MB pre-allocated
-- Failures: 0 (unless pool exhausted)
 
 ---
 
 ## Threading Model
 
-### TCP Mode: Three-Thread Pipeline
+### Dual-Processor Mode: Four-Thread Pipeline
+
+```
+┌──────────────┐    ┌─────────────────┐    ┌─────────────┐    ┌──────────────────┐    ┌───────────────┐
+│ TCP Listener │    │ Input Queue 0   │    │ Processor 0 │    │ Output Queue 0   │    │               │
+│  (Thread 1)  │───▶│ (A-M symbols)   │───▶│ (Thread 2)  │───▶│                  │───▶│               │
+│              │    └─────────────────┘    └─────────────┘    └──────────────────┘    │               │
+│  Symbol      │                                                                       │ Output Router │
+│  Router      │    ┌─────────────────┐    ┌─────────────┐    ┌──────────────────┐    │  (Thread 4)   │
+│              │───▶│ Input Queue 1   │───▶│ Processor 1 │───▶│ Output Queue 1   │───▶│               │
+└──────────────┘    │ (N-Z symbols)   │    │ (Thread 3)  │    │                  │    │ Round-robin   │
+                    └─────────────────┘    └─────────────┘    └──────────────────┘    └───────┬───────┘
+                                                                                              │
+                                                              ┌───────────────────────────────┼───────────┐
+                                                              ▼                               ▼           ▼
+                                                     [client_1.output_q]              [client_2.output_q]  ...
+```
+
+**Thread 1: TCP Listener / Receiver**
+- epoll (Linux) or kqueue (macOS) event loop
+- Accepts new connections, assigns client_id
+- Reads framed messages, parses CSV/Binary
+- **Routes by symbol** to appropriate input queue
+- Writes output messages from per-client queues
+
+**Thread 2: Processor 0 (A-M)**
+- Dequeues from input_queue_0
+- Handles symbols starting with A-M
+- Uses memory_pools_0 (isolated)
+- Enqueues to output_queue_0
+
+**Thread 3: Processor 1 (N-Z)**
+- Dequeues from input_queue_1
+- Handles symbols starting with N-Z
+- Uses memory_pools_1 (isolated)
+- Enqueues to output_queue_1
+
+**Thread 4: Output Router**
+- **Round-robin** polls output_queue_0 and output_queue_1
+- Routes to per-client queues based on client_id
+- 32-message batch size per queue (prevents starvation)
+
+### Single-Processor Mode: Three-Thread Pipeline
 
 ```
 ┌──────────────┐    ┌───────────────────┐    ┌───────────┐    ┌────────────────────┐    ┌───────────────┐
 │ TCP Listener │───▶│ input_envelope_q  │───▶│ Processor │───▶│ output_envelope_q  │───▶│ Output Router │
 │  (Thread 1)  │    │     (16K msgs)    │    │ (Thread 2)│    │     (16K msgs)     │    │  (Thread 3)   │
-└──────────────┘    └───────────────────┘    └───────────┘    └────────────────────┘    └───────┬───────┘
-                                                                                                │
-                                                              ┌─────────────────────────────────┼─────────────────┐
-                                                              ▼                                 ▼                 ▼
-                                                     [client_1.output_q]              [client_2.output_q]    [client_n...]
-                                                              │                                 │
-                                                              ▼                                 ▼
-                                                     TCP Listener writes             TCP Listener writes
+└──────────────┘    └───────────────────┘    └───────────┘    └────────────────────┘    └───────────────┘
 ```
 
-**Thread 1: TCP Listener**
-- epoll (Linux) or kqueue (macOS) event loop
-- Accepts new connections, assigns client_id
-- Reads framed messages, parses CSV/Binary
-- Creates input envelopes with client_id
-- Writes output messages from per-client queues
+### Round-Robin Output Scheduling
 
-**Thread 2: Processor**
-- Dequeues input envelopes in batches (up to 32)
-- Extracts client_id for routing
-- Routes to appropriate order book (by symbol)
-- Allocates from memory pools (NO malloc!)
-- Creates output envelopes with routing info
-- Trades get TWO envelopes (buyer + seller)
+The output router uses **round-robin with batching** to ensure fairness:
 
-**Thread 3: Output Router**
-- Dequeues output envelopes
-- Routes to per-client output queues based on client_id
-- Drops messages for disconnected clients
+```c
+#define ROUTER_BATCH_SIZE 32
 
-### UDP Mode: Three-Thread Pipeline
-
-```
-┌──────────────┐    ┌───────────────────┐    ┌───────────┐    ┌────────────────────┐    ┌──────────────────┐
-│ UDP Receiver │───▶│ input_envelope_q  │───▶│ Processor │───▶│ output_envelope_q  │───▶│ Output Publisher │
-│  (Thread 1)  │    │     (16K msgs)    │    │ (Thread 2)│    │     (16K msgs)     │    │   (Thread 3)     │
-└──────────────┘    └───────────────────┘    └───────────┘    └────────────────────┘    └──────────────────┘
-   client_id=0                                                                                  │
-                                                                                                ▼
-                                                                                             stdout
+void* output_router_thread(void* arg) {
+    while (!shutdown) {
+        // Poll each queue in round-robin
+        for (int q = 0; q < num_input_queues; q++) {
+            // Dequeue up to BATCH_SIZE from this queue
+            for (int i = 0; i < ROUTER_BATCH_SIZE; i++) {
+                if (!output_envelope_queue_dequeue(&input_queues[q], &envelope)) {
+                    break;  // Queue empty, move to next
+                }
+                route_to_client(&envelope);
+                messages_from_processor[q]++;
+            }
+        }
+    }
+}
 ```
 
-**Thread 1: UDP Receiver**
-- recvfrom() on UDP socket
-- Parses CSV/Binary (auto-detect)
-- Creates envelopes with client_id=0
-
-**Thread 2: Processor**
-- Same as TCP mode
-- client_id=0 for all messages
-
-**Thread 3: Output Publisher**
-- Dequeues output envelopes
-- Formats as CSV or Binary
-- Writes to stdout
+**Why 32-message batches?**
+- Industry standard (CME, ICE exchanges use similar)
+- Prevents one busy processor from starving the other
+- Balances latency vs throughput
+- Configurable if needed
 
 ### Lock-Free Communication
 
@@ -340,6 +496,97 @@ typedef struct {
 - Atomic operations for synchronization (no locks!)
 - No contention between threads
 - Typical latency: 100-500ns per hop
+
+---
+
+## Symbol Router
+
+### Overview
+
+The symbol router determines which processor handles each order based on the symbol's first character.
+
+### Header: `include/protocol/symbol_router.h`
+
+```c
+#ifndef SYMBOL_ROUTER_H
+#define SYMBOL_ROUTER_H
+
+#define NUM_PROCESSORS 2
+#define PROCESSOR_ID_A_TO_M 0
+#define PROCESSOR_ID_N_TO_Z 1
+
+/* O(1) routing decision */
+static inline int get_processor_id_for_symbol(const char* symbol) {
+    if (symbol == NULL || symbol[0] == '\0') {
+        return 0;
+    }
+    
+    char first = symbol[0];
+    
+    // Normalize to uppercase
+    if (first >= 'a' && first <= 'z') {
+        first = first - 'a' + 'A';
+    }
+    
+    // A-M → Processor 0, N-Z → Processor 1
+    if (first >= 'A' && first <= 'M') {
+        return PROCESSOR_ID_A_TO_M;
+    } else if (first >= 'N' && first <= 'Z') {
+        return PROCESSOR_ID_N_TO_Z;
+    }
+    
+    return 0;  // Default
+}
+
+/* Validation helper */
+static inline bool symbol_is_valid(const char* symbol) {
+    if (symbol == NULL || symbol[0] == '\0') {
+        return false;
+    }
+    char first = symbol[0];
+    if (first >= 'a' && first <= 'z') first = first - 'a' + 'A';
+    return (first >= 'A' && first <= 'Z');
+}
+
+/* Debug helper */
+static inline const char* get_processor_name(int processor_id) {
+    switch (processor_id) {
+        case PROCESSOR_ID_A_TO_M: return "Processor 0 (A-M)";
+        case PROCESSOR_ID_N_TO_Z: return "Processor 1 (N-Z)";
+        default: return "Unknown";
+    }
+}
+
+#endif
+```
+
+### Routing Examples
+
+| Symbol | First Char | Uppercase | Range | Processor |
+|--------|------------|-----------|-------|-----------|
+| AAPL | A | A | A-M | 0 |
+| aapl | a | A | A-M | 0 |
+| IBM | I | I | A-M | 0 |
+| META | M | M | A-M | 0 |
+| NVDA | N | N | N-Z | 1 |
+| TSLA | T | T | N-Z | 1 |
+| ZM | Z | Z | N-Z | 1 |
+| 123 | 1 | 1 | Non-alpha | 0 (default) |
+
+### Integration Points
+
+**TCP Listener:**
+```c
+int proc_id = get_processor_id_for_symbol(msg.data.new_order.symbol);
+input_envelope_queue_enqueue(&input_queues[proc_id], &envelope);
+stats.messages_to_processor[proc_id]++;
+```
+
+**UDP Receiver:**
+```c
+int proc_id = get_processor_id_for_symbol(symbol);
+input_envelope_queue_enqueue(&output_queues[proc_id], &envelope);
+```
 
 ---
 
@@ -398,18 +645,6 @@ The matching engine only cares about **WHAT** - it doesn't need to know about TC
 
 #### 2. Single Queue Scales to Many Clients
 
-**Without envelopes (bad):**
-```c
-// One queue per client - O(n) polling!
-input_queue_t client_queues[MAX_CLIENTS];
-
-for (int i = 0; i < MAX_CLIENTS; i++) {
-    if (!input_queue_empty(&client_queues[i])) {
-        // process...
-    }
-}
-```
-
 **With envelopes (good):**
 ```c
 // One queue for all - O(1) dequeue!
@@ -427,263 +662,100 @@ if (input_envelope_queue_dequeue(&single_queue, &envelope)) {
 Trades must be sent to BOTH buyer and seller:
 
 ```c
-// In processor.c
 if (out_msg->type == OUTPUT_MSG_TRADE) {
     uint32_t buy_client = out_msg->data.trade.buy_client_id;
     uint32_t sell_client = out_msg->data.trade.sell_client_id;
     
     // Send to buyer
-    output_msg_envelope_t env1 = create_output_envelope(out_msg, buy_client, seq);
     output_envelope_queue_enqueue(&output_queue, &env1);
     
     // Send to seller (if different client)
     if (buy_client != sell_client) {
-        output_msg_envelope_t env2 = create_output_envelope(out_msg, sell_client, seq);
         output_envelope_queue_enqueue(&output_queue, &env2);
     }
 }
-```
-
-#### 4. Sequence Numbers for Debugging
-
-```c
-envelope.sequence = 12345;
-
-// In logs:
-// [Processor] Processing message seq=12345 from client=3
-// [Router] Routed trade seq=12346 to clients 1,3
-// [Router] Client 3 disconnected, dropped message seq=12347
-```
-
-### Helper Functions
-
-```c
-/* Create input envelope from parsed message */
-static inline input_msg_envelope_t
-create_input_envelope(const input_msg_t* msg,
-                      uint32_t client_id,
-                      uint64_t sequence) {
-    input_msg_envelope_t envelope;
-    envelope.msg = *msg;
-    envelope.client_id = client_id;
-    envelope.sequence = sequence;
-    return envelope;
-}
-
-/* Create output envelope */
-static inline output_msg_envelope_t
-create_output_envelope(const output_msg_t* msg,
-                       uint32_t client_id,
-                       uint64_t sequence) {
-    output_msg_envelope_t envelope;
-    envelope.msg = *msg;
-    envelope.client_id = client_id;
-    envelope.sequence = sequence;
-    return envelope;
-}
-```
-
-### Queue Types
-
-```c
-/* Declare envelope queues using macro templates */
-DECLARE_LOCKFREE_QUEUE(input_msg_envelope_t, input_envelope_queue)
-DECLARE_LOCKFREE_QUEUE(output_msg_envelope_t, output_envelope_queue)
-
-/* Usage */
-input_envelope_queue_t input_queue;
-input_envelope_queue_init(&input_queue);
-
-output_envelope_queue_t output_queue;
-output_envelope_queue_init(&output_queue);
 ```
 
 ---
 
 ## Data Flow
 
-### TCP Mode: End-to-End Flow
+### Dual-Processor TCP Mode: End-to-End Flow
 
 ```
 1. TCP Client connects → assigned client_id=3
-2. Client sends framed message: [len][N, 3, IBM, 100, 50, B, 1]
-3. TCP Listener reads, parses CSV → input_msg_t
+2. Client sends: [len][N, 3, IBM, 100, 50, B, 1]
+3. TCP Listener reads, parses → input_msg_t
 4. Validate: user_id (3) == client_id (3) ✓
-5. Create envelope: {msg, client_id=3, seq=1000}
-6. Enqueue to input_envelope_queue
+5. Symbol Router: "IBM" → first char 'I' → A-M → Processor 0
+6. Create envelope: {msg, client_id=3, seq=1000}
+7. Enqueue to input_queue_0 (Processor 0's queue)
 
-7. Processor dequeues envelope
-8. Extract client_id=3 for routing
-9. Route to IBM order book
-10. Allocate order from pool, set order->client_id=3
-11. Match order → Generate trade with Client 1
-12. Create trade_msg with buy_client_id=1, sell_client_id=3
-13. Create TWO output envelopes:
-    - {trade_msg, client_id=1, seq=2000}  → for buyer
-    - {trade_msg, client_id=3, seq=2000}  → for seller
-14. Enqueue both to output_envelope_queue
+8. Processor 0 dequeues envelope
+9. Extract client_id=3 for routing
+10. Route to IBM order book (in engine_0)
+11. Allocate order from pools_0, set order->client_id=3
+12. Match order → Generate trade with Client 1
+13. Create output envelope for trade
+14. Enqueue to output_queue_0
 
-15. Output Router dequeues envelope for client_id=1
-16. Get client 1's per-client queue
-17. Enqueue trade_msg (no envelope needed - queue IS routing)
+15. Output Router (round-robin) dequeues from output_queue_0
+16. Route trade to client 1's queue and client 3's queue
 
-18. Output Router dequeues envelope for client_id=3
-19. Get client 3's per-client queue
-20. Enqueue trade_msg
-
-21. TCP Listener polls client queues
-22. Dequeue from client 1's queue, format, frame, write to socket
-23. Dequeue from client 3's queue, format, frame, write to socket
-24. Both clients receive trade notification!
+17. TCP Listener polls client queues
+18. Write to client sockets
 ```
 
-### Message Routing Rules
-
-| Message Type | Routing | Destination |
-|--------------|---------|-------------|
-| **Ack** | Unicast | Originating client only |
-| **Cancel Ack** | Unicast | Originating client only |
-| **Trade** | Multicast | BOTH buyer and seller |
-| **Top-of-Book** | Unicast | Originating client only |
-
-### Two-Stage Queuing (TCP Mode)
+### Flush Command Flow (Both Processors)
 
 ```
-STAGE 1: Envelope Queues (routing info embedded)
-┌──────────────────┐         ┌──────────────────┐
-│ Input Envelope Q │   →→→   │ Output Envelope Q│
-│ [client_id, msg] │         │ [client_id, msg] │
-└──────────────────┘         └──────────────────┘
+1. Client sends: [len][F]
+2. TCP Listener parses flush command
+3. Flush has no symbol → send to BOTH queues:
+   - Enqueue to input_queue_0
+   - Enqueue to input_queue_1
 
-STAGE 2: Per-Client Queues (no envelope needed)
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│ Client 1 Queue  │  │ Client 2 Queue  │  │ Client N Queue  │
-│ [msg, msg, ...] │  │ [msg, msg, ...] │  │ [msg, msg, ...] │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+4. Processor 0 receives flush → cancels all A-M orders
+5. Processor 1 receives flush → cancels all N-Z orders
+
+6. Both processors enqueue cancel acks to their output queues
+7. Output Router collects from both queues
+8. All cancel acks routed to originating client
 ```
-
-**Why two stages?**
-1. **Envelope queues** - Single queue, envelope carries client_id for routing
-2. **Per-client queues** - Once routed, no envelope needed (queue IS the routing)
 
 ---
 
 ## Core Components
 
-### Order Book (`src/core/order_book.c`)
-
-**Responsibilities:**
-- Maintain price levels (buy/sell sides)
-- Match incoming orders (price-time priority)
-- Track best bid/ask (top-of-book)
-- Generate output messages (acks, trades, TOB updates)
-- Use memory pools for all allocations
-- Track client_id for cancel-on-disconnect
-
-**Key Data Structures:**
-```c
-typedef struct {
-    char symbol[MAX_SYMBOL_LENGTH];
-    
-    /* Price levels - fixed arrays */
-    price_level_t bids[MAX_PRICE_LEVELS];   // Descending price order
-    price_level_t asks[MAX_PRICE_LEVELS];   // Ascending price order
-    int num_bid_levels;
-    int num_ask_levels;
-    
-    /* Order lookup for cancellations */
-    order_map_t order_map;
-    
-    /* Memory pools (shared reference) */
-    memory_pools_t* pools;
-} order_book_t;
-```
-
-**Matching Algorithm:**
-1. Allocate order from pool
-2. Set `order->client_id` for tracking
-3. Try to match against opposite side
-4. If fully matched → free order back to pool
-5. If partially matched → add remainder to book
-6. Update top-of-book if needed
-
-### Matching Engine (`src/core/matching_engine.c`)
-
-**Responsibilities:**
-- Route messages to correct order book (by symbol)
-- Create order books on-demand
-- Track order→symbol mapping (for cancellations)
-- Cancel all orders for disconnected TCP clients
-- Manage engine-specific memory pools
-
-**Key Data Structures:**
-```c
-typedef struct {
-    /* Symbol → OrderBook mapping */
-    symbol_map_entry_t* symbol_map[SYMBOL_MAP_SIZE];
-    
-    /* Order → Symbol mapping (for cancellations) */
-    order_symbol_entry_t* order_to_symbol[ORDER_SYMBOL_MAP_SIZE];
-    
-    /* Pre-allocated order books */
-    order_book_t books[MAX_SYMBOLS];
-    int num_books;
-    
-    /* Shared memory pools */
-    memory_pools_t* pools;
-    
-    /* Engine-specific pools */
-    symbol_map_pool_t symbol_pool;
-    order_symbol_pool_t order_symbol_pool;
-} matching_engine_t;
-```
-
 ### Processor (`src/threading/processor.c`)
 
-**Responsibilities:**
-- Dequeue input envelopes in batches
-- Extract client_id for routing
-- Call matching engine
-- Create output envelopes with routing logic
-- Handle client disconnect cancellations
+In dual-processor mode, two processor instances run independently:
 
 ```c
+// Processor context includes processor ID
+typedef struct {
+    int processor_id;                    // 0 or 1
+    input_envelope_queue_t* input_queue; // This processor's input
+    output_envelope_queue_t* output_queue; // This processor's output
+    matching_engine_t* engine;           // This processor's engine
+    memory_pools_t* pools;               // This processor's pools
+    atomic_bool* shutdown_flag;
+} processor_context_t;
+
 void* processor_thread(void* arg) {
-    processor_t* processor = (processor_t*)arg;
-    input_msg_envelope_t input_batch[PROCESSOR_BATCH_SIZE];
-    output_buffer_t output_buffer;
+    processor_context_t* ctx = (processor_context_t*)arg;
     
-    while (!atomic_load(processor->shutdown_flag)) {
-        // Dequeue batch
-        size_t count = 0;
-        for (size_t i = 0; i < PROCESSOR_BATCH_SIZE; i++) {
-            if (input_envelope_queue_dequeue(processor->input_queue, &input_batch[count])) {
-                count++;
-            } else {
-                break;
-            }
-        }
+    while (!atomic_load(ctx->shutdown_flag)) {
+        input_msg_envelope_t envelope;
         
-        // Process each message
-        for (size_t i = 0; i < count; i++) {
-            input_msg_envelope_t* envelope = &input_batch[i];
-            uint32_t client_id = envelope->client_id;
+        if (input_envelope_queue_dequeue(ctx->input_queue, &envelope)) {
+            // Process using this processor's engine and pools
+            matching_engine_process_message(ctx->engine, &envelope.msg,
+                                           envelope.client_id, &output_buffer);
             
-            output_buffer_init(&output_buffer);
-            matching_engine_process_message(processor->engine, &envelope->msg, 
-                                           client_id, &output_buffer);
-            
-            // Create output envelopes with routing logic
-            for (int j = 0; j < output_buffer.count; j++) {
-                output_msg_t* out_msg = &output_buffer.messages[j];
-                
-                if (out_msg->type == OUTPUT_MSG_TRADE) {
-                    // Trade → route to BOTH buyer and seller
-                    // ... (see envelope pattern section)
-                } else {
-                    // Ack, Cancel, TOB → route to originating client
-                    // ...
-                }
+            // Enqueue outputs to this processor's output queue
+            for (int i = 0; i < output_buffer.count; i++) {
+                output_envelope_queue_enqueue(ctx->output_queue, &out_envelope);
             }
         }
     }
@@ -692,115 +764,47 @@ void* processor_thread(void* arg) {
 
 ### Output Router (`src/threading/output_router.c`)
 
-**Responsibilities:**
-- Dequeue output envelopes
-- Route to per-client queues based on client_id
-- Drop messages for disconnected clients
-- Track statistics
+The output router handles multiple input queues in dual-processor mode:
 
 ```c
+typedef struct {
+    output_envelope_queue_t* input_queues[MAX_OUTPUT_QUEUES];
+    int num_input_queues;                // 1 for single, 2 for dual
+    tcp_client_registry_t* client_registry;
+    atomic_bool* shutdown_flag;
+    
+    // Per-processor statistics
+    uint64_t messages_from_processor[MAX_OUTPUT_QUEUES];
+    uint64_t total_messages_routed;
+} output_router_context_t;
+
 void* output_router_thread(void* arg) {
     output_router_context_t* ctx = (output_router_context_t*)arg;
-    output_msg_envelope_t batch[BATCH_SIZE];
     
     while (!atomic_load(ctx->shutdown_flag)) {
-        // Dequeue batch of output envelopes
-        size_t count = 0;
-        for (size_t i = 0; i < BATCH_SIZE; i++) {
-            if (output_envelope_queue_dequeue(ctx->input_queue, &batch[count])) {
-                count++;
-            } else {
-                break;
+        bool got_message = false;
+        
+        // Round-robin across all input queues
+        for (int q = 0; q < ctx->num_input_queues; q++) {
+            // Batch dequeue from this queue
+            for (int i = 0; i < ROUTER_BATCH_SIZE; i++) {
+                output_msg_envelope_t envelope;
+                
+                if (output_envelope_queue_dequeue(ctx->input_queues[q], &envelope)) {
+                    route_to_client(ctx, &envelope);
+                    ctx->messages_from_processor[q]++;
+                    got_message = true;
+                } else {
+                    break;  // Queue empty
+                }
             }
         }
         
-        // Route each message
-        for (size_t i = 0; i < count; i++) {
-            output_msg_envelope_t* envelope = &batch[i];
-            
-            tcp_client_t* client = tcp_client_get(ctx->client_registry, 
-                                                   envelope->client_id);
-            
-            if (client) {
-                // Enqueue to client's output queue (no envelope needed)
-                if (tcp_client_enqueue_output(client, &envelope->msg)) {
-                    ctx->messages_routed++;
-                } else {
-                    ctx->messages_dropped++;  // Queue full
-                }
-            } else {
-                ctx->messages_dropped++;  // Client disconnected
-            }
+        if (!got_message) {
+            // All queues empty, brief sleep
+            struct timespec ts = {0, 1000};  // 1μs
+            nanosleep(&ts, NULL);
         }
-    }
-}
-```
-
----
-
-## Data Structures
-
-### Order Structure
-
-```c
-typedef struct order {
-    /* Identification */
-    uint32_t user_id;
-    uint32_t user_order_id;
-    char symbol[MAX_SYMBOL_LENGTH];
-    
-    /* Order details */
-    uint32_t price;           // 0 = market order
-    uint32_t quantity;
-    uint32_t remaining_qty;   // For partial fills
-    side_t side;              // BUY or SELL
-    order_type_t type;        // MARKET or LIMIT
-    
-    /* Time priority */
-    uint64_t timestamp;       // Nanoseconds since epoch
-    
-    /* TCP multi-client support */
-    uint32_t client_id;       // 0 = UDP, >0 = TCP client
-    
-    /* Doubly-linked list */
-    struct order* next;
-    struct order* prev;
-} order_t;
-```
-
-### Trade Message (with client routing)
-
-```c
-typedef struct {
-    char symbol[MAX_SYMBOL_LENGTH];
-    uint32_t user_id_buy;
-    uint32_t user_order_id_buy;
-    uint32_t user_id_sell;
-    uint32_t user_order_id_sell;
-    uint32_t price;
-    uint32_t quantity;
-
-    /* TCP routing - which clients to send trade to */
-    uint32_t buy_client_id;
-    uint32_t sell_client_id;
-} trade_msg_t;
-```
-
-### Output Buffer
-
-```c
-typedef struct {
-    output_msg_t messages[MAX_OUTPUT_MESSAGES];
-    int count;
-} output_buffer_t;
-
-static inline void output_buffer_init(output_buffer_t* buf) {
-    buf->count = 0;
-}
-
-static inline void output_buffer_add(output_buffer_t* buf, const output_msg_t* msg) {
-    if (buf->count < MAX_OUTPUT_MESSAGES) {
-        buf->messages[buf->count++] = *msg;
     }
 }
 ```
@@ -815,342 +819,87 @@ static inline void output_buffer_add(output_buffer_t* buf, const output_msg_t* m
 #define MAX_TCP_CLIENTS 100
 
 typedef struct {
-    /* Network state */
-    int socket_fd;                      // Client socket (-1 if inactive)
-    uint32_t client_id;                 // Unique ID (1-based)
-    struct sockaddr_in addr;            // Client address
-    bool active;                        // true if connected
+    int socket_fd;
+    uint32_t client_id;
+    struct sockaddr_in addr;
+    bool active;
     
-    /* Input framing state */
-    framing_read_state_t read_state;    // Handles partial reads
-    
-    /* Output queue (lock-free SPSC) */
-    output_queue_t output_queue;        // Producer: output_router
-                                        // Consumer: tcp_listener
-    
-    /* Output framing state */
-    framing_write_state_t write_state;  // Handles partial writes
+    framing_read_state_t read_state;
+    output_queue_t output_queue;
+    framing_write_state_t write_state;
     bool has_pending_write;
     
-    /* Statistics */
     time_t connected_at;
     uint64_t messages_received;
     uint64_t messages_sent;
-    uint64_t bytes_received;
-    uint64_t bytes_sent;
 } tcp_client_t;
-```
-
-### Client Registry
-
-```c
-typedef struct {
-    tcp_client_t clients[MAX_TCP_CLIENTS];
-    size_t active_count;
-    pthread_mutex_t lock;  // Protects add/remove only
-} tcp_client_registry_t;
-
-/* API */
-bool tcp_client_add(tcp_client_registry_t* registry, int socket_fd,
-                    struct sockaddr_in addr, uint32_t* client_id);
-void tcp_client_remove(tcp_client_registry_t* registry, uint32_t client_id);
-tcp_client_t* tcp_client_get(tcp_client_registry_t* registry, uint32_t client_id);
 ```
 
 ### Security: Anti-Spoofing Validation
 
-The TCP listener validates that `user_id` in messages matches the assigned `client_id`:
-
 ```c
-// In tcp_listener.c - handle_client_read()
-if (parsed) {
-    bool valid = true;
-    switch (input_msg.type) {
-        case INPUT_MSG_NEW_ORDER:
-            if (input_msg.data.new_order.user_id != client_id) {
-                fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
-                        client_id, input_msg.data.new_order.user_id);
-                valid = false;
-            }
-            break;
-        case INPUT_MSG_CANCEL:
-            if (input_msg.data.cancel.user_id != client_id) {
-                fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
-                        client_id, input_msg.data.cancel.user_id);
-                valid = false;
-            }
-            break;
-    }
-    
-    if (valid) {
-        // Create envelope and enqueue
-    }
+if (input_msg.data.new_order.user_id != client_id) {
+    fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
+            client_id, input_msg.data.new_order.user_id);
+    // Reject message
 }
 ```
-
-**This prevents:**
-- Client A placing orders as Client B
-- Client A cancelling Client B's orders
-- Any form of client impersonation
 
 ### Auto-Cancel on Disconnect
 
-When a TCP client disconnects, all their orders are automatically cancelled:
+When a TCP client disconnects, orders are cancelled in **BOTH processors**:
 
 ```c
-// In main.c - graceful shutdown
-uint32_t disconnected_clients[MAX_TCP_CLIENTS];
-size_t num_disconnected = tcp_client_disconnect_all(client_registry,
-                                                    disconnected_clients,
-                                                    MAX_TCP_CLIENTS);
-
-// Cancel all orders for each disconnected client
-for (size_t i = 0; i < num_disconnected; i++) {
-    processor_cancel_client_orders(&processor_ctx, disconnected_clients[i]);
-}
-
-// In order_book.c
-size_t order_book_cancel_client_orders(order_book_t* book,
-                                       uint32_t client_id,
-                                       output_buffer_t* output) {
-    size_t cancelled_count = 0;
-    
-    // Iterate all price levels and orders
-    for (int i = 0; i < book->num_bid_levels; i++) {
-        order_t* order = book->bids[i].orders_head;
-        while (order != NULL) {
-            order_t* next = order->next;
-            if (order->client_id == client_id) {
-                order_book_cancel_order(book, order->user_id, 
-                                       order->user_order_id, output);
-                cancelled_count++;
-            }
-            order = next;
-        }
-    }
-    // Similar for asks...
-    
-    return cancelled_count;
+// Cancel orders in both processors
+for (int p = 0; p < NUM_PROCESSORS; p++) {
+    matching_engine_cancel_client_orders(&engines[p], client_id, &output);
 }
 ```
-
----
-
-## Message Framing (TCP)
-
-### Wire Format
-
-TCP streams don't have message boundaries, so we use length-prefixed framing:
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  4 bytes (big-endian)  │         N bytes                   │
-│      Message Length    │       Message Payload             │
-└────────────────────────────────────────────────────────────┘
-```
-
-**Example:**
-```
-CSV message: "N, 1, IBM, 100, 50, B, 1\n" (26 bytes)
-Wire format: [0x00][0x00][0x00][0x1A]["N, 1, IBM, 100, 50, B, 1\n"]
-```
-
-### Framing Structures
-
-```c
-#define MAX_FRAMED_MESSAGE_SIZE 16384
-#define FRAME_HEADER_SIZE 4
-
-/* Read state - handles partial TCP reads */
-typedef struct {
-    char buffer[MAX_FRAMED_MESSAGE_SIZE];
-    size_t buffer_pos;
-    uint32_t expected_length;
-    bool reading_header;    // true = reading length, false = reading body
-} framing_read_state_t;
-
-/* Write state - handles partial TCP writes */
-typedef struct {
-    char buffer[MAX_FRAMED_MESSAGE_SIZE + FRAME_HEADER_SIZE];
-    size_t total_len;
-    size_t written;
-} framing_write_state_t;
-```
-
-### Framing API
-
-```c
-/* Initialize read state for new message */
-void framing_read_state_init(framing_read_state_t* state);
-
-/* Process incoming bytes, return true when complete message ready */
-bool framing_read_process(framing_read_state_t* state,
-                          const char* incoming_data,
-                          size_t incoming_len,
-                          const char** msg_data,
-                          size_t* msg_len);
-
-/* Initialize write state with framed message */
-bool framing_write_state_init(framing_write_state_t* state,
-                               const char* msg_data,
-                               size_t msg_len);
-
-/* Get remaining data to write */
-void framing_write_get_remaining(framing_write_state_t* state,
-                                 const char** data,
-                                 size_t* len);
-
-/* Mark bytes as written */
-void framing_write_mark_written(framing_write_state_t* state,
-                                size_t bytes_written);
-
-/* Check if write complete */
-bool framing_write_is_complete(framing_write_state_t* state);
-```
-
-### Usage Pattern
-
-```c
-// Reading
-framing_read_state_t state;
-framing_read_state_init(&state);
-
-while (running) {
-    ssize_t n = read(sock, buffer, sizeof(buffer));
-    const char* msg;
-    size_t msg_len;
-    
-    if (framing_read_process(&state, buffer, n, &msg, &msg_len)) {
-        // Complete message ready - process it
-        handle_message(msg, msg_len);
-        framing_read_state_init(&state);  // Reset for next
-    }
-}
-
-// Writing
-framing_write_state_t state;
-framing_write_state_init(&state, msg_data, msg_len);
-
-while (!framing_write_is_complete(&state)) {
-    const char* data;
-    size_t len;
-    framing_write_get_remaining(&state, &data, &len);
-    
-    ssize_t n = write(sock, data, len);
-    if (n > 0) {
-        framing_write_mark_written(&state, n);
-    }
-}
-```
-
----
-
-## C Port Details
-
-### How We Replaced C++ Features
-
-| C++ Feature | C Implementation | Files |
-|-------------|------------------|-------|
-| `std::vector<Order*>` + `new`/`delete` | Memory pools | `core/order_book.c` |
-| `std::variant<A,B,C>` | Tagged unions | `protocol/message_types.h` |
-| `std::optional<T>` | Bool + output param | Various |
-| `std::string` | Fixed `char[16]` | `core/order.h` |
-| `std::map<price, orders>` | Binary search on sorted array | `core/order_book.c` |
-| `std::unordered_map<order_id, order*>` | Hash table + pool | `core/order_book.c` |
-| `std::thread` | pthreads | `threading/*` |
-| `std::atomic` | C11 `<stdatomic.h>` | `threading/lockfree_queue.h` |
-| `std::chrono` | `clock_gettime()` | `core/order.h` |
-| Templates | C macros | `threading/lockfree_queue.h` |
-
-### Memory Management Patterns
-
-**C++ Way:**
-```cpp
-Order* order = new Order();  // Heap allocation
-book.add(order);
-// ... later ...
-delete order;                // Heap deallocation
-```
-
-**Our C Way:**
-```c
-order_t* order = order_pool_alloc(&pools->order_pool);  // O(1) from pool
-order_book_add_order(book, order, output);
-// ... later ...
-order_pool_free(&pools->order_pool, order);             // O(1) back to pool
-```
-
-**Benefits:**
-- Predictable latency
-- Zero fragmentation
-- No system calls
-- Cache friendly
 
 ---
 
 ## Design Decisions
 
-### 1. Memory Pools vs Malloc/Free
+### 1. Dual-Processor Architecture
 
-**Decision:** Pre-allocate all memory in pools
-
-**Rationale:**
-- **Predictable latency** - No unpredictable system calls
-- **Zero fragmentation** - Memory stays contiguous
-- **Production-grade** - Real exchanges use this pattern
-- **Fail fast** - Pool exhaustion detected immediately
-- **Statistics** - Track peak usage, failures
-
-**Trade-off:** Fixed maximum capacity (10K orders, etc.)
-
-### 2. Envelope Pattern for Routing
-
-**Decision:** Wrap messages with routing metadata
+**Decision:** Partition orders by symbol (A-M / N-Z)
 
 **Rationale:**
-- **Separation of concerns** - Business logic doesn't know about TCP
-- **Single queue scales** - O(1) dequeue regardless of client count
-- **Flexible routing** - Trades go to multiple clients easily
-- **Debugging** - Sequence numbers for tracing
+- **Horizontal scaling** - Near-linear throughput increase
+- **No locks required** - Each processor is independent
+- **Maintains correctness** - Price-time priority preserved per symbol
+- **Industry standard** - Real exchanges use similar partitioning
 
-**Trade-off:** Slightly larger message size (8 bytes overhead)
+**Trade-off:** Uneven load if symbols are skewed (e.g., all traded symbols start with 'A')
 
-### 3. Two-Stage Queuing (TCP Mode)
+### 2. Separate Memory Pools per Processor
 
-**Decision:** Envelope queues → per-client queues
-
-**Rationale:**
-- **Fan-out** - One output can go to multiple clients
-- **Backpressure** - Per-client queues prevent one slow client from blocking others
-- **Isolation** - Client disconnection doesn't affect queue state
-
-### 4. Anti-Spoofing Validation
-
-**Decision:** Validate user_id == client_id
+**Decision:** Each processor has isolated memory pools
 
 **Rationale:**
-- **Security** - Clients can't impersonate others
-- **Integrity** - Order ownership is guaranteed
-- **Production-grade** - Essential for multi-tenant systems
+- **Zero contention** - No shared state
+- **Independent statistics** - Per-processor monitoring
+- **Cache locality** - Each processor's data stays together
+- **Failure isolation** - One pool exhaustion doesn't affect other
 
-### 5. Length-Prefixed Framing
+### 3. Round-Robin Output Scheduling
 
-**Decision:** 4-byte big-endian length prefix
-
-**Rationale:**
-- **Simple** - Easy to implement
-- **Efficient** - Single length read
-- **Compatible** - Works with both CSV and binary
-- **Standard** - Common pattern in network protocols
-
-### 6. epoll/kqueue Event Loop
-
-**Decision:** Platform-specific event multiplexing
+**Decision:** 32-message batches, round-robin across output queues
 
 **Rationale:**
-- **Scalable** - O(active fds), not O(total fds)
-- **Non-blocking** - Single thread handles 100+ clients
-- **Efficient** - No thread-per-client overhead
+- **Fairness** - Prevents one processor from monopolizing output
+- **Industry standard** - CME, ICE use similar approaches
+- **Configurable** - Batch size can be tuned
+- **Low latency** - Small batches keep latency bounded
+
+### 4. Flush to Both Processors
+
+**Decision:** Flush commands sent to all processors
+
+**Rationale:**
+- **Correctness** - Flush affects all symbols
+- **Simplicity** - No need to track which symbols have orders
+- **Safety** - Guaranteed cleanup
 
 ---
 
@@ -1158,41 +907,30 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 
 ### Throughput
 
-| Component | Throughput | Notes |
-|-----------|-----------|-------|
-| UDP Receiver | 1-10M pkts/sec | Network limited |
-| TCP Receiver | 100K-1M msgs/sec | System call limited |
-| Matching Engine | 1-5M orders/sec | CPU limited |
+| Mode | Throughput | Notes |
+|------|-----------|-------|
+| Single-Processor | 1-5M orders/sec | CPU limited |
+| Dual-Processor | 2-10M orders/sec | Near-linear scaling |
 | Memory Pool Alloc | 100M ops/sec | Just index manipulation |
-| Output Router | 1-5M msgs/sec | Lock-free queues |
 
 ### Latency
 
 | Operation | Latency | Notes |
 |-----------|---------|-------|
 | Pool allocation | 5-10 cycles | Index pop/push |
+| Symbol routing | 10-20 cycles | Single character comparison |
 | Lock-free queue hop | 100-500ns | Cache-line aligned atomics |
-| CSV parsing | 500-2000ns | String parsing overhead |
-| Binary parsing | 50-200ns | Memcpy + ntohl |
-| Binary search (100 levels) | 200-500ns | ~7 comparisons |
-| Order book lookup | 100-500ns | Hash table + list walk |
 | Full matching (no fill) | 500-1000ns | Add to book |
-| Full matching (fill) | 1-10μs | Depends on book depth |
-| End-to-end (UDP) | 10-50μs | Network + processing |
 | End-to-end (TCP) | 20-100μs | +framing overhead |
 
 ### Memory Usage
 
 | Component | Memory | Notes |
 |-----------|--------|-------|
-| Order pool | ~1.5MB | 10K × 150 bytes |
-| Hash entry pool | ~800KB | 10K × 80 bytes |
-| Input envelope queue | ~3MB | 16K × 200 bytes |
-| Output envelope queue | ~3MB | 16K × 200 bytes |
-| Per-client queue | ~500KB | 4K × 128 bytes each |
-| Order book (empty) | ~800KB | 2 × 10K × 40 bytes |
-| Client registry | ~60MB | 100 × 600KB (incl queues) |
-| **Total (typical)** | **70-100MB** | Predictable, pre-allocated |
+| Order pool (per processor) | ~1.5MB | 10K × 150 bytes |
+| Input queue (per processor) | ~3MB | 16K × 200 bytes |
+| Output queue (per processor) | ~3MB | 16K × 200 bytes |
+| **Total Dual-Processor** | **~140MB** | 2× single-processor |
 
 ---
 
@@ -1200,78 +938,55 @@ order_pool_free(&pools->order_pool, order);             // O(1) back to pool
 
 ```
 matching-engine-c/
-├── include/                         # Header files
+├── include/
 │   ├── core/
-│   │   ├── order.h                  # Order structure
-│   │   ├── order_book.h             # Order book + memory pools
-│   │   └── matching_engine.h        # Multi-symbol orchestrator
+│   │   ├── order.h
+│   │   ├── order_book.h
+│   │   └── matching_engine.h
 │   ├── protocol/
-│   │   ├── message_types.h          # Core message definitions
-│   │   ├── message_types_extended.h # Envelope types
+│   │   ├── message_types.h
+│   │   ├── symbol_router.h          # NEW: Symbol routing logic
 │   │   ├── csv/
-│   │   │   ├── message_parser.h     # CSV input parser
-│   │   │   └── message_formatter.h  # CSV output formatter
 │   │   └── binary/
-│   │       ├── binary_protocol.h    # Binary message specs
-│   │       ├── binary_message_parser.h
-│   │       └── binary_message_formatter.h
 │   ├── network/
-│   │   ├── tcp_listener.h           # TCP multi-client (epoll/kqueue)
-│   │   ├── tcp_connection.h         # Per-client state + registry
-│   │   ├── message_framing.h        # Length-prefix framing
-│   │   └── udp_receiver.h           # UDP receiver
+│   │   ├── tcp_listener.h           # Updated: dual-processor support
+│   │   ├── udp_receiver.h           # Updated: dual-processor support
+│   │   └── ...
 │   └── threading/
-│       ├── lockfree_queue.h         # SPSC queue macros
-│       ├── queues.h                 # Queue type declarations
-│       ├── processor.h              # Processor thread
-│       ├── output_router.h          # Output router (TCP)
-│       └── output_publisher.h       # Output publisher (UDP)
-│
-├── src/                             # Implementation files
-│   ├── main.c                       # Entry point (~400 lines)
-│   ├── core/
-│   │   ├── order_book.c             # Matching logic (~900 lines)
-│   │   └── matching_engine.c        # Symbol routing (~200 lines)
-│   ├── protocol/...
-│   ├── network/
-│   │   ├── tcp_listener.c           # Event loop (~600 lines)
-│   │   ├── tcp_connection.c         # Client management
-│   │   ├── message_framing.c        # Framing logic
-│   │   └── udp_receiver.c
-│   └── threading/
-│       ├── processor.c              # Batch processing (~150 lines)
-│       ├── output_router.c          # Per-client routing (~100 lines)
-│       └── output_publisher.c
-│
-├── tools/                           # Test/debug tools
-│   ├── binary_client.c
-│   ├── tcp_client.c
-│   └── binary_decoder.c
-│
-├── tests/                           # Unity test framework
-│   ├── core/
-│   ├── protocol/
-│   └── scenarios/
-│
-├── documentation/                   # All documentation
+│       ├── processor.h
+│       ├── output_router.h          # Updated: multi-queue support
+│       └── ...
+├── src/
+│   ├── main.c                       # Updated: dual/single processor modes
+│   └── ...
+├── documentation/
 │   ├── ARCHITECTURE.md              # This file
-│   ├── BUILD.md
-│   ├── PROTOCOLS.md
-│   ├── QUICK_START.md
-│   └── TESTING.md
-│
-├── build.sh                         # Build script
-├── CMakeLists.txt                   # CMake configuration
-└── README.md                        # Project overview
+│   └── ...
+└── ...
 ```
 
-**Total:** ~6,000 lines of production code, ~2,000 lines of tests
+---
+
+## Command-Line Options
+
+```bash
+# Dual-processor mode (DEFAULT)
+./build/matching_engine --tcp
+./build/matching_engine --tcp --dual-processor
+
+# Single-processor mode
+./build/matching_engine --tcp --single-processor
+
+# UDP modes
+./build/matching_engine --udp
+./build/matching_engine --udp --dual-processor
+```
 
 ---
 
 ## See Also
 
 - [Quick Start Guide](QUICK_START.md) - Get up and running
-- [Protocols](PROTOCOLS.md) - Message format specifications (CSV, Binary, TCP Framing)
-- [Testing](TESTING.md) - Comprehensive testing guide
+- [Protocols](PROTOCOLS.md) - Message format specifications
+- [Testing](TESTING.md) - Comprehensive testing guide including dual-processor tests
 - [Build Instructions](BUILD.md) - Detailed build guide
