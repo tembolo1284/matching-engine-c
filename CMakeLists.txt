@@ -22,9 +22,19 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror -pthread")
 set(CMAKE_C_FLAGS_RELEASE "-O3")
 set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
 
+# Valgrind-compatible build option (disables AVX-512)
+option(VALGRIND_BUILD "Build without AVX-512 for Valgrind compatibility" OFF)
+
 # Platform-specific flags
 if(UNIX AND NOT APPLE)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+    if(VALGRIND_BUILD)
+        # Use baseline x86-64-v3 (AVX2) for Valgrind compatibility
+        # Valgrind 3.18 doesn't support AVX-512 instructions
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=x86-64-v3")
+        message(STATUS "Valgrind build: using -march=x86-64-v3 (no AVX-512)")
+    else()
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+    endif()
 elseif(APPLE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
 endif()
@@ -118,22 +128,7 @@ add_custom_target(test-binary
     COMMAND ${CMAKE_COMMAND} -E echo "Binary Protocol Test - UDP Mode"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Starting server - UDP mode, CSV output..."
-    COMMAND bash -c '
-        "${CMAKE_BINARY_DIR}/matching_engine" --udp 1234 > /tmp/binary_test_output.txt 2>&1 &
-        SERVER_PID=$$!
-        sleep 1
-        echo "Sending binary test messages..."
-        "${CMAKE_BINARY_DIR}/binary_client" 1234 1
-        sleep 1
-        echo ""
-        echo "Server output:"
-        kill $$SERVER_PID 2>/dev/null || true
-        wait $$SERVER_PID 2>/dev/null || true
-        cat /tmp/binary_test_output.txt
-        rm -f /tmp/binary_test_output.txt
-        echo ""
-        echo "Binary protocol test complete"
-    '
+    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --udp 1234 > /tmp/binary_test_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Sending binary test messages...' ; \"${CMAKE_BINARY_DIR}/binary_client\" 1234 1 ; sleep 1 ; echo '' ; echo 'Server output:' ; kill $$SERVER_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; cat /tmp/binary_test_output.txt ; rm -f /tmp/binary_test_output.txt ; echo '' ; echo 'Binary protocol test complete'"
     DEPENDS matching_engine binary_client
     COMMENT "Running binary protocol test"
 )
@@ -143,22 +138,7 @@ add_custom_target(test-tcp
     COMMAND ${CMAKE_COMMAND} -E echo "TCP Multi-Client Test"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Starting server - TCP mode, port 1234..."
-    COMMAND bash -c '
-        "${CMAKE_BINARY_DIR}/matching_engine" --tcp 1234 2>&1 &
-        SERVER_PID=$$!
-        sleep 1
-        echo "Connecting test clients..."
-        "${CMAKE_BINARY_DIR}/tcp_client" localhost 1234 &
-        CLIENT_PID=$$!
-        sleep 2
-        echo "Stopping server..."
-        kill $$SERVER_PID 2>/dev/null || true
-        kill $$CLIENT_PID 2>/dev/null || true
-        wait $$SERVER_PID 2>/dev/null || true
-        wait $$CLIENT_PID 2>/dev/null || true
-        echo ""
-        echo "TCP test complete"
-    '
+    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Connecting test clients...' ; \"${CMAKE_BINARY_DIR}/tcp_client\" localhost 1234 & CLIENT_PID=$$! ; sleep 2 ; echo 'Stopping server...' ; kill $$SERVER_PID 2>/dev/null || true ; kill $$CLIENT_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; wait $$CLIENT_PID 2>/dev/null || true ; echo '' ; echo 'TCP test complete'"
     DEPENDS matching_engine tcp_client
     COMMENT "Running TCP multi-client test"
 )
@@ -169,37 +149,7 @@ add_custom_target(test-dual-processor
     COMMAND ${CMAKE_COMMAND} -E echo "Dual-Processor Symbol Routing Test"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Testing symbol partitioning: A-M -> P0, N-Z -> P1"
-    COMMAND bash -c '
-        "${CMAKE_BINARY_DIR}/matching_engine" --tcp 1234 --dual-processor > /tmp/dual_proc_output.txt 2>&1 &
-        SERVER_PID=$$!
-        sleep 1
-        echo "Sending orders to Processor 0 (A-M symbols)..."
-        echo -e "N,1,IBM,100,50,B,1\nN,1,AAPL,150,30,B,2\nN,1,GOOGL,200,20,B,3\n" | nc -q1 localhost 1234 2>/dev/null || \
-        echo -e "N,1,IBM,100,50,B,1\nN,1,AAPL,150,30,B,2\nN,1,GOOGL,200,20,B,3\n" | nc localhost 1234
-        sleep 0.5
-        echo "Sending orders to Processor 1 (N-Z symbols)..."
-        echo -e "N,1,NVDA,300,40,B,4\nN,1,TSLA,180,25,B,5\nN,1,ZM,50,100,B,6\n" | nc -q1 localhost 1234 2>/dev/null || \
-        echo -e "N,1,NVDA,300,40,B,4\nN,1,TSLA,180,25,B,5\nN,1,ZM,50,100,B,6\n" | nc localhost 1234
-        sleep 0.5
-        echo "Sending flush to both processors..."
-        echo -e "F\n" | nc -q1 localhost 1234 2>/dev/null || echo -e "F\n" | nc localhost 1234
-        sleep 1
-        echo ""
-        echo "Stopping server..."
-        kill -TERM $$SERVER_PID 2>/dev/null || true
-        sleep 1
-        kill -9 $$SERVER_PID 2>/dev/null || true
-        wait $$SERVER_PID 2>/dev/null || true
-        echo ""
-        echo "=========================================="
-        echo "Server Output (check per-processor stats):"
-        echo "=========================================="
-        cat /tmp/dual_proc_output.txt
-        rm -f /tmp/dual_proc_output.txt
-        echo ""
-        echo "Expected: ~3 messages to each processor"
-        echo "Dual-processor test complete"
-    '
+    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 --dual-processor > /tmp/dual_proc_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Sending orders to Processor 0 (A-M symbols)...' ; echo -e 'N,1,IBM,100,50,B,1\\nN,1,AAPL,150,30,B,2\\nN,1,GOOGL,200,20,B,3\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'N,1,IBM,100,50,B,1\\nN,1,AAPL,150,30,B,2\\nN,1,GOOGL,200,20,B,3\\n' | nc localhost 1234 ; sleep 0.5 ; echo 'Sending orders to Processor 1 (N-Z symbols)...' ; echo -e 'N,1,NVDA,300,40,B,4\\nN,1,TSLA,180,25,B,5\\nN,1,ZM,50,100,B,6\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'N,1,NVDA,300,40,B,4\\nN,1,TSLA,180,25,B,5\\nN,1,ZM,50,100,B,6\\n' | nc localhost 1234 ; sleep 0.5 ; echo 'Sending flush to both processors...' ; echo -e 'F\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'F\\n' | nc localhost 1234 ; sleep 1 ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 1 ; kill -9 $$SERVER_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; echo '' ; echo '==========================================' ; echo 'Server Output (check per-processor stats):' ; echo '==========================================' ; cat /tmp/dual_proc_output.txt ; rm -f /tmp/dual_proc_output.txt ; echo '' ; echo 'Expected: ~3 messages to each processor' ; echo 'Dual-processor test complete'"
     DEPENDS matching_engine
     COMMENT "Running dual-processor symbol routing test"
 )
@@ -210,27 +160,7 @@ add_custom_target(test-single-processor
     COMMAND ${CMAKE_COMMAND} -E echo "Single-Processor Mode Test"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "All symbols route to single processor"
-    COMMAND bash -c '
-        "${CMAKE_BINARY_DIR}/matching_engine" --tcp 1234 --single-processor > /tmp/single_proc_output.txt 2>&1 &
-        SERVER_PID=$$!
-        sleep 1
-        echo "Sending mixed orders (all to single processor)..."
-        echo -e "N,1,IBM,100,50,B,1\nN,1,NVDA,200,30,B,2\nF\n" | nc -q1 localhost 1234 2>/dev/null || \
-        echo -e "N,1,IBM,100,50,B,1\nN,1,NVDA,200,30,B,2\nF\n" | nc localhost 1234
-        sleep 1
-        echo ""
-        echo "Stopping server..."
-        kill -TERM $$SERVER_PID 2>/dev/null || true
-        sleep 1
-        kill -9 $$SERVER_PID 2>/dev/null || true
-        wait $$SERVER_PID 2>/dev/null || true
-        echo ""
-        echo "Server Output:"
-        cat /tmp/single_proc_output.txt
-        rm -f /tmp/single_proc_output.txt
-        echo ""
-        echo "Single-processor test complete"
-    '
+    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 --single-processor > /tmp/single_proc_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Sending mixed orders (all to single processor)...' ; echo -e 'N,1,IBM,100,50,B,1\\nN,1,NVDA,200,30,B,2\\nF\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'N,1,IBM,100,50,B,1\\nN,1,NVDA,200,30,B,2\\nF\\n' | nc localhost 1234 ; sleep 1 ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 1 ; kill -9 $$SERVER_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; echo '' ; echo 'Server Output:' ; cat /tmp/single_proc_output.txt ; rm -f /tmp/single_proc_output.txt ; echo '' ; echo 'Single-processor test complete'"
     DEPENDS matching_engine
     COMMENT "Running single-processor mode test"
 )
@@ -273,17 +203,7 @@ if(UNIX AND NOT APPLE)
         COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test - auto-stop after 5 seconds..."
         COMMAND pkill -9 matching_engine 2>/dev/null || true
         COMMAND sleep 1
-        COMMAND bash -c '
-            valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes "${CMAKE_BINARY_DIR}/matching_engine" --tcp 2>&1 &
-            VALGRIND_PID=$$!
-            sleep 5
-            echo ""
-            echo "Stopping server..."
-            pkill -SIGTERM matching_engine 2>/dev/null || true
-            wait $$VALGRIND_PID 2>/dev/null || true
-            echo ""
-            echo "Valgrind test complete"
-        '
+        COMMAND bash -c "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 2>&1 & VALGRIND_PID=$$! ; sleep 5 ; echo '' ; echo 'Stopping server...' ; pkill -SIGTERM matching_engine 2>/dev/null || true ; wait $$VALGRIND_PID 2>/dev/null || true ; echo '' ; echo 'Valgrind test complete'"
         DEPENDS matching_engine
         COMMENT "Running valgrind memory leak detection"
     )
@@ -292,7 +212,7 @@ elseif(APPLE)
         COMMAND ${CMAKE_COMMAND} -E echo "Starting memory leak test with macOS leaks tool..."
         COMMAND pkill -9 matching_engine 2>/dev/null || true
         COMMAND sleep 1
-        COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp 2>&1 & SERVER_PID=$$! && sleep 3 && echo '' && echo 'Running leaks...' && leaks $$SERVER_PID 2>&1 | grep -A 20 '^Process\\|leaked bytes' || true && echo '' && echo 'Stopping server...' && kill -TERM $$SERVER_PID 2>/dev/null || true && sleep 2 && kill -9 $$SERVER_PID 2>/dev/null || true && echo 'Leaks test complete'"
+        COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 2>&1 & SERVER_PID=$$! ; sleep 3 ; echo '' ; echo 'Running leaks...' ; leaks $$SERVER_PID 2>&1 | grep -A 20 -E 'Process|leaked bytes' || true ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 2 ; kill -9 $$SERVER_PID 2>/dev/null || true ; echo 'Leaks test complete'"
         DEPENDS matching_engine
         COMMENT "Running leaks memory leak detection"
     )
@@ -339,7 +259,7 @@ add_custom_target(run-binary
 )
 
 add_custom_target(run-binary-decoded
-    COMMAND bash -c "${CMAKE_BINARY_DIR}/matching_engine --tcp --binary 2>/dev/null | ${CMAKE_BINARY_DIR}/binary_decoder"
+    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp --binary 2>/dev/null | \"${CMAKE_BINARY_DIR}/binary_decoder\""
     DEPENDS matching_engine binary_decoder
     COMMENT "Running matching engine with binary output (decoded)"
 )

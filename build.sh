@@ -4,6 +4,7 @@
 set -e
 
 BUILD_DIR="build"
+VALGRIND_BUILD_DIR="build-valgrind"
 BUILD_TYPE="Release"
 GENERATOR="Ninja"
 DEFAULT_PORT=1234
@@ -35,26 +36,33 @@ detect_generator() {
 configure() {
     local build_type=$1
     local generator=$2
+    local build_dir=${3:-$BUILD_DIR}
+    local extra_flags=${4:-}
 
     print_status "Configuring CMake..."
-    echo "  Build directory: $BUILD_DIR"
+    echo "  Build directory: $build_dir"
     echo "  Build type: $build_type"
     echo "  Generator: $generator"
     echo "  Platform: $PLATFORM"
+    if [ -n "$extra_flags" ]; then
+        echo "  Extra flags: $extra_flags"
+    fi
 
-    cmake -B "$BUILD_DIR" -G "$generator" -DCMAKE_BUILD_TYPE="$build_type"
+    cmake -B "$build_dir" -G "$generator" -DCMAKE_BUILD_TYPE="$build_type" $extra_flags
     print_success "Configuration complete"
 }
 
 build() {
+    local build_dir=${1:-$BUILD_DIR}
+    shift || true
     local targets=("$@")
     if [ ${#targets[@]} -eq 0 ]; then
         print_status "Building all targets..."
-        cmake --build "$BUILD_DIR"
+        cmake --build "$build_dir"
     else
         print_status "Building targets: ${targets[*]}..."
         for t in "${targets[@]}"; do
-            cmake --build "$BUILD_DIR" --target "$t"
+            cmake --build "$build_dir" --target "$t"
         done
     fi
     print_success "Build complete"
@@ -70,6 +78,16 @@ clean() {
     fi
 }
 
+clean_valgrind() {
+    if [ -d "$VALGRIND_BUILD_DIR" ]; then
+        print_status "Cleaning valgrind build directory..."
+        rm -rf "$VALGRIND_BUILD_DIR"
+        print_success "Clean complete"
+    else
+        print_warning "Valgrind build directory does not exist"
+    fi
+}
+
 require_built() {
     if [ ! -x "$BUILD_DIR/matching_engine" ]; then
         print_error "matching_engine not built. Run ./build.sh build first."
@@ -79,6 +97,22 @@ require_built() {
         print_error "binary_client not built. Run ./build.sh build first."
         exit 1
     fi
+}
+
+require_valgrind_built() {
+    if [ ! -x "$VALGRIND_BUILD_DIR/matching_engine" ]; then
+        print_error "Valgrind-compatible build not found."
+        print_status "Building valgrind-compatible version..."
+        build_for_valgrind
+    fi
+}
+
+build_for_valgrind() {
+    print_status "Building valgrind-compatible version (no AVX-512)..."
+    clean_valgrind
+    configure "Debug" "$GENERATOR" "$VALGRIND_BUILD_DIR" "-DVALGRIND_BUILD=ON"
+    build "$VALGRIND_BUILD_DIR"
+    print_success "Valgrind build complete"
 }
 
 # scenarios args: numbers or "all" (default 1 2 3)
@@ -303,10 +337,16 @@ run_valgrind() {
         print_error "valgrind not found. Install with: sudo apt install valgrind"
         exit 1
     fi
-    require_built
-    print_status "Running valgrind (TCP server). Ctrl+C to stop."
+    
+    # Ensure valgrind-compatible build exists
+    require_valgrind_built
+    
+    print_status "Running valgrind (TCP server) with AVX-512-free build. Ctrl+C to stop."
+    echo ""
+    echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
+    echo ""
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-        "./${BUILD_DIR}/matching_engine" --tcp "$DEFAULT_PORT"
+        "./${VALGRIND_BUILD_DIR}/matching_engine" --tcp "$DEFAULT_PORT"
 }
 
 run_server() {
@@ -335,6 +375,7 @@ Build:
   rebuild          Clean + rebuild
   configure        Configure only
   clean            Remove build dir
+  valgrind-build   Build valgrind-compatible version (no AVX-512)
 
 Real Tests:
   test             Run Unity unit tests (C tests)
@@ -347,7 +388,7 @@ README Run-Modes (2-terminal workflows):
   test-dual-processor  TCP server dual-processor mode (symbol routing test)
   test-single-processor TCP server single-processor mode (comparison)
   test-all             Prints all README run-modes (does not start anything)
-  valgrind             Run valgrind server (Linux)
+  valgrind             Run valgrind server (Linux, auto-builds if needed)
 
 Scenario examples:
   ./build.sh test-binary 1234 all
@@ -413,6 +454,13 @@ main() {
             ;;
         clean)
             clean
+            ;;
+        clean-all)
+            clean
+            clean_valgrind
+            ;;
+        valgrind-build)
+            build_for_valgrind
             ;;
         test)
             run_unit_tests
