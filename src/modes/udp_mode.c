@@ -6,12 +6,15 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <time.h>
 
 #include "core/matching_engine.h"
 #include "core/order_book.h"
 #include "network/udp_receiver.h"
 #include "threading/processor.h"
 #include "threading/output_publisher.h"
+#include "protocol/csv/message_formatter.h"
+#include "protocol/binary/binary_message_formatter.h"
 
 // External shutdown flag (from main.c)
 extern atomic_bool g_shutdown;
@@ -29,53 +32,78 @@ typedef struct {
 
 static void* dual_output_publisher_thread(void* arg) {
     dual_output_publisher_ctx_t* ctx = (dual_output_publisher_ctx_t*)arg;
-    
+
     fprintf(stderr, "[Dual Output Publisher] Starting (round-robin from both processors)\n");
-    
+
     output_msg_envelope_t envelope;
-    char output_buffer[512];
-    
+
+    // Formatter state (one instance per thread)
+    binary_message_formatter_t bin_formatter;
+    message_formatter_t csv_formatter;
+    memset(&bin_formatter, 0, sizeof(bin_formatter));
+    memset(&csv_formatter, 0, sizeof(csv_formatter));
+
     while (!atomic_load(ctx->shutdown_flag)) {
         bool got_message = false;
-        
+
         // Round-robin: Try queue 0, then queue 1
         if (output_envelope_queue_dequeue(ctx->queue_0, &envelope)) {
             if (ctx->use_binary_output) {
-                size_t len = binary_message_formatter_format(&envelope.msg, output_buffer, sizeof(output_buffer));
-                if (len > 0) {
-                    fwrite(output_buffer, 1, len, stdout);
+                size_t len = 0;
+                const void* data = binary_message_formatter_format(
+                    &bin_formatter,
+                    &envelope.msg,
+                    &len
+                );
+                if (data && len > 0) {
+                    fwrite(data, 1, len, stdout);
                     fflush(stdout);
                 }
             } else {
-                message_formatter_format(&envelope.msg, output_buffer, sizeof(output_buffer));
-                printf("%s", output_buffer);
-                fflush(stdout);
+                const char* line = message_formatter_format(
+                    &csv_formatter,
+                    &envelope.msg
+                );
+                if (line) {
+                    fputs(line, stdout);
+                    fflush(stdout);
+                }
             }
             got_message = true;
         }
-        
+
         if (output_envelope_queue_dequeue(ctx->queue_1, &envelope)) {
             if (ctx->use_binary_output) {
-                size_t len = binary_message_formatter_format(&envelope.msg, output_buffer, sizeof(output_buffer));
-                if (len > 0) {
-                    fwrite(output_buffer, 1, len, stdout);
+                size_t len = 0;
+                const void* data = binary_message_formatter_format(
+                    &bin_formatter,
+                    &envelope.msg,
+                    &len
+                );
+                if (data && len > 0) {
+                    fwrite(data, 1, len, stdout);
                     fflush(stdout);
                 }
             } else {
-                message_formatter_format(&envelope.msg, output_buffer, sizeof(output_buffer));
-                printf("%s", output_buffer);
-                fflush(stdout);
+                const char* line = message_formatter_format(
+                    &csv_formatter,
+                    &envelope.msg
+                );
+                if (line) {
+                    fputs(line, stdout);
+                    fflush(stdout);
+                }
             }
             got_message = true;
         }
-        
+
         if (!got_message) {
             // Both queues empty, brief sleep
             struct timespec ts = {0, 1000};  // 1μs
             nanosleep(&ts, NULL);
         }
     }
-    
+
     fprintf(stderr, "[Dual Output Publisher] Shutting down\n");
     return NULL;
 }
@@ -104,7 +132,7 @@ int run_udp_dual_processor(const app_config_t* config) {
     }
     memory_pools_init(pools_0);
     memory_pools_init(pools_1);
-    
+
     fprintf(stderr, "\nMemory Pools Initialized (per processor):\n");
     fprintf(stderr, "  Order pool:      %d slots each\n", MAX_ORDERS_IN_POOL);
     fprintf(stderr, "  Hash pool:       %d slots each\n", MAX_HASH_ENTRIES_IN_POOL);
@@ -129,7 +157,7 @@ int run_udp_dual_processor(const app_config_t* config) {
     input_envelope_queue_t* input_queue_1 = malloc(sizeof(input_envelope_queue_t));
     output_envelope_queue_t* output_queue_0 = malloc(sizeof(output_envelope_queue_t));
     output_envelope_queue_t* output_queue_1 = malloc(sizeof(output_envelope_queue_t));
-    
+
     if (!input_queue_0 || !input_queue_1 || !output_queue_0 || !output_queue_1) {
         fprintf(stderr, "[UDP Dual] Failed to allocate queues\n");
         free(input_queue_0);
@@ -144,7 +172,7 @@ int run_udp_dual_processor(const app_config_t* config) {
         free(pools_1);
         return 1;
     }
-    
+
     input_envelope_queue_init(input_queue_0);
     input_envelope_queue_init(input_queue_1);
     output_envelope_queue_init(output_queue_0);
@@ -229,9 +257,9 @@ int run_udp_dual_processor(const app_config_t* config) {
 
     // Graceful shutdown
     fprintf(stderr, "\n[UDP Dual] Initiating graceful shutdown...\n");
-    
+
     udp_receiver_stop(&receiver_ctx);
-    
+
     fprintf(stderr, "[UDP Dual] Draining queues...\n");
     sleep(2);
 
@@ -244,14 +272,14 @@ int run_udp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "\n--- Processor 0 (A-M) ---\n");
     processor_print_stats(&processor_ctx_0);
     print_memory_stats("Processor 0 (A-M)", pools_0);
-    
+
     fprintf(stderr, "\n--- Processor 1 (N-Z) ---\n");
     processor_print_stats(&processor_ctx_1);
     print_memory_stats("Processor 1 (N-Z)", pools_1);
 
 cleanup:
     udp_receiver_destroy(&receiver_ctx);
-    
+
     input_envelope_queue_destroy(input_queue_0);
     input_envelope_queue_destroy(input_queue_1);
     output_envelope_queue_destroy(output_queue_0);
@@ -260,12 +288,12 @@ cleanup:
     free(input_queue_1);
     free(output_queue_0);
     free(output_queue_1);
-    
+
     matching_engine_destroy(engine_0);
     matching_engine_destroy(engine_1);
     free(engine_0);
     free(engine_1);
-    
+
     free(pools_0);
     free(pools_1);
 
@@ -291,7 +319,7 @@ int run_udp_single_processor(const app_config_t* config) {
         return 1;
     }
     memory_pools_init(pools);
-    
+
     fprintf(stderr, "\nMemory Pools Initialized:\n");
     fprintf(stderr, "  Order pool:      %d slots\n", MAX_ORDERS_IN_POOL);
     fprintf(stderr, "  Hash pool:       %d slots\n", MAX_HASH_ENTRIES_IN_POOL);
@@ -384,9 +412,9 @@ int run_udp_single_processor(const app_config_t* config) {
 
     // Graceful shutdown
     fprintf(stderr, "\n[UDP Single] Initiating graceful shutdown...\n");
-    
+
     udp_receiver_stop(&receiver_ctx);
-    
+
     fprintf(stderr, "[UDP Single] Draining queues...\n");
     sleep(2);
 
@@ -398,17 +426,18 @@ int run_udp_single_processor(const app_config_t* config) {
 
 cleanup:
     udp_receiver_destroy(&receiver_ctx);
-    
+
     input_envelope_queue_destroy(input_queue);
     output_envelope_queue_destroy(output_queue);
     free(input_queue);
     free(output_queue);
-    
+
     matching_engine_destroy(engine);
     free(engine);
-    
+
     free(pools);
 
     fprintf(stderr, "\n=== UDP Single Processor Mode Stopped ===\n");
     return 0;
 }
+

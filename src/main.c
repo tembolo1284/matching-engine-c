@@ -47,27 +47,39 @@ static void print_usage(const char* program_name) {
 }
 
 // Parse multicast address (format: "239.255.0.1:5000")
-static bool parse_multicast_address(const char* addr_str, char* group, size_t group_size, uint16_t* port) {
+static bool parse_multicast_address(const char* addr_str,
+                                    char* group,
+                                    size_t group_size,
+                                    uint16_t* port) {
     char buffer[128];
-    strncpy(buffer, addr_str, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    
+
+    // Safe copy into local buffer, always null-terminated
+    snprintf(buffer, sizeof(buffer), "%s", addr_str);
+
     char* colon = strchr(buffer, ':');
     if (!colon) {
         fprintf(stderr, "ERROR: Invalid multicast address format (expected group:port)\n");
         return false;
     }
-    
+
     *colon = '\0';
-    strncpy(group, buffer, group_size - 1);
-    group[group_size - 1] = '\0';
-    
+
+    // Safe bounded copy of group part into caller buffer without triggering
+    // format-truncation or stringop-truncation warnings
+    if (group_size == 0) {
+        fprintf(stderr, "ERROR: multicast group buffer too small\n");
+        return false;
+    }
+    size_t len = strnlen(buffer, group_size - 1);
+    memcpy(group, buffer, len);
+    group[len] = '\0';
+
     *port = (uint16_t)atoi(colon + 1);
     if (*port == 0) {
         fprintf(stderr, "ERROR: Invalid multicast port\n");
         return false;
     }
-    
+
     return true;
 }
 
@@ -107,9 +119,10 @@ static bool parse_args(int argc, char** argv, app_config_t* config) {
                 return false;
             }
             config->enable_multicast = true;
-            if (!parse_multicast_address(argv[i + 1], config->multicast_group, 
-                                        sizeof(config->multicast_group), 
-                                        &config->multicast_port)) {
+            if (!parse_multicast_address(argv[i + 1],
+                                         config->multicast_group,
+                                         sizeof(config->multicast_group),
+                                         &config->multicast_port)) {
                 return false;
             }
             i++;
@@ -165,3 +178,4 @@ int main(int argc, char** argv) {
 
     return result;
 }
+
