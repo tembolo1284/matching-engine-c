@@ -8,6 +8,7 @@ Complete documentation for CSV and Binary protocols supported by the Matching En
 - [Binary Protocol](#binary-protocol)
 - [Protocol Detection](#protocol-detection)
 - [TCP Framing Protocol](#tcp-framing-protocol)
+- [Multicast Protocol](#multicast-protocol)
 - [Dual-Processor Routing](#dual-processor-routing)
 - [Binary Tools](#binary-tools)
 - [Creating Custom Messages](#creating-custom-messages)
@@ -24,7 +25,10 @@ The Matching Engine supports two protocols:
 
 Both protocols can be used simultaneously through automatic format detection. This allows for mixed-mode operation where some clients use CSV (for debugging) while others use Binary (for performance).
 
-**Note:** Protocol format is independent of processor routing. Both protocols work identically in single-processor and dual-processor modes.
+**Protocol format is independent of:**
+- Processor routing (both protocols work identically in single/dual-processor modes)
+- Transport layer (TCP, UDP, or Multicast)
+- Output destination (TCP clients or multicast subscribers)
 
 ---
 
@@ -305,7 +309,6 @@ typedef struct __attribute__((packed)) {
 ### Automatic Format Detection
 
 The receiver thread automatically detects message format by examining the first byte:
-
 ```c
 if (data[0] == 0x4D) {
     // Binary protocol (magic byte detected)
@@ -316,6 +319,8 @@ if (data[0] == 0x4D) {
 }
 ```
 
+This works across all transports (TCP, UDP, Multicast).
+
 ---
 
 ## TCP Framing Protocol
@@ -323,7 +328,6 @@ if (data[0] == 0x4D) {
 TCP streams don't have message boundaries, so we use **length-prefixed framing**.
 
 ### Wire Format
-
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  4 bytes (big-endian)  │           N bytes                  │
@@ -355,7 +359,6 @@ length=30     Binary payload (starts with 0x4D magic)
 ```
 
 ### Client Implementation (Python)
-
 ```python
 import struct
 import socket
@@ -394,7 +397,6 @@ print(response)  # "A, IBM, 1, 1"
 ```
 
 ### Client Implementation (C)
-
 ```c
 #include <arpa/inet.h>
 #include <string.h>
@@ -430,7 +432,6 @@ ssize_t recv_framed(int sock, char* buf, size_t buf_size) {
 ```
 
 ### Constants
-
 ```c
 #define MAX_FRAMED_MESSAGE_SIZE 16384   // 16KB max message
 #define FRAME_HEADER_SIZE 4             // 4-byte length prefix
@@ -439,6 +440,163 @@ ssize_t recv_framed(int sock, char* buf, size_t buf_size) {
 ### UDP Operation
 
 UDP mode does **not** use length framing - UDP packets have built-in boundaries. Format detection (CSV vs Binary) still applies based on the first byte.
+
+---
+
+## Multicast Protocol
+
+### Overview
+
+The multicast publisher broadcasts market data to a UDP multicast group. This is the **industry-standard pattern** used by real exchanges (CME, NASDAQ, ICE) for market data distribution.
+
+### Multicast Transport
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Multicast Packet Format                    │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │              UDP Datagram Payload                     │  │
+│  │     (CSV or Binary message - NO length prefix)        │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                              │
+│  Notes:                                                      │
+│  - Each UDP packet = one message                            │
+│  - No length framing needed (UDP has packet boundaries)     │
+│  - Format detection via first byte (0x4D = Binary)          │
+│  - Same message format as TCP (minus length prefix)         │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Multicast Addressing
+
+| Component | Description |
+|-----------|-------------|
+| **Group Address** | 239.255.0.1 (organization-local scope) |
+| **Port** | 5000 (default) |
+| **TTL** | 1 (local subnet only) |
+| **Protocol** | UDP |
+
+### Address Ranges
+
+| Range | Scope | Use Case |
+|-------|-------|----------|
+| 224.0.0.0 - 224.0.0.255 | Link-local | Reserved (routing protocols) |
+| **239.0.0.0 - 239.255.255.255** | **Organization-local** | **Our default (perfect for LANs)** |
+| 224.0.1.0 - 238.255.255.255 | Internet-wide | Global multicast |
+
+### Subscriber Implementation
+
+The `multicast_subscriber` tool demonstrates how to receive multicast data:
+```c
+// Create UDP socket
+int sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+// Allow multiple subscribers on same machine
+int reuse = 1;
+setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+
+// Bind to multicast port
+struct sockaddr_in addr = {
+    .sin_family = AF_INET,
+    .sin_port = htons(5000),
+    .sin_addr.s_addr = htonl(INADDR_ANY)
+};
+bind(sock, (struct sockaddr*)&addr, sizeof(addr));
+
+// Join multicast group
+struct ip_mreq mreq = {
+    .imr_multiaddr.s_addr = inet_addr("239.255.0.1"),
+    .imr_interface.s_addr = htonl(INADDR_ANY)
+};
+setsockopt(sock, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq));
+
+// Receive messages
+char buffer[1024];
+while (1) {
+    ssize_t len = recvfrom(sock, buffer, sizeof(buffer), 0, NULL, NULL);
+    if (len > 0) {
+        // Auto-detect format
+        if (buffer[0] == 0x4D) {
+            // Binary protocol
+            parse_binary_message(buffer, len);
+        } else {
+            // CSV protocol
+            parse_csv_message(buffer, len);
+        }
+    }
+}
+```
+
+### Python Subscriber Example
+```python
+import socket
+import struct
+
+# Create UDP socket
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+# Bind to port
+sock.bind(('', 5000))
+
+# Join multicast group
+mreq = struct.pack('4sl', socket.inet_aton('239.255.0.1'), socket.INADDR_ANY)
+sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+
+# Receive messages
+while True:
+    data, addr = sock.recvfrom(1024)
+    if data[0] == 0x4D:
+        print(f"Binary message: {len(data)} bytes")
+    else:
+        print(f"CSV message: {data.decode('utf-8')}")
+```
+
+### Multicast Message Types
+
+All standard output message types are supported over multicast:
+
+| Message Type | CSV Format | Binary Size |
+|--------------|------------|-------------|
+| Acknowledgement | `A, symbol, userId, orderId` | 19 bytes |
+| Cancel Ack | `C, symbol, userId, orderId` | 19 bytes |
+| Trade | `T, symbol, buyUser, buyOrd, sellUser, sellOrd, price, qty` | 31 bytes |
+| Top of Book | `B, symbol, side, price, qty` | 20 bytes |
+
+### Multicast vs TCP
+
+| Aspect | TCP (Output Router) | Multicast |
+|--------|---------------------|-----------|
+| **Delivery** | Per-client queues | One packet to all |
+| **Reliability** | Guaranteed | Best-effort |
+| **Overhead** | N sends for N clients | 1 send for N clients |
+| **Filtering** | Client-specific | All messages to all |
+| **Use Case** | Order entry, private data | Market data distribution |
+
+### Enabling Multicast
+```bash
+# Server with multicast (CSV output)
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Server with binary multicast
+./build/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+
+# Subscribers (run multiple instances)
+./build/multicast_subscriber 239.255.0.1 5000
+```
+
+### Multicast Scaling
+
+| Subscribers | Server Sends | Network Cost |
+|-------------|--------------|--------------|
+| 1 | 1 | 1× |
+| 10 | 1 | 1× |
+| 100 | 1 | 1× |
+| 1000 | 1 | 1× |
+
+**Key insight:** Multicast server cost is constant regardless of subscriber count!
 
 ---
 
@@ -455,7 +613,6 @@ In dual-processor mode, messages are routed based on symbol:
 | Flush | N/A | Send to **BOTH** processors |
 
 ### Symbol Routing Logic
-
 ```c
 // First character of symbol determines processor
 char first = symbol[0];
@@ -497,7 +654,6 @@ if (first >= 'A' && first <= 'M') {
 ### Binary Client
 
 Sends binary protocol messages via UDP or TCP.
-
 ```bash
 # UDP mode (fire-and-forget)
 ./build/binary_client <port> [scenario]
@@ -529,7 +685,6 @@ Sends binary protocol messages via UDP or TCP.
 ### Binary Decoder
 
 Decodes binary output to human-readable CSV.
-
 ```bash
 # Pipe server output through decoder
 ./build/matching_engine --binary 2>/dev/null | ./build/binary_decoder
@@ -551,12 +706,44 @@ Binary message (30 bytes): New Order
 CSV equivalent: N, 1, IBM, 10000, 50, B, 1
 ```
 
+### Multicast Subscriber
+
+Receives and displays multicast market data.
+```bash
+./build/multicast_subscriber <multicast_group> <port>
+
+# Example
+./build/multicast_subscriber 239.255.0.1 5000
+```
+
+**Features:**
+- Auto-detects CSV vs Binary protocol
+- Real-time display of market data
+- Statistics tracking (packets, messages, errors)
+- Throughput calculation (messages/sec)
+- Signal handling (Ctrl+C shows statistics)
+
+**Output Example:**
+```
+[Multicast Subscriber] Joined group 239.255.0.1:5000
+[Multicast Subscriber] Waiting for market data...
+
+[CSV] A, IBM, 1, 1
+[CSV] T, IBM, 1, 1, 2, 1, 10000, 50
+[CSV] B, IBM, B, -, -
+
+--- Statistics ---
+Packets received: 3
+Messages: 3
+Elapsed: 1.234s
+Throughput: 2.43 msg/sec
+```
+
 ---
 
 ## Creating Custom Messages
 
 ### C Example
-
 ```c
 #include <arpa/inet.h>
 #include <sys/socket.h>
@@ -594,7 +781,6 @@ void send_binary_order(int sock, struct sockaddr_in* addr) {
 ```
 
 ### Python Example
-
 ```python
 import struct
 import socket
@@ -711,9 +897,24 @@ sock.sendto(msg, ('localhost', 1234))
 - Skip the magic byte
 - Assume struct padding matches target
 
-### TCP vs UDP
+### Multicast
 
-**TCP (recommended for most use cases):**
+**Do:**
+- Use organization-local scope (239.x.x.x) for LANs
+- Set appropriate TTL (1 for local subnet)
+- Handle packet loss gracefully (UDP is best-effort)
+- Run multiple subscribers to test distribution
+- Use `SO_REUSEADDR` for multiple subscribers on same machine
+
+**Don't:**
+- Assume reliable delivery (unlike TCP)
+- Use global multicast addresses without infrastructure
+- Exceed network MTU (typically 1500 bytes)
+- Forget to join multicast group before receiving
+
+### TCP vs UDP vs Multicast
+
+**TCP (recommended for order entry):**
 - Reliable delivery
 - Message ordering guaranteed
 - Built-in flow control
@@ -727,22 +928,31 @@ sock.sendto(msg, ('localhost', 1234))
 - No guaranteed delivery
 - Single client per port
 
+**Multicast (for market data distribution):**
+- One send reaches all subscribers
+- Zero per-subscriber overhead
+- Best-effort delivery (like UDP)
+- Industry standard for market data
+- Scales to unlimited subscribers
+
 ### Mixed Protocol Operation
 
 You can mix protocols in the same system:
-
 ```bash
-# Server accepts both CSV and Binary
-./build/matching_engine --tcp
+# Server accepts both CSV and Binary, broadcasts via multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
 
-# Client 1 uses CSV
+# Client 1 uses CSV over TCP
 ./build/tcp_client localhost 1234
 
-# Client 2 uses Binary
+# Client 2 uses Binary over TCP
 ./build/binary_client 1234 --tcp
+
+# Subscriber receives via multicast (auto-detects format)
+./build/multicast_subscriber 239.255.0.1 5000
 ```
 
-The server auto-detects and handles both correctly!
+The server auto-detects and handles all correctly!
 
 ---
 
@@ -773,6 +983,18 @@ The server auto-detects and handles both correctly!
 - Drops invalid message
 - Continues processing
 
+### Multicast Errors
+
+**Common errors:**
+- Failed to join group (network doesn't support multicast)
+- Packet loss under high load
+- TTL too low (packets don't reach subnet)
+
+**Subscriber behavior:**
+- Logs join failures
+- Tracks parse errors in statistics
+- Continues receiving (best-effort)
+
 ---
 
 ## Protocol Specifications Reference
@@ -796,13 +1018,15 @@ B, <sym>, <side>, <price>, <qty>
 
 **Binary:** All structs in `binary_protocol.h`, all integers in network byte order.
 
+**Multicast:** Same output formats as above, delivered via UDP multicast (no length framing).
+
 **Dual-Processor:** Symbol routing (A-M → P0, N-Z → P1) is transparent to clients.
 
 ---
 
 ## See Also
 
-- [Quick Start Guide](documentation/QUICK_START.md) - Get running quickly
-- [Architecture](documentation/ARCHITECTURE.md) - System internals and dual-processor design
-- [Testing](documentation/TESTING.md) - Protocol testing guide
-- [Build Instructions](documentation/BUILD.md) - Compiler setup
+- [Quick Start Guide](QUICK_START.md) - Get running quickly
+- [Architecture](ARCHITECTURE.md) - System internals, dual-processor, and multicast design
+- [Testing](TESTING.md) - Protocol and multicast testing guide
+- [Build Instructions](BUILD.md) - CMake build setup

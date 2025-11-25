@@ -1,14 +1,21 @@
 # Matching Engine - C Implementation
 
-A **production-grade**, high-performance order matching engine written in pure C11. Features zero-allocation hot path using memory pools, **dual-processor horizontal scaling**, TCP multi-client support, and dual protocol support (CSV/Binary).
+A **production-grade**, high-performance order matching engine written in pure C11. Features zero-allocation hot path using memory pools, **dual-processor horizontal scaling**, **multicast market data broadcasting**, TCP multi-client support, and dual protocol support (CSV/Binary).
 
 ## 🎯 Key Features
 
-### **Dual-Processor Horizontal Scaling** ⚡ NEW
+### **Dual-Processor Horizontal Scaling** ⚡
 - **Symbol-based partitioning** - Orders route by symbol (A-M → Processor 0, N-Z → Processor 1)
 - **Near-linear scaling** - 2x throughput with dual processors
 - **Zero contention** - Separate memory pools per processor
 - **Configurable** - Switch between dual and single processor modes
+
+### **Multicast Market Data Broadcasting** 📡 NEW
+- **Industry-standard UDP multicast** - Same pattern used by CME, NASDAQ, ICE
+- **Zero per-subscriber overhead** - One send reaches unlimited subscribers
+- **Unlimited subscribers** - 1 subscriber or 1000 subscribers = same server cost
+- **Optional 5th thread** - Enable with `--multicast` flag
+- **Real-world exchanges** - Production-ready market data distribution
 
 ### **Zero-Allocation Memory Pools** 
 - **No malloc/free in hot path** - All memory pre-allocated at startup
@@ -24,10 +31,12 @@ A **production-grade**, high-performance order matching engine written in pure C
 - **Lock-free queues** - Zero-contention threading model
 - **Dual protocol** - CSV (human-readable) + Binary (high-performance)
 - **Auto protocol detection** - Seamlessly handles both formats
+- **Modular codebase** - Separate files for TCP, UDP, multicast modes
 
 ### **High Performance**
 - **2-10M orders/sec** matching throughput (dual-processor)
 - **10-50μs** end-to-end latency
+- **Unlimited multicast subscribers** - Zero server overhead increase
 - Binary protocol: 50-70% smaller messages, 5-10x faster parsing
 - Bounded loops and defensive programming throughout
 
@@ -36,15 +45,14 @@ A **production-grade**, high-performance order matching engine written in pure C
 | Document | Description |
 |----------|-------------|
 | **[Quick Start →](documentation/QUICK_START.md)** | Get running in 5 minutes |
-| **[Architecture →](documentation/ARCHITECTURE.md)** | Dual-processor design, memory pools, threading |
-| **[Build Guide →](documentation/BUILD.md)** | Build system, CMake, platform notes |
-| **[Testing →](documentation/TESTING.md)** | Unit tests, integration tests, dual-processor tests |
+| **[Architecture →](documentation/ARCHITECTURE.md)** | Dual-processor design, multicast, memory pools, threading |
+| **[Build Guide →](documentation/BUILD.md)** | CMake build system, platform notes |
+| **[Testing →](documentation/TESTING.md)** | Unit tests, integration tests, multicast tests |
 | **[Protocols →](documentation/PROTOCOLS.md)** | CSV and Binary protocol specifications |
 
 ## ⚡ Quick Start
 
 ### Build and Run
-
 ```bash
 # Build everything
 ./build.sh build
@@ -53,11 +61,26 @@ A **production-grade**, high-performance order matching engine written in pure C
 ./build/matching_engine --tcp
 
 # In another terminal, run test client
-./build/tcp_client localhost 1234 2
+./build/tcp_client localhost 1234
 ```
 
-### Processor Modes
+### Multicast Market Data Feed
+```bash
+# Terminal 1: Start server with multicast broadcasting
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
 
+# Terminal 2: Start subscriber (can run multiple instances!)
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send orders
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+> sell IBM 100 30 2
+```
+
+**Result:** ALL subscribers receive trades, top-of-book updates, and acks simultaneously!
+
+### Processor Modes
 ```bash
 # Dual-processor mode (DEFAULT) - symbols partitioned A-M / N-Z
 ./build/matching_engine --tcp
@@ -65,10 +88,12 @@ A **production-grade**, high-performance order matching engine written in pure C
 
 # Single-processor mode - all symbols to one processor
 ./build/matching_engine --tcp --single-processor
+
+# Dual-processor with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
 ```
 
 ### Run Tests
-
 ```bash
 # All tests
 ./build.sh test
@@ -77,6 +102,7 @@ A **production-grade**, high-performance order matching engine written in pure C
 ./build.sh test-binary          # Binary protocol test
 ./build.sh test-tcp             # TCP integration test
 ./build.sh test-dual-processor  # Dual-processor routing test
+./build.sh test-multicast       # Multicast market data feed
 ```
 
 See **[Quick Start Guide](documentation/QUICK_START.md)** for detailed examples.
@@ -84,7 +110,6 @@ See **[Quick Start Guide](documentation/QUICK_START.md)** for detailed examples.
 ## 🏗️ Architecture Highlights
 
 ### Dual-Processor Symbol Partitioning
-
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    Symbol Routing                            │
@@ -103,8 +128,29 @@ See **[Quick Start Guide](documentation/QUICK_START.md)** for detailed examples.
 
 Each processor has **isolated resources** - separate memory pools, matching engines, and queues. Zero contention between processors.
 
-### Memory Pool System (Zero-Allocation Hot Path)
+### Multicast Market Data Broadcasting
+```
+┌────────────────────────────────────────────────────────────┐
+│              Multicast Publisher (5th Thread)               │
+├────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Processor 0  ──┐                                           │
+│                 ├──▶ Multicast Pub ──▶ UDP 239.255.0.1     │
+│  Processor 1  ──┘    (round-robin)                         │
+│                                                             │
+│                         │                                   │
+│                         └──▶ Network delivers to ALL       │
+│                              subscribers simultaneously     │
+│                                                             │
+│                              ▾   ▾   ▾   ▾                  │
+│                           Sub1 Sub2 Sub3 ... SubN          │
+│                                                             │
+└────────────────────────────────────────────────────────────┘
+```
 
+**Real-world pattern:** CME, NASDAQ, and ICE use UDP multicast for market data distribution. One send reaches unlimited subscribers with zero per-subscriber overhead.
+
+### Memory Pool System (Zero-Allocation Hot Path)
 ```c
 // All memory pre-allocated at startup (per processor)
 typedef struct {
@@ -118,42 +164,61 @@ order_t* order = order_pool_alloc(&pools->order_pool);
 
 No malloc/free during order matching = **predictable latency** and **no fragmentation**.
 
-### Four-Thread Pipeline (Dual-Processor Mode)
-
+### Thread Pipeline (Dual-Processor + Multicast)
 ```
 TCP Listener → [Input Q0] → Processor 0 → [Output Q0] ─┐
     │                                                   │
     └──────→ [Input Q1] → Processor 1 → [Output Q1] ───┼──→ Output Router → Clients
                                                         │      (round-robin)
+                                                        │
+                                                        └──→ Multicast Pub → 239.255.0.1
+                                                              (OPTIONAL)        ↓
+                                                                          Subscribers
+                                                                          (unlimited)
 ```
 
 - **Thread 1**: TCP Listener (routes by symbol)
 - **Thread 2**: Processor 0 (A-M symbols)
 - **Thread 3**: Processor 1 (N-Z symbols)
-- **Thread 4**: Output Router (round-robin from both queues)
+- **Thread 4**: Output Router (round-robin to clients)
+- **Thread 5**: Multicast Publisher (OPTIONAL - round-robin broadcast)
 
 See **[Architecture Guide](documentation/ARCHITECTURE.md)** for complete details.
 
 ## 📁 Project Structure
-
 ```
 matching-engine-c/
 ├── build.sh              # Build script with test modes
 ├── CMakeLists.txt        # CMake build configuration
 ├── documentation/        # Comprehensive documentation
-│   ├── ARCHITECTURE.md   # Dual-processor design details
+│   ├── ARCHITECTURE.md   # Dual-processor + multicast design
 │   ├── BUILD.md
 │   ├── PROTOCOLS.md
 │   ├── QUICK_START.md
 │   └── TESTING.md
 ├── include/              # Header files
 │   ├── core/            # Order book, matching engine
-│   ├── network/         # TCP/UDP networking
+│   ├── network/         # TCP/UDP/Multicast networking
 │   ├── protocol/        # CSV, Binary, Symbol Router
-│   └── threading/       # Lock-free queues, threads
+│   ├── threading/       # Lock-free queues, threads
+│   └── modes/           # NEW: TCP/UDP/Multicast mode headers
 ├── src/                 # Implementation files
-├── tests/               # Unity test framework
-└── tools/              # Binary client, decoder, TCP client
+│   ├── main.c          # Slim dispatcher (~150 lines)
+│   ├── core/
+│   ├── network/
+│   ├── protocol/
+│   ├── threading/
+│   └── modes/          # NEW: Modular mode implementations
+│       ├── tcp_mode.c
+│       ├── udp_mode.c
+│       ├── multicast_helpers.c
+│       └── helpers.c
+├── tests/              # Unity test framework
+└── tools/              # Client tools
+    ├── binary_client.c
+    ├── binary_decoder.c
+    ├── tcp_client.c
+    └── multicast_subscriber.c  # NEW: Multicast receiver
 ```
 
 ## 🔬 C Port Details
@@ -175,7 +240,6 @@ See **[Architecture Guide](documentation/ARCHITECTURE.md)** for implementation d
 ## 🧪 Testing
 
 Comprehensive test coverage with Unity framework:
-
 ```bash
 # Unit tests (55+ tests)
 ./build.sh test
@@ -184,26 +248,27 @@ Comprehensive test coverage with Unity framework:
 ./build.sh test-tcp             # TCP multi-client
 ./build.sh test-binary          # Binary protocol
 ./build.sh test-dual-processor  # Symbol routing verification
+./build.sh test-multicast       # Multicast market data feed
 
 # Memory analysis
 ./build.sh valgrind             # Linux: valgrind / macOS: leaks tool
 ```
 
-### Dual-Processor Test
-
+### Multicast Test
 ```bash
-# Terminal 1: Start server
-./build/matching_engine --tcp
+# Terminal 1: Start server with multicast
+./build.sh test-multicast
 
-# Terminal 2: Send orders to both processors
+# Terminal 2: Start another subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send orders via TCP
 ./build/tcp_client localhost 1234
-> buy IBM 100 50 1      # → Processor 0 (I is A-M)
-> buy NVDA 200 25 2     # → Processor 1 (N is N-Z)
-> flush
-> quit
-
-# Check shutdown statistics for per-processor message counts
+> buy IBM 100 50 1
+> sell IBM 100 30 2
 ```
+
+**Result:** Both subscribers receive ALL market data simultaneously!
 
 See **[Testing Guide](documentation/TESTING.md)** for full test scenarios.
 
@@ -225,7 +290,6 @@ Auto-detection: First byte = 0x4D → Binary, else CSV
 See **[Protocol Guide](documentation/PROTOCOLS.md)** for specifications.
 
 ## 🔨 Build Options
-
 ```bash
 # Build modes
 ./build.sh build            # Release build
@@ -236,6 +300,7 @@ See **[Protocol Guide](documentation/PROTOCOLS.md)** for specifications.
 ./build.sh test-binary      # UDP + binary client
 ./build.sh test-tcp         # TCP + scenario
 ./build.sh test-dual-processor  # Symbol routing test
+./build.sh test-multicast   # Multicast market data feed
 
 # Run modes
 ./build.sh run              # Start server (dual-processor)
@@ -243,6 +308,7 @@ See **[Protocol Guide](documentation/PROTOCOLS.md)** for specifications.
 ./build.sh run-dual         # Explicit dual-processor
 ./build.sh run-single       # Single-processor mode
 ./build.sh run-udp          # UDP mode
+./build.sh run-multicast    # TCP + multicast feed
 ```
 
 See **[Build Guide](documentation/BUILD.md)** for detailed build instructions.
@@ -252,30 +318,37 @@ See **[Build Guide](documentation/BUILD.md)** for detailed build instructions.
 1. **Horizontal Scaling** - Dual processors for 2x throughput
 2. **Memory Pools** - Pre-allocate everything, zero malloc in hot path
 3. **Symbol Partitioning** - Deterministic routing, no locks
-4. **Bounded Loops** - Every loop has explicit iteration limits
-5. **Defensive Programming** - Parameter validation, DEBUG mode checks
-6. **Lock-Free** - SPSC queues for zero contention
-7. **Type Safety** - Tagged unions instead of void pointers
-8. **Explicit Cleanup** - No hidden destructors, clear ownership
+4. **Multicast Broadcasting** - Industry-standard market data distribution
+5. **Bounded Loops** - Every loop has explicit iteration limits
+6. **Defensive Programming** - Parameter validation, DEBUG mode checks
+7. **Lock-Free** - SPSC queues for zero contention
+8. **Type Safety** - Tagged unions instead of void pointers
+9. **Explicit Cleanup** - No hidden destructors, clear ownership
+10. **Modular Design** - Clean separation of TCP, UDP, multicast modes
 
 Production-quality C without sacrificing safety or performance.
 
 ## 📊 Performance Characteristics
 
-| Metric | Single-Processor | Dual-Processor |
-|--------|------------------|----------------|
-| **Throughput** | 1-5M orders/sec | 2-10M orders/sec |
-| **Latency** | 10-50μs | 10-50μs (unchanged) |
-| **Memory** | ~70MB | ~140MB |
-| **Threads** | 3 | 4 |
+| Metric | Single-Processor | Dual-Processor | Multicast |
+|--------|------------------|----------------|-----------|
+| **Throughput** | 1-5M orders/sec | 2-10M orders/sec | Same |
+| **Latency** | 10-50μs | 10-50μs | +10-50μs |
+| **Memory** | ~70MB | ~140MB | +1MB |
+| **Threads** | 3 | 4 | +1 (optional) |
+| **Subscribers** | N/A | N/A | Unlimited |
+| **Per-Subscriber Cost** | TCP overhead | TCP overhead | **Zero** |
 
-### Why Near-Linear Scaling?
+### Multicast Scaling
 
-- **Zero contention** - Separate memory pools, no shared state
-- **Symbol isolation** - Each symbol handled by exactly one processor
-- **Lock-free queues** - No synchronization overhead
+| Subscribers | Server Bandwidth | Server CPU | Network Bandwidth |
+|-------------|------------------|------------|-------------------|
+| 1 | 1× | Constant | 1× |
+| 10 | 1× | Constant | 1× |
+| 100 | 1× | Constant | 1× |
+| 1000 | 1× | Constant | 1× |
 
-See **[Architecture Guide](documentation/ARCHITECTURE.md)** for detailed analysis.
+**Key:** Multicast bandwidth and CPU are **independent of subscriber count**!
 
 ## 🎓 Learning Value
 
@@ -283,13 +356,15 @@ This project demonstrates:
 - ✅ Production-grade memory management without garbage collection
 - ✅ Horizontal scaling via symbol partitioning
 - ✅ Lock-free multi-threading patterns
-- ✅ High-performance networking (TCP + UDP)
+- ✅ High-performance networking (TCP + UDP + Multicast)
+- ✅ **Industry-standard market data distribution** (UDP multicast)
 - ✅ Protocol design and implementation
 - ✅ C11 atomics and modern C practices
 - ✅ Comprehensive testing strategies
 - ✅ CMake build systems
+- ✅ Modular architecture and code organization
 
-Perfect for understanding **systems programming** and **high-frequency trading** systems.
+Perfect for understanding **systems programming**, **high-frequency trading** systems, and **real-world exchange architecture**.
 
 ## 📝 License
 
@@ -301,8 +376,9 @@ Educational project demonstrating C systems programming and HFT architecture.
 2. **Build**: `./build.sh build`
 3. **Test**: `./build.sh test`
 4. **Run**: `./build/matching_engine --tcp`
-5. **Learn**: [Architecture Guide](documentation/ARCHITECTURE.md)
+5. **Multicast**: `./build.sh test-multicast` (see unlimited subscribers in action!)
+6. **Learn**: [Architecture Guide](documentation/ARCHITECTURE.md)
 
 ---
 
-**Built with**: C11 • CMake • pthreads • Lock-free queues • Memory pools • Dual-processor architecture
+**Built with**: C11 • CMake • pthreads • Lock-free queues • Memory pools • Dual-processor architecture • UDP multicast

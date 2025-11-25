@@ -54,18 +54,23 @@ set(LIB_SOURCES
     src/network/tcp_connection.c
     src/network/tcp_listener.c
     src/network/udp_receiver.c
+    src/network/multicast_publisher.c
     src/threading/lockfree_queue.c
     src/threading/queues.c
     src/threading/processor.c
     src/threading/output_publisher.c
     src/threading/output_router.c
+    src/modes/tcp_mode.c
+    src/modes/udp_mode.c
+    src/modes/multicast_helpers.c
+    src/modes/helpers.c
 )
 
 # Create static library from core sources
 add_library(matching_engine_lib STATIC ${LIB_SOURCES})
 target_link_libraries(matching_engine_lib PRIVATE pthread m)
 
-# Main executable
+# Main executable (slim dispatcher)
 add_executable(matching_engine src/main.c)
 target_link_libraries(matching_engine PRIVATE matching_engine_lib pthread m)
 
@@ -77,6 +82,9 @@ add_executable(binary_decoder tools/binary_decoder.c)
 
 add_executable(tcp_client tools/tcp_client.c)
 target_include_directories(tcp_client PRIVATE include)
+
+add_executable(multicast_subscriber tools/multicast_subscriber.c)
+target_link_libraries(multicast_subscriber PRIVATE pthread)
 
 # Unity test framework
 set(UNITY_SOURCES tests/unity.c)
@@ -165,32 +173,60 @@ add_custom_target(test-single-processor
     COMMENT "Running single-processor mode test"
 )
 
+# Multicast market data feed test
+add_custom_target(test-multicast
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo "Multicast Market Data Feed Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 1 (this terminal):"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Server starts with multicast on 239.255.0.1:5000"
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 2 (run this command):"
+    COMMAND ${CMAKE_COMMAND} -E echo "  ${CMAKE_BINARY_DIR}/multicast_subscriber 239.255.0.1 5000"
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 3 (send orders):"
+    COMMAND ${CMAKE_COMMAND} -E echo "  ${CMAKE_BINARY_DIR}/tcp_client localhost 1234"
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "All subscribers will receive the same market data!"
+    COMMAND ${CMAKE_COMMAND} -E echo "Press Ctrl+C to stop"
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp 1234 --multicast 239.255.0.1:5000
+    DEPENDS matching_engine multicast_subscriber
+    COMMENT "Running multicast market data feed test"
+)
+
 add_custom_target(test-all
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Running Complete Test Suite"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/4: Unit Tests"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/5: Unit Tests"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-unit
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/4: Binary Protocol Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/5: Binary Protocol Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-binary
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/4: TCP Integration Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/5: TCP Integration Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-tcp
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 4/4: Dual-Processor Test"
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 4/5: Dual-Processor Test"
     COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
     COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-dual-processor
     COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Step 5/5: Multicast Test (manual - see instructions)"
+    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
+    COMMAND ${CMAKE_COMMAND} -E echo "Run './build.sh test-multicast' in separate terminals"
+    COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "All tests finished"
+    COMMAND ${CMAKE_COMMAND} -E echo "All automated tests finished"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    DEPENDS matching_engine_tests matching_engine binary_client tcp_client
+    DEPENDS matching_engine_tests matching_engine binary_client tcp_client multicast_subscriber
     COMMENT "Running all tests"
 )
 
@@ -264,6 +300,18 @@ add_custom_target(run-binary-decoded
     COMMENT "Running matching engine with binary output (decoded)"
 )
 
+add_custom_target(run-multicast
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --multicast 239.255.0.1:5000
+    DEPENDS matching_engine
+    COMMENT "Running matching engine with multicast market data feed"
+)
+
+add_custom_target(run-multicast-binary
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+    DEPENDS matching_engine
+    COMMENT "Running matching engine with binary multicast market data feed"
+)
+
 # ============================================================================
 # Information Targets
 # ============================================================================
@@ -283,6 +331,10 @@ add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "Processor Modes:"
     COMMAND ${CMAKE_COMMAND} -E echo "  --dual-processor   Symbols A-M -> P0, N-Z -> P1 (default)"
     COMMAND ${CMAKE_COMMAND} -E echo "  --single-processor All symbols -> single processor"
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "Multicast Support:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  --multicast <group>:<port>  Broadcast market data to multicast group"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Example: --multicast 239.255.0.1:5000"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMENT "Displaying build configuration"
 )
@@ -296,6 +348,7 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  binary_client        - Build binary client tool"
     COMMAND ${CMAKE_COMMAND} -E echo "  binary_decoder       - Build binary decoder tool"
     COMMAND ${CMAKE_COMMAND} -E echo "  tcp_client           - Build TCP client tool"
+    COMMAND ${CMAKE_COMMAND} -E echo "  multicast_subscriber - Build multicast subscriber tool"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Testing:"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-unit            - Run unit tests"
@@ -303,6 +356,7 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  test-tcp             - TCP multi-client test"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-dual-processor  - Dual-processor symbol routing test"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-single-processor - Single-processor mode test"
+    COMMAND ${CMAKE_COMMAND} -E echo "  test-multicast       - Multicast market data feed test"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-all             - Run full test suite"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running:"
@@ -313,6 +367,8 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  run-single           - Run TCP single-processor mode"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-binary           - Run TCP with binary output"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-binary-decoded   - Run TCP with binary output + decoder"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-multicast        - Run TCP with multicast feed"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-multicast-binary - Run TCP with binary multicast feed"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Memory Analysis:"
     COMMAND ${CMAKE_COMMAND} -E echo "  valgrind             - Run with memory leak detection"
@@ -335,4 +391,6 @@ message(STATUS "Compiler:      ${CMAKE_C_COMPILER}")
 message(STATUS "Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Standard:    C${CMAKE_C_STANDARD}")
 message(STATUS "Processors:    Dual (A-M/N-Z) by default")
+message(STATUS "Multicast:     Enabled (optional)")
+message(STATUS "Modular:       TCP/UDP/Multicast in separate files")
 message(STATUS "========================================")

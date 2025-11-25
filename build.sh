@@ -8,6 +8,8 @@ VALGRIND_BUILD_DIR="build-valgrind"
 BUILD_TYPE="Release"
 GENERATOR="Ninja"
 DEFAULT_PORT=1234
+MULTICAST_GROUP="239.255.0.1"
+MULTICAST_PORT=5000
 
 # Detect platform
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -72,6 +74,7 @@ clean() {
     if [ -d "$BUILD_DIR" ]; then
         print_status "Cleaning build directory..."
         rm -rf "$BUILD_DIR"
+        rm -rf "$VALGRIND_BUILD_DIR"
         print_success "Clean complete"
     else
         print_warning "Build directory does not exist"
@@ -95,6 +98,17 @@ require_built() {
     fi
     if [ ! -x "$BUILD_DIR/binary_client" ]; then
         print_error "binary_client not built. Run ./build.sh build first."
+        exit 1
+    fi
+}
+
+require_multicast_built() {
+    if [ ! -x "$BUILD_DIR/matching_engine" ]; then
+        print_error "matching_engine not built. Run ./build.sh build first."
+        exit 1
+    fi
+    if [ ! -x "$BUILD_DIR/multicast_subscriber" ]; then
+        print_error "multicast_subscriber not built. Run ./build.sh build first."
         exit 1
     fi
 }
@@ -322,6 +336,48 @@ mode_test_single_processor() {
     "./${BUILD_DIR}/matching_engine" --tcp "${port}" --single-processor
 }
 
+mode_test_multicast() {
+    # Test multicast market data feed
+    require_multicast_built
+    local port="${1:-$DEFAULT_PORT}"
+    local mcast_group="${2:-$MULTICAST_GROUP}"
+    local mcast_port="${3:-$MULTICAST_PORT}"
+
+    print_status "Multicast Market Data Feed Test"
+    echo ""
+    echo "=========================================="
+    echo "Multicast Market Data Feed Test"
+    echo "=========================================="
+    echo ""
+    echo "Real-world market data distribution pattern!"
+    echo "  - Server sends ONCE to multicast group"
+    echo "  - Network delivers to ALL subscribers"
+    echo "  - Unlimited subscribers, zero server overhead"
+    echo ""
+    echo "Terminal 1 (this terminal):"
+    echo "  Server with multicast broadcasting"
+    echo ""
+    echo "Terminal 2 (subscriber - can run multiple instances):"
+    echo "  ./${BUILD_DIR}/multicast_subscriber ${mcast_group} ${mcast_port}"
+    echo ""
+    echo "Terminal 3 (send orders via TCP):"
+    echo "  ./${BUILD_DIR}/tcp_client localhost ${port}"
+    echo "  > buy IBM 100 50 1"
+    echo "  > sell IBM 100 30 2"
+    echo "  > flush"
+    echo ""
+    echo "Notes:"
+    echo "  - ALL subscribers receive market data simultaneously"
+    echo "  - Start multiple subscribers to see multicast in action"
+    echo "  - Works across machines if network supports multicast"
+    echo ""
+    echo "=========================================="
+    echo ""
+
+    print_status "Starting TCP server with MULTICAST feed. Ctrl+C to stop."
+    "./${BUILD_DIR}/matching_engine" --tcp "${port}" --multicast "${mcast_group}:${mcast_port}"
+}
+
 run_unit_tests() {
     print_status "Running unit tests..."
     cmake --build "$BUILD_DIR" --target test-unit
@@ -375,6 +431,7 @@ Build:
   rebuild          Clean + rebuild
   configure        Configure only
   clean            Remove build dir
+  clean-all        Remove all build dirs (including valgrind)
   valgrind-build   Build valgrind-compatible version (no AVX-512)
 
 Real Tests:
@@ -387,6 +444,7 @@ README Run-Modes (2-terminal workflows):
   test-tcp-csv         TCP server CSV output + binary_client --tcp --csv
   test-dual-processor  TCP server dual-processor mode (symbol routing test)
   test-single-processor TCP server single-processor mode (comparison)
+  test-multicast       TCP server with multicast market data feed (NEW!)
   test-all             Prints all README run-modes (does not start anything)
   valgrind             Run valgrind server (Linux, auto-builds if needed)
 
@@ -396,6 +454,7 @@ Scenario examples:
   ./build.sh test-tcp 1234 2
   ./build.sh test-tcp-csv 1234 2
   ./build.sh test-dual-processor 1234
+  ./build.sh test-multicast 1234 239.255.0.1 5000
 
 Run:
   run [args]       Run server directly (same as README)
@@ -403,6 +462,13 @@ Run:
   run-udp          Run UDP server on 1234
   run-dual         Run TCP server in dual-processor mode (default)
   run-single       Run TCP server in single-processor mode
+  run-multicast    Run TCP server with multicast feed (239.255.0.1:5000)
+  run-multicast-binary Run TCP server with binary multicast feed
+
+Multicast Info:
+  Multicast provides zero-overhead broadcast to unlimited subscribers.
+  Perfect for market data distribution (CME, NASDAQ, ICE use this).
+  Default group: ${MULTICAST_GROUP}:${MULTICAST_PORT} (local subnet)
 
 EOF
 }
@@ -489,6 +555,10 @@ main() {
             shift
             mode_test_single_processor "$@"
             ;;
+        test-multicast)
+            shift
+            mode_test_multicast "$@"
+            ;;
         test-all)
             # Print recipes only; don't start servers
             print_status "README run-modes quick reference:"
@@ -523,6 +593,13 @@ main() {
             echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT} --single-processor"
             echo "   Terminal 2: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
             echo ""
+            echo "7) Multicast Market Data Feed (NEW!):"
+            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT} --multicast ${MULTICAST_GROUP}:${MULTICAST_PORT}"
+            echo "   Terminal 2: ./${BUILD_DIR}/multicast_subscriber ${MULTICAST_GROUP} ${MULTICAST_PORT}"
+            echo "   Terminal 3: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
+            echo "               > buy IBM 100 50 1"
+            echo "               > sell IBM 100 30 2"
+            echo ""
             ;;
         valgrind)
             run_valgrind
@@ -541,6 +618,12 @@ main() {
             ;;
         run-single)
             run_server run --tcp "$DEFAULT_PORT" --single-processor
+            ;;
+        run-multicast)
+            run_server run --tcp "$DEFAULT_PORT" --multicast "${MULTICAST_GROUP}:${MULTICAST_PORT}"
+            ;;
+        run-multicast-binary)
+            run_server run --tcp "$DEFAULT_PORT" --binary --multicast "${MULTICAST_GROUP}:${MULTICAST_PORT}"
             ;;
         info)
             show_info
