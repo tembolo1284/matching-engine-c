@@ -99,6 +99,9 @@ set(TEST_SOURCES
     tests/core/test_matching_engine.c
     tests/scenarios/test_scenarios_odd.c
     tests/scenarios/test_scenarios_even.c
+    tests/core/test_memory_pools.c
+    tests/threading/test_lockfree_queue.c
+    tests/protocol/test_symbol_router.c
     tests/test_runner.c
 )
 

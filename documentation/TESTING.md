@@ -6,6 +6,12 @@ Comprehensive testing guide for the Matching Engine covering unit tests, integra
 - [Overview](#overview)
 - [Quick Test](#quick-test)
 - [Unit Testing](#unit-testing)
+  - [Unity Testing Framework](#unity-testing-framework)
+  - [Test Components](#test-components)
+  - [Memory Pool Tests](#memory-pool-tests)
+  - [Lock-Free Queue Tests](#lock-free-queue-tests)
+  - [Symbol Router Tests](#symbol-router-tests)
+  - [Adding New Tests](#adding-new-tests)
 - [Integration Testing](#integration-testing)
 - [Dual-Processor Testing](#dual-processor-testing)
 - [Multicast Testing](#multicast-testing)
@@ -20,7 +26,7 @@ Comprehensive testing guide for the Matching Engine covering unit tests, integra
 ## Overview
 
 The testing strategy includes:
-- **Unit tests** - Unity framework for component testing
+- **Unit tests** - Unity framework for component testing (90 tests)
 - **Integration tests** - End-to-end system tests
 - **Manual tests** - Interactive testing via test clients
 - **Protocol tests** - CSV and Binary protocol validation
@@ -32,14 +38,17 @@ The testing strategy includes:
 
 | Component | Unit Tests | Integration Tests |
 |-----------|-----------|-------------------|
-| Order Book | ✓ | ✓ |
-| Message Parser | ✓ | ✓ |
-| Message Formatter | ✓ | ✓ |
-| Matching Engine | ✓ | ✓ |
+| Order Book | ✓ (11) | ✓ |
+| Message Parser | ✓ (10) | ✓ |
+| Message Formatter | ✓ (7) | ✓ |
+| Matching Engine | ✓ (7) | ✓ |
 | Binary Protocol | ✓ | ✓ |
+| Memory Pools | ✓ (12) | ✓ |
+| Lock-Free Queue | ✓ (18) | ✓ |
+| Symbol Router | ✓ (19) | ✓ |
+| Scenarios (1-16) | ✓ (6) | ✓ |
 | TCP Multi-Client | ✗ | ✓ |
 | UDP Mode | ✗ | ✓ |
-| Symbol Router | ✓ | ✓ |
 | Dual-Processor | ✗ | ✓ |
 | Multicast Publisher | ✗ | ✓ |
 | Multicast Subscriber | ✗ | ✓ |
@@ -58,7 +67,7 @@ The testing strategy includes:
 
 # Expected output:
 # ==========================================
-# 55 Tests 0 Failures 0 Ignored
+# 90 Tests 0 Failures 0 Ignored
 # OK
 ```
 
@@ -124,25 +133,53 @@ We use [Unity](https://github.com/ThrowTheSwitch/Unity) - a lightweight C testin
 Running Unity Tests
 ==========================================
 
+=== Message Formatter Tests ===
+Running test_FormatAck... PASS
+Running test_FormatCancelAck... PASS
+...
+
+=== Message Parser Tests ===
+Running test_ParseNewOrderBuy... PASS
+Running test_ParseNewOrderSell... PASS
+...
+
+=== Order Book Tests ===
 Running test_AddSingleBuyOrder... PASS
-Running test_AddSingleSellOrder... PASS
 Running test_MatchingBuyAndSell... PASS
-Running test_PartialFill... PASS
-Running test_MultipleOrdersAtSamePrice... PASS
-Running test_PriceTimePriority... PASS
-Running test_CancelOrder... PASS
-Running test_FlushOrderBook... PASS
-Running test_TopOfBookUpdate... PASS
+...
+
+=== Matching Engine Tests ===
+Running test_ProcessSingleOrder... PASS
+Running test_MultipleSymbols... PASS
+...
+
+=== Scenario Tests ===
+Running test_Scenario1_BalancedBook... PASS
+...
+
+=== Memory Pool Tests ===
+Running test_MemoryPools_InitializeCorrectly... PASS
+Running test_MemoryPools_OrdersAllocateFromPool... PASS
+...
+
+=== Lock-Free Queue Tests ===
+Running test_Queue_InitializesEmpty... PASS
+Running test_Queue_FIFOOrder... PASS
+...
+
+=== Symbol Router Tests ===
+Running test_SymbolRouter_AtoM_RoutesToProcessor0... PASS
+Running test_SymbolRouter_NtoZ_RoutesToProcessor1... PASS
 ...
 
 -----------------------
-55 Tests 0 Failures 0 Ignored
+90 Tests 0 Failures 0 Ignored
 OK
 ```
 
 ### Test Components
 
-#### Order Book Tests (`test_order_book.c`)
+#### Order Book Tests (`tests/core/test_order_book.c`)
 ```c
 // Test simple buy order
 void test_AddSingleBuyOrder(void) {
@@ -180,7 +217,7 @@ void test_MatchingBuyAndSell(void) {
 }
 ```
 
-#### Message Parser Tests (`test_message_parser.c`)
+#### Message Parser Tests (`tests/protocol/test_message_parser.c`)
 ```c
 // Test CSV parsing
 void test_ParseNewOrder(void) {
@@ -205,7 +242,7 @@ void test_ParseInvalidMessage(void) {
 }
 ```
 
-#### Scenario Tests (`test_scenarios_even.c`, `test_scenarios_odd.c`)
+#### Scenario Tests (`tests/scenarios/test_scenarios_odd.c`, `tests/scenarios/test_scenarios_even.c`)
 
 Comprehensive end-to-end scenarios from the original specification:
 ```c
@@ -225,12 +262,202 @@ void test_Scenario2_MatchingOrders(void) {
 // ... Scenarios 3-16 ...
 ```
 
+---
+
+### Memory Pool Tests
+
+Tests the **zero-allocation memory pool system** that provides O(1) alloc/free without malloc in the hot path.
+
+**File:** `tests/core/test_memory_pools.c`
+
+| Test | Purpose |
+|------|---------|
+| `test_MemoryPools_InitializeCorrectly` | Verifies pools start with zero allocations |
+| `test_MemoryPools_TotalMemorySize` | Validates memory size calculation (>1MB) |
+| `test_MemoryPools_OrdersAllocateFromPool` | Tests allocation tracking via order book |
+| `test_MemoryPools_CancelReturnsToPool` | Verifies cancellation returns slots to pool |
+| `test_MemoryPools_FlushReturnsAllToPool` | Tests bulk deallocation on flush |
+| `test_MemoryPools_TradeRemovesOrders` | Verifies trade clears matched orders |
+| `test_MemoryPools_PeakUsageTracking` | Tests high-water mark tracking |
+| `test_MemoryPools_SharedByMultipleBooks` | Tests multiple order books sharing pools |
+| `test_MemoryPools_HighVolumeOperations` | Stress test: 1000 alloc/free cycles |
+| `test_MemoryPools_DataIntegrityUnderReuse` | Validates no corruption on slot reuse |
+| `test_MemoryPools_EmptyPoolsZeroStats` | Edge case: fresh pool statistics |
+| `test_MemoryPools_ReInitResets` | Tests pool re-initialization |
+
+**Example Test:**
+```c
+void test_MemoryPools_CancelReturnsToPool(void) {
+    setUp();
+    
+    order_book_init(&book, "TEST", &pools);
+    output_buffer_t output;
+    
+    /* Add order */
+    new_order_msg_t order = {1, "TEST", 100, 50, SIDE_BUY, 1};
+    output_buffer_init(&output);
+    order_book_add_order(&book, &order, 1, &output);
+    
+    memory_pool_stats_t stats_before;
+    memory_pools_get_stats(&pools, &stats_before);
+    uint32_t peak_before = stats_before.order_peak_usage;
+    
+    /* Cancel order */
+    output_buffer_init(&output);
+    order_book_cancel_order(&book, 1, 1, &output);
+    
+    /* Add another order - should reuse freed slot */
+    new_order_msg_t order2 = {1, "TEST", 101, 50, SIDE_BUY, 2};
+    output_buffer_init(&output);
+    order_book_add_order(&book, &order2, 1, &output);
+    
+    memory_pool_stats_t stats_after;
+    memory_pools_get_stats(&pools, &stats_after);
+    
+    /* Peak should not have increased (slot was reused) */
+    TEST_ASSERT_EQUAL(peak_before, stats_after.order_peak_usage);
+    
+    order_book_destroy(&book);
+    tearDown();
+}
+```
+
+**Key Verification Points:**
+- Pool statistics track allocations, peak usage, and failures
+- Cancelled orders return slots to the free list
+- Slots are reused without increasing peak usage
+- No allocation failures under normal load
+
+---
+
+### Lock-Free Queue Tests
+
+Tests the **SPSC (Single-Producer Single-Consumer) lock-free queue** used for inter-thread communication.
+
+**File:** `tests/threading/test_lockfree_queue.c`
+
+| Test | Purpose |
+|------|---------|
+| `test_Queue_InitializesEmpty` | Verifies empty state after init |
+| `test_Queue_CorrectCapacity` | Validates capacity = LOCKFREE_QUEUE_SIZE |
+| `test_Queue_StatsZeroedOnInit` | Checks all stats start at zero |
+| `test_Queue_SingleEnqueueDequeue` | Basic single-item operation |
+| `test_Queue_MultipleEnqueueDequeue` | Batch enqueue then dequeue (100 items) |
+| `test_Queue_InterleavedOperations` | Mixed enqueue/dequeue sequence |
+| `test_Queue_FIFOOrder` | Verifies strict FIFO ordering (1000 items) |
+| `test_Queue_DequeueFromEmptyFails` | Empty queue returns false, tracks failure |
+| `test_Queue_EnqueueToFullFails` | Full queue returns false, tracks failure |
+| `test_Queue_WrapAround` | Tests ring buffer wrap-around (5 cycles) |
+| `test_Queue_EnqueueStatsTracked` | Validates total_enqueues counter |
+| `test_Queue_DequeueStatsTracked` | Validates total_dequeues counter |
+| `test_Queue_PeakSizeTracked` | Tests peak size high-water mark |
+| `test_Queue_InvariantsHold` | Validates internal consistency |
+| `test_Queue_NullQueueHandling` | NULL queue pointer safety |
+| `test_Queue_NullItemHandling` | NULL item pointer safety |
+| `test_Queue_DataIntegrity` | All struct fields preserved through queue |
+| `test_Queue_SizeConsistency` | Size matches enqueue/dequeue operations |
+
+**Example Test:**
+```c
+void test_Queue_FIFOOrder(void) {
+    setUp();
+    
+    test_item_t item;
+    const int count = 1000;
+    
+    /* Enqueue items with sequential IDs */
+    for (int i = 0; i < count; i++) {
+        item.id = (uint32_t)i;
+        item.value = (uint32_t)(i * 7);
+        TEST_ASSERT_TRUE(test_queue_enqueue(&queue, &item));
+    }
+    
+    /* Dequeue and verify strict FIFO order */
+    for (int i = 0; i < count; i++) {
+        TEST_ASSERT_TRUE(test_queue_dequeue(&queue, &item));
+        TEST_ASSERT_EQUAL_MESSAGE((uint32_t)i, item.id, "FIFO order violated");
+        TEST_ASSERT_EQUAL((uint32_t)(i * 7), item.value);
+    }
+    
+    tearDown();
+}
+```
+
+**Key Verification Points:**
+- FIFO ordering is strictly preserved
+- Ring buffer handles wrap-around correctly
+- Boundary conditions (empty/full) handled gracefully
+- Statistics accurately track operations
+- Data integrity maintained through enqueue/dequeue cycle
+
+**Note:** These are single-threaded correctness tests. Multi-threaded stress testing requires a separate harness with proper synchronization.
+
+---
+
+### Symbol Router Tests
+
+Tests the **symbol-based processor routing** that partitions orders between dual processors.
+
+**File:** `tests/protocol/test_symbol_router.c`
+
+**Routing Rules:**
+- Symbols starting with **A-M** → Processor 0
+- Symbols starting with **N-Z** → Processor 1
+- Empty/invalid/numeric → Processor 0 (default)
+
+| Test | Purpose |
+|------|---------|
+| `test_SymbolRouter_AtoM_RoutesToProcessor0` | AAPL, IBM, META → P0 |
+| `test_SymbolRouter_NtoZ_RoutesToProcessor1` | NVDA, TSLA, ZM → P1 |
+| `test_SymbolRouter_M_BoundaryProcessor0` | M is last letter → P0 |
+| `test_SymbolRouter_N_BoundaryProcessor1` | N is first letter → P1 |
+| `test_SymbolRouter_A_StartBoundary` | A boundary (start of range) |
+| `test_SymbolRouter_Z_EndBoundary` | Z boundary (end of range) |
+| `test_SymbolRouter_Lowercase_AtoM` | aapl, ibm → P0 |
+| `test_SymbolRouter_Lowercase_NtoZ` | nvda, tsla → P1 |
+| `test_SymbolRouter_MixedCase` | iBm → P0, tSlA → P1 |
+| `test_SymbolRouter_NullSymbol` | NULL → P0 (safe default) |
+| `test_SymbolRouter_EmptySymbol` | "" → P0 (safe default) |
+| `test_SymbolRouter_NumericSymbol` | "1234" → P0 (default) |
+| `test_SymbolRouter_SpecialCharSymbol` | "$SPX", ".DJI" → P0 |
+| `test_SymbolRouter_SingleCharSymbols` | "A", "M", "N", "Z" |
+| `test_SymbolIsValid_ValidSymbols` | Validation function (valid) |
+| `test_SymbolIsValid_InvalidSymbols` | Validation function (invalid) |
+| `test_GetProcessorName` | "A-M", "N-Z", "Unknown" |
+| `test_SymbolRouter_Consistency` | Same symbol → same processor (100x) |
+| `test_SymbolRouter_ValidProcessorIds` | IDs in range [0, NUM_PROCESSORS) |
+
+**Example Test:**
+```c
+void test_SymbolRouter_M_BoundaryProcessor0(void) {
+    /* M is the LAST letter that routes to Processor 0 */
+    TEST_ASSERT_EQUAL(PROCESSOR_ID_A_TO_M, get_processor_id_for_symbol("M"));
+    TEST_ASSERT_EQUAL(PROCESSOR_ID_A_TO_M, get_processor_id_for_symbol("MSFT"));
+    TEST_ASSERT_EQUAL(PROCESSOR_ID_A_TO_M, get_processor_id_for_symbol("MCD"));
+}
+
+void test_SymbolRouter_N_BoundaryProcessor1(void) {
+    /* N is the FIRST letter that routes to Processor 1 */
+    TEST_ASSERT_EQUAL(PROCESSOR_ID_N_TO_Z, get_processor_id_for_symbol("N"));
+    TEST_ASSERT_EQUAL(PROCESSOR_ID_N_TO_Z, get_processor_id_for_symbol("NFLX"));
+    TEST_ASSERT_EQUAL(PROCESSOR_ID_N_TO_Z, get_processor_id_for_symbol("NKE"));
+}
+```
+
+**Key Verification Points:**
+- M/N boundary is the critical partition point
+- Case normalization works correctly
+- Edge cases (NULL, empty, numeric) have safe defaults
+- Routing is deterministic and consistent
+
+---
+
 ### Adding New Tests
 
-1. Create test file in `tests/` directory:
+1. Create test file in appropriate `tests/` subdirectory:
 ```c
 #include "unity.h"
-#include "order_book.h"
+#include "your_header.h"
 
 void setUp(void) {
     // Run before each test
@@ -246,18 +473,27 @@ void test_YourTestName(void) {
 }
 ```
 
-2. Add to `tests/test_runner.c`:
+2. Add external declaration to `tests/test_runner.c`:
 ```c
 extern void test_YourTestName(void);
-
-int main(void) {
-    UNITY_BEGIN();
-    RUN_TEST(test_YourTestName);
-    return UNITY_END();
-}
 ```
 
-3. Rebuild and run:
+3. Add RUN_TEST call in main():
+```c
+printf("\n=== Your Test Category ===\n");
+RUN_TEST(test_YourTestName);
+```
+
+4. Add source file to `CMakeLists.txt`:
+```cmake
+set(TEST_SOURCES
+    ...
+    tests/your_category/test_your_component.c
+    ...
+)
+```
+
+5. Rebuild and run:
 ```bash
 ./build.sh build
 ./build.sh test
@@ -1205,18 +1441,21 @@ jobs:
 
 ## Test Coverage Summary
 
-| Category | Tests | Status |
-|----------|-------|--------|
-| Order Book | 15 | ✓ |
-| Message Parser | 8 | ✓ |
-| Message Formatter | 6 | ✓ |
-| Matching Engine | 4 | ✓ |
-| Binary Protocol | 12 | ✓ |
-| Scenarios (1-16) | 16 | ✓ |
-| TCP Integration | 1 | ✓ |
-| Dual-Processor | 1 | ✓ |
-| Multicast | 1 | ✓ |
-| **Total** | **64** | ✓ |
+| Category | Unit Tests | Integration | Notes |
+|----------|------------|-------------|-------|
+| Message Formatter | 7 | ✓ | CSV output formatting |
+| Message Parser | 10 | ✓ | CSV input parsing |
+| Order Book | 11 | ✓ | Core matching logic |
+| Matching Engine | 7 | ✓ | Multi-symbol coordination |
+| Scenarios | 6 | ✓ | End-to-end scenarios |
+| Memory Pools | 12 | ✓ | Zero-allocation system |
+| Lock-Free Queue | 18 | ✓ | SPSC queue correctness |
+| Symbol Router | 19 | ✓ | Dual-processor routing |
+| TCP Multi-Client | - | ✓ | Connection handling |
+| Binary Protocol | - | ✓ | Binary encoding/decoding |
+| Dual-Processor | - | ✓ | Symbol partitioning |
+| Multicast | - | ✓ | Market data broadcast |
+| **Total** | **90** | ✓ | |
 
 ---
 
@@ -1224,7 +1463,7 @@ jobs:
 
 ### Test Commands
 ```bash
-./build.sh test                 # Unit tests
+./build.sh test                 # Unit tests (90 tests)
 ./build.sh test-tcp             # TCP integration
 ./build.sh test-binary          # Binary protocol test
 ./build.sh test-binary-full     # Binary with decoder
