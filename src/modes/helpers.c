@@ -15,7 +15,7 @@ void print_memory_stats(const char* label, const memory_pools_t* pools) {
     // Get stats without order_book (pass NULL - stats will only have order pool info)
     memory_pools_get_stats(pools, NULL, &stats);
     
-    fprintf(stderr, "\n=== Memory Pool Statistics ===\n");
+    fprintf(stderr, "\n=== Memory Pool Statistics (%s) ===\n", label);
     
     fprintf(stderr, "Order Pool:\n");
     fprintf(stderr, "  Total allocations: %u\n", stats.order_allocations);
