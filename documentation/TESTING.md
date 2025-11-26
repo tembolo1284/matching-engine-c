@@ -1,6 +1,6 @@
 # Testing Guide
 
-Comprehensive testing guide for the Matching Engine covering unit tests, integration tests, and manual testing scenarios.
+Comprehensive testing guide for the Matching Engine covering unit tests, integration tests, multicast testing, and manual testing scenarios.
 
 ## Table of Contents
 - [Overview](#overview)
@@ -8,6 +8,7 @@ Comprehensive testing guide for the Matching Engine covering unit tests, integra
 - [Unit Testing](#unit-testing)
 - [Integration Testing](#integration-testing)
 - [Dual-Processor Testing](#dual-processor-testing)
+- [Multicast Testing](#multicast-testing)
 - [Manual Testing Scenarios](#manual-testing-scenarios)
 - [Protocol-Specific Testing](#protocol-specific-testing)
 - [Multi-Client Testing](#multi-client-testing)
@@ -24,6 +25,7 @@ The testing strategy includes:
 - **Manual tests** - Interactive testing via test clients
 - **Protocol tests** - CSV and Binary protocol validation
 - **Dual-processor tests** - Symbol partitioning verification
+- **Multicast tests** - Market data broadcast verification
 - **Performance tests** - Throughput and latency benchmarks
 
 ### Test Coverage
@@ -39,18 +41,19 @@ The testing strategy includes:
 | UDP Mode | ✗ | ✓ |
 | Symbol Router | ✓ | ✓ |
 | Dual-Processor | ✗ | ✓ |
+| Multicast Publisher | ✗ | ✓ |
+| Multicast Subscriber | ✗ | ✓ |
 
 ---
 
 ## Quick Test
 
 ### 30-Second Test
-
 ```bash
 # Build
 ./build.sh build
 
-# Run all tests
+# Run all unit tests
 ./build.sh test
 
 # Expected output:
@@ -60,7 +63,6 @@ The testing strategy includes:
 ```
 
 ### 5-Minute Test
-
 ```bash
 # Terminal 1: Start server (dual-processor is default)
 ./build/matching_engine --tcp
@@ -70,6 +72,22 @@ The testing strategy includes:
 ./build/tcp_client localhost 1234 2
 ./build/tcp_client localhost 1234 3
 ```
+
+### Multicast Quick Test
+```bash
+# Terminal 1: Start server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Start subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send orders
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+> sell IBM 100 30 2
+```
+
+**Result:** Subscriber receives all market data (acks, trades, TOB updates)!
 
 ---
 
@@ -86,7 +104,6 @@ We use [Unity](https://github.com/ThrowTheSwitch/Unity) - a lightweight C testin
 - No external dependencies
 
 ### Running Unit Tests
-
 ```bash
 # Build and run all unit tests
 ./build.sh test
@@ -102,7 +119,6 @@ We use [Unity](https://github.com/ThrowTheSwitch/Unity) - a lightweight C testin
 ```
 
 ### Unit Test Output
-
 ```
 ==========================================
 Running Unity Tests
@@ -127,7 +143,6 @@ OK
 ### Test Components
 
 #### Order Book Tests (`test_order_book.c`)
-
 ```c
 // Test simple buy order
 void test_AddSingleBuyOrder(void) {
@@ -166,7 +181,6 @@ void test_MatchingBuyAndSell(void) {
 ```
 
 #### Message Parser Tests (`test_message_parser.c`)
-
 ```c
 // Test CSV parsing
 void test_ParseNewOrder(void) {
@@ -194,7 +208,6 @@ void test_ParseInvalidMessage(void) {
 #### Scenario Tests (`test_scenarios_even.c`, `test_scenarios_odd.c`)
 
 Comprehensive end-to-end scenarios from the original specification:
-
 ```c
 void test_Scenario1_BalancedBook(void) {
     // Place buy and sell orders at different prices
@@ -246,7 +259,8 @@ int main(void) {
 
 3. Rebuild and run:
 ```bash
-make test
+./build.sh build
+./build.sh test
 ```
 
 ---
@@ -256,7 +270,6 @@ make test
 ### TCP Integration Test
 
 Automated TCP server/client testing:
-
 ```bash
 ./build.sh test-tcp
 ```
@@ -291,9 +304,9 @@ Stopping server...
 ### Binary Protocol Test
 
 Automated binary protocol validation:
-
 ```bash
 ./build.sh test-binary        # UDP mode, CSV output
+./build.sh test-binary-full   # UDP mode, binary output with decoder
 ```
 
 **What it tests:**
@@ -326,12 +339,10 @@ C, IBM, 2, 2
 ```
 
 ### Run All Tests
-
 ```bash
 ./build.sh test       # Unit tests
+./build.sh test-all   # All automated tests (prints instructions for manual tests)
 ```
-
-Runs all unit tests with Unity framework.
 
 ---
 
@@ -342,7 +353,6 @@ The matching engine supports dual-processor mode for horizontal scaling. Orders 
 - **Processor 1**: Symbols N-Z (NVDA, TSLA, UBER, ZM, etc.)
 
 ### Quick Dual-Processor Test
-
 ```bash
 # Terminal 1: Start server in dual-processor mode (default)
 ./build/matching_engine --tcp
@@ -360,7 +370,6 @@ The matching engine supports dual-processor mode for horizontal scaling. Orders 
 ### Verifying Symbol Routing
 
 When the server shuts down (Ctrl+C), it prints per-processor statistics:
-
 ```
 === Processor 0 (A-M) Statistics ===
   Messages processed: 2
@@ -391,7 +400,6 @@ When the server shuts down (Ctrl+C), it prints per-processor statistics:
 ### Single-Processor Mode
 
 For comparison or debugging, run in single-processor mode:
-
 ```bash
 # Single processor (all symbols to one processor)
 ./build/matching_engine --tcp --single-processor
@@ -406,7 +414,6 @@ For comparison or debugging, run in single-processor mode:
 #### Scenario 1: Cross-Processor Independence
 
 Verify that orders on different symbols don't interact:
-
 ```bash
 # Terminal 2:
 > buy IBM 100 50 1      # Processor 0
@@ -419,7 +426,6 @@ Verify that orders on different symbols don't interact:
 #### Scenario 2: Same-Processor Matching
 
 Verify matching works within a processor:
-
 ```bash
 # Terminal 2:
 > buy IBM 100 50 1      # Processor 0
@@ -430,7 +436,6 @@ Verify matching works within a processor:
 **Expected:** Trade generated (same symbol, same processor)
 
 #### Scenario 3: Flush Affects Both Processors
-
 ```bash
 # Terminal 2:
 > buy IBM 100 50 1      # Processor 0
@@ -441,7 +446,6 @@ Verify matching works within a processor:
 **Expected:** Both orders cancelled, both processors show flush statistics
 
 #### Scenario 4: High-Volume Routing
-
 ```bash
 # Send many orders to verify routing under load
 for i in {1..100}; do
@@ -456,7 +460,6 @@ done | nc localhost 1234
 **Expected:** ~100 messages to each processor (check shutdown statistics)
 
 ### Automated Dual-Processor Test
-
 ```bash
 # Run automated dual-processor test
 ./build.sh test-dual-processor
@@ -471,12 +474,255 @@ This test:
 
 ---
 
+## Multicast Testing
+
+The matching engine supports UDP multicast for market data distribution. This is the **industry-standard pattern** used by real exchanges (CME, NASDAQ, ICE).
+
+### Why Test Multicast?
+
+Multicast enables:
+- **Zero per-subscriber overhead** - One send reaches unlimited subscribers
+- **Real-time market data** - All subscribers receive data simultaneously
+- **Scalability** - 1 subscriber or 1000 subscribers = same server cost
+
+### Quick Multicast Test
+```bash
+# Interactive test with instructions
+./build.sh test-multicast
+```
+
+This provides step-by-step instructions for a 3-terminal test.
+
+### Manual Multicast Test
+
+#### Basic Test (3 Terminals)
+```bash
+# Terminal 1: Start server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Start subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send orders via TCP
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+> sell IBM 100 30 2
+> flush
+> quit
+```
+
+**Expected Subscriber Output:**
+```
+[Multicast Subscriber] Joined group 239.255.0.1:5000
+[Multicast Subscriber] Waiting for market data...
+
+[CSV] A, IBM, 1, 1
+[CSV] B, IBM, B, 100, 50
+[CSV] A, IBM, 1, 2
+[CSV] T, IBM, 1, 1, 1, 2, 100, 30
+[CSV] B, IBM, B, 100, 20
+[CSV] B, IBM, S, -, -
+[CSV] C, IBM, 1, 1
+[CSV] B, IBM, B, -, -
+
+^C
+--- Statistics ---
+Packets received: 8
+Messages: 8
+Elapsed: 12.345s
+Throughput: 0.65 msg/sec
+```
+
+#### Multiple Subscribers Test
+
+**Purpose:** Verify all subscribers receive the same data simultaneously.
+```bash
+# Terminal 1: Server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Subscriber 1
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Subscriber 2
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 4: Subscriber 3
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 5: Send orders
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+> sell IBM 100 50 2
+```
+
+**Expected:** ALL three subscribers receive identical market data simultaneously!
+
+#### Binary Multicast Test
+```bash
+# Terminal 1: Server with binary multicast
+./build/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+
+# Terminal 2: Subscriber (auto-detects binary)
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send orders
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+```
+
+**Expected Subscriber Output:**
+```
+[Multicast Subscriber] Joined group 239.255.0.1:5000
+[Multicast Subscriber] Waiting for market data...
+
+[BINARY] Ack: symbol=IBM, userId=1, orderId=1
+[BINARY] TOB: symbol=IBM, side=B, price=100, qty=50
+```
+
+### Multicast Test Scenarios
+
+#### Scenario 1: Subscriber Joins Late
+
+**Purpose:** Verify late-joining subscribers receive subsequent messages.
+```bash
+# Terminal 1: Start server
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Send some orders FIRST
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+
+# Terminal 3: Start subscriber AFTER orders sent
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 2: Send more orders
+> buy AAPL 150 30 2
+```
+
+**Expected:** Subscriber receives AAPL order messages (not IBM - those were sent before joining).
+
+#### Scenario 2: Subscriber Disconnect/Reconnect
+
+**Purpose:** Verify subscriber can rejoin multicast group.
+```bash
+# Terminal 2: Start subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Press Ctrl+C to disconnect
+# Restart subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+```
+
+**Expected:** Subscriber successfully rejoins and receives new messages.
+
+#### Scenario 3: High-Volume Multicast
+
+**Purpose:** Test multicast under load.
+```bash
+# Terminal 1: Server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Generate high volume
+for i in {1..1000}; do
+    echo "N, 1, IBM, 100, 50, B, $i"
+done | nc localhost 1234
+
+echo "F" | nc localhost 1234
+```
+
+**Expected:** Subscriber receives all 1000+ messages (acks + TOB updates + cancel acks).
+
+#### Scenario 4: Dual-Processor + Multicast
+
+**Purpose:** Verify multicast receives from both processors.
+```bash
+# Terminal 1: Server (dual-processor + multicast)
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send to both processors
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1      # Processor 0
+> buy NVDA 200 25 2     # Processor 1
+> flush
+```
+
+**Expected:** Subscriber receives messages from BOTH processors (IBM from P0, NVDA from P1).
+
+### Multicast Statistics
+
+When the server shuts down (Ctrl+C), it prints multicast statistics:
+```
+=== Multicast Publisher Statistics ===
+  Packets sent: 1234
+  Messages broadcast: 1234
+  Messages from Processor 0: 617
+  Messages from Processor 1: 617
+  Send errors: 0
+```
+
+When subscriber exits (Ctrl+C):
+```
+--- Statistics ---
+Packets received: 1234
+Messages: 1234
+Binary messages: 0
+CSV messages: 1234
+Parse errors: 0
+Elapsed: 60.123s
+Throughput: 20.52 msg/sec
+```
+
+### Multicast Network Requirements
+
+| Requirement | Description |
+|-------------|-------------|
+| **Multicast-enabled network** | Most modern LANs support multicast |
+| **Same subnet** | Default TTL=1 (local subnet only) |
+| **No firewall blocking** | UDP port 5000 must be open |
+| **IGMP snooping** | Switch should support IGMP for efficiency |
+
+### Troubleshooting Multicast
+
+#### Subscriber not receiving data
+```bash
+# Check if multicast is working on loopback
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+./build/multicast_subscriber 239.255.0.1 5000
+# If this works, network may be blocking multicast
+
+# Check multicast routes (Linux)
+ip maddr show
+
+# Add multicast route if missing (Linux)
+sudo ip route add 239.0.0.0/8 dev eth0
+```
+
+#### "Cannot assign requested address"
+```bash
+# Network interface doesn't support multicast
+# Try loopback interface or check network config
+```
+
+#### Packet loss under high load
+```bash
+# Increase receive buffer (in subscriber code)
+int buffer_size = 10 * 1024 * 1024;  // 10MB
+setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &buffer_size, sizeof(buffer_size));
+```
+
+---
+
 ## Manual Testing Scenarios
 
 ### Scenario 1: Simple Orders (No Match)
 
 **Purpose:** Test order book building without trades.
-
 ```bash
 # Terminal 1: Server
 ./build/matching_engine --tcp
@@ -506,7 +752,6 @@ B, IBM, S, -, -
 ### Scenario 2: Trade Execution
 
 **Purpose:** Test matching and trade generation.
-
 ```bash
 # Terminal 1: Server
 ./build/matching_engine --tcp
@@ -534,7 +779,6 @@ B, IBM, S, -, -
 ### Scenario 3: Order Cancellation
 
 **Purpose:** Test cancel functionality.
-
 ```bash
 # Terminal 1: Server
 ./build/matching_engine --tcp
@@ -560,7 +804,6 @@ B, IBM, B, -, -
 ### Scenario 4: Partial Fills
 
 **Purpose:** Test partial order matching.
-
 ```bash
 # Commands:
 > buy IBM 100 100 1
@@ -577,7 +820,6 @@ B, IBM, B, -, -
 ### Scenario 5: Price-Time Priority
 
 **Purpose:** Verify FIFO at same price level.
-
 ```bash
 # Commands:
 > buy IBM 100 50 1
@@ -596,7 +838,6 @@ B, IBM, B, -, -
 ## Protocol-Specific Testing
 
 ### Testing CSV Protocol
-
 ```bash
 # Terminal 1: Server with CSV output
 ./build/matching_engine --tcp 1234
@@ -610,7 +851,6 @@ B, IBM, B, -, -
 ```
 
 ### Testing Binary Protocol
-
 ```bash
 # Terminal 1: Server with binary output + decoder
 ./build/matching_engine --tcp --binary 2>/dev/null | ./build/binary_decoder
@@ -620,7 +860,6 @@ B, IBM, B, -, -
 ```
 
 ### Testing Mixed Protocols
-
 ```bash
 # Terminal 1: Server accepts both
 ./build/matching_engine --tcp 1234
@@ -636,6 +875,19 @@ B, IBM, B, -, -
 
 Server auto-detects and handles both!
 
+### Testing Multicast with Binary
+```bash
+# Terminal 1: Server with binary multicast
+./build/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+
+# Terminal 2: Subscriber (auto-detects binary)
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Send orders (CSV or binary - server converts to binary output)
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+```
+
 ---
 
 ## Multi-Client Testing
@@ -643,7 +895,6 @@ Server auto-detects and handles both!
 ### Two-Client Trade
 
 **Purpose:** Verify trade notifications reach both clients.
-
 ```bash
 # Terminal 1: Server
 ./build/matching_engine --tcp
@@ -663,7 +914,6 @@ Server auto-detects and handles both!
 - Both see same trade details
 
 ### Three-Client Scenario
-
 ```bash
 # Terminal 1: Server
 ./build/matching_engine --tcp
@@ -689,7 +939,6 @@ Server auto-detects and handles both!
 ### Client Isolation Test
 
 **Purpose:** Verify clients cannot spoof other clients' user_ids.
-
 ```bash
 # Terminal 2: Client 1 (assigned client_id=1)
 ./build/tcp_client localhost 1234
@@ -699,12 +948,35 @@ Server auto-detects and handles both!
 **Expected:**
 Server rejects with error: "User ID mismatch"
 
+### Multi-Client + Multicast
+
+**Purpose:** Verify TCP clients AND multicast subscribers all receive data.
+```bash
+# Terminal 1: Server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: TCP Client 1
+./build/tcp_client localhost 1234
+> buy IBM 100 50 1
+
+# Terminal 3: TCP Client 2
+./build/tcp_client localhost 1234
+> sell IBM 100 50 1
+
+# Terminal 4: Multicast subscriber
+./build/multicast_subscriber 239.255.0.1 5000
+```
+
+**Expected:**
+- TCP Client 1 receives: Ack + Trade (via TCP)
+- TCP Client 2 receives: Ack + Trade (via TCP)
+- Multicast subscriber receives: ALL messages (Acks + Trade + TOB updates)
+
 ---
 
 ## Performance Testing
 
 ### Throughput Test
-
 ```bash
 # Generate high message volume
 for i in {1..1000}; do
@@ -713,7 +985,6 @@ done | nc localhost 1234
 ```
 
 ### Dual-Processor Throughput Test
-
 ```bash
 # Test parallel throughput across both processors
 # Terminal 1: Server
@@ -730,10 +1001,34 @@ wait
 
 **Expected:** Near-linear scaling (2x throughput vs single-processor)
 
+### Multicast Throughput Test
+```bash
+# Terminal 1: Server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Terminal 2: Subscriber (watch throughput)
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Terminal 3: Generate load
+for i in {1..10000}; do
+    echo "N, 1, IBM, 100, 50, B, $i"
+done | nc localhost 1234
+
+echo "F" | nc localhost 1234
+```
+
+**Expected subscriber output:**
+```
+--- Statistics ---
+Packets received: 20001
+Messages: 20001
+Elapsed: 5.234s
+Throughput: 3822.15 msg/sec
+```
+
 ### Latency Test
 
 Use the built-in statistics:
-
 ```bash
 ./build/matching_engine --tcp
 # Run tests
@@ -752,13 +1047,12 @@ Processor 1 (N-Z):
 ```
 
 ### Memory Test
-
 ```bash
 # Run with valgrind
-valgrind --leak-check=full ./build/matching_engine --tcp
+./build.sh valgrind
 
-# Or use make target
-make valgrind-test
+# Or manually
+valgrind --leak-check=full ./build/matching_engine --tcp
 ```
 
 ---
@@ -810,11 +1104,39 @@ telnet localhost 1234
 # Check that both processors show flush in statistics
 ```
 
-### Memory Leaks
+### Multicast Issues
 
+#### Subscriber not receiving data
+```bash
+# Check if server is sending to multicast
+# Server should show: [Multicast Publisher] Starting...
+
+# Check multicast group membership
+netstat -gn  # Linux
+netstat -g   # macOS
+
+# Try on loopback first
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+./build/multicast_subscriber 239.255.0.1 5000
+```
+
+#### "Cannot assign requested address"
+```bash
+# Network doesn't support multicast
+# Check interface supports multicast:
+ip link show eth0 | grep MULTICAST
+```
+
+#### Packet loss
+```bash
+# Subscriber shows fewer messages than server sent
+# Increase buffer size or reduce send rate
+```
+
+### Memory Leaks
 ```bash
 # Run valgrind on tests
-make valgrind-test
+./build.sh valgrind
 
 # Run valgrind on server
 valgrind --leak-check=full --show-leak-kinds=all \
@@ -868,11 +1190,13 @@ jobs:
     steps:
       - uses: actions/checkout@v2
       - name: Install dependencies
-        run: sudo apt-get install build-essential cmake ninja-build
+        run: sudo apt-get install build-essential cmake ninja-build valgrind
       - name: Build
         run: ./build.sh build
       - name: Test
         run: ./build.sh test
+      - name: Test dual-processor
+        run: ./build.sh test-dual-processor
       - name: Valgrind
         run: ./build.sh valgrind
 ```
@@ -891,24 +1215,27 @@ jobs:
 | Scenarios (1-16) | 16 | ✓ |
 | TCP Integration | 1 | ✓ |
 | Dual-Processor | 1 | ✓ |
-| **Total** | **63** | ✓ |
+| Multicast | 1 | ✓ |
+| **Total** | **64** | ✓ |
 
 ---
 
 ## Quick Reference
 
 ### Test Commands
-
 ```bash
 ./build.sh test                 # Unit tests
 ./build.sh test-tcp             # TCP integration
 ./build.sh test-binary          # Binary protocol test
+./build.sh test-binary-full     # Binary with decoder
 ./build.sh test-dual-processor  # Dual-processor routing test
+./build.sh test-single-processor # Single-processor mode test
+./build.sh test-multicast       # Multicast market data feed
+./build.sh test-all             # Print all test instructions
 ./build.sh valgrind             # Memory leak detection
 ```
 
 ### Manual Test Scenarios
-
 ```bash
 ./build/tcp_client localhost 1234 1  # Simple orders
 ./build/tcp_client localhost 1234 2  # Trade execution
@@ -916,7 +1243,6 @@ jobs:
 ```
 
 ### Protocol Testing
-
 ```bash
 # CSV
 ./build/matching_engine --tcp
@@ -928,7 +1254,6 @@ jobs:
 ```
 
 ### Processor Mode Testing
-
 ```bash
 # Dual-processor (default)
 ./build/matching_engine --tcp
@@ -937,11 +1262,23 @@ jobs:
 ./build/matching_engine --tcp --single-processor
 ```
 
+### Multicast Testing
+```bash
+# Server with multicast
+./build/matching_engine --tcp --multicast 239.255.0.1:5000
+
+# Subscriber (can run multiple)
+./build/multicast_subscriber 239.255.0.1 5000
+
+# Binary multicast
+./build/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+```
+
 ---
 
 ## See Also
 
-- [Quick Start Guide](documentation/QUICK_START.md) - Basic usage
-- [Architecture](documentation/ARCHITECTURE.md) - System design
-- [Protocols](documentation/PROTOCOLS.md) - Message formats
-- [Build Instructions](documentation/BUILD.md) - Compiler setup
+- [Quick Start Guide](QUICK_START.md) - Basic usage
+- [Architecture](ARCHITECTURE.md) - System design including multicast
+- [Protocols](PROTOCOLS.md) - Message formats and multicast protocol
+- [Build Instructions](BUILD.md) - CMake build setup
