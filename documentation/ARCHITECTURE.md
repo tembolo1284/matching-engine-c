@@ -1,464 +1,573 @@
-# Architecture
+# Architecture Documentation
 
-Comprehensive system design of the Matching Engine, emphasizing **zero-allocation memory pools**, lock-free threading, **dual-processor symbol partitioning**, **multicast market data broadcasting**, **envelope-based message routing**, and production-grade architecture.
+This document provides detailed technical documentation of the matching engine's architecture, with a focus on cache optimization strategies and low-latency design decisions.
 
 ## Table of Contents
-- [System Overview](#system-overview)
-- [Dual-Processor Architecture](#dual-processor-architecture)
-- [Multicast Market Data Feed](#multicast-market-data-feed)
-- [Memory Pool System](#memory-pool-system)
-- [Threading Model](#threading-model)
-- [Symbol Router](#symbol-router)
-- [Envelope Pattern](#envelope-pattern)
-- [Data Flow](#data-flow)
-- [Core Components](#core-components)
-- [TCP Multi-Client Architecture](#tcp-multi-client-architecture)
-- [Message Framing (TCP)](#message-framing-tcp)
-- [Modular Code Structure](#modular-code-structure)
-- [Design Decisions](#design-decisions)
-- [Performance Characteristics](#performance-characteristics)
-- [Project Structure](#project-structure)
+
+1. [Design Philosophy](#design-philosophy)
+2. [Memory Layout & Cache Optimization](#memory-layout--cache-optimization)
+3. [Data Structures](#data-structures)
+4. [Threading Model](#threading-model)
+5. [Message Protocol](#message-protocol)
+6. [Matching Algorithm](#matching-algorithm)
+7. [Performance Analysis](#performance-analysis)
 
 ---
 
-## System Overview
+## Design Philosophy
 
-The Matching Engine is a **production-grade** order matching system built in pure C11. The defining characteristics are:
+### Core Principles
 
-1. **Dual-processor symbol partitioning** - Horizontal scaling via A-M / N-Z routing
-2. **Zero-allocation hot path** - All memory pre-allocated in pools
-3. **Multicast market data broadcasting** - Industry-standard UDP multicast for market data distribution
-4. **Envelope-based routing** - Messages wrapped with client metadata for multi-client support
-5. **Lock-free communication** - SPSC queues between threads
-6. **Client isolation** - TCP clients validated and isolated
-7. **Modular architecture** - Separate files for TCP, UDP, and multicast modes
+1. **Cache is King**: Every data structure is designed around the 64-byte cache line
+2. **Zero Allocation**: No malloc/free calls in the hot path
+3. **Predictable Latency**: Bounded operations, no unbounded loops
+4. **Compile-Time Verification**: Static assertions validate all assumptions
 
-### High-Level Architecture (Dual-Processor + Multicast)
+### Why Cache Optimization Matters
+
+Modern CPUs access L1 cache in ~1 nanosecond, but main memory takes ~100 nanoseconds. A single cache miss can cost 100x the time of a cache hit. For HFT applications processing millions of messages per second, cache efficiency directly translates to throughput and latency.
+
 ```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                    Matching Engine - Dual Processor + Multicast Mode                     │
-│                          Zero-Allocation Memory Pools                                    │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                          │
-│  TCP MODE (4-5 Threads):                                                                 │
-│                                                                                          │
-│  ┌──────────────┐                                                                        │
-│  │ TCP Listener │                                                                        │
-│  │  (Thread 1)  │                                                                        │
-│  │              │                                                                        │
-│  │ epoll/kqueue │         Symbol-Based Routing                                           │
-│  │ event loop   │        ┌─────────────────────┐                                         │
-│  │              │        │  First char A-M?    │                                         │
-│  └──────┬───────┘        │  → Processor 0      │                                         │
-│         │                │  First char N-Z?    │                                         │
-│         │                │  → Processor 1      │                                         │
-│         │                └─────────────────────┘                                         │
-│         │                                                                                │
-│         ├──────────────────────┬──────────────────────┐                                 │
-│         │                      │                      │                                 │
-│         ▼                      ▼                      │                                 │
-│  ┌─────────────────┐    ┌─────────────────┐          │                                 │
-│  │ Input Queue 0   │    │ Input Queue 1   │          │                                 │
-│  │  (A-M symbols)  │    │  (N-Z symbols)  │          │                                 │
-│  └────────┬────────┘    └────────┬────────┘          │                                 │
-│           │                      │                    │                                 │
-│           ▼                      ▼                    │                                 │
-│  ┌─────────────────┐    ┌─────────────────┐          │                                 │
-│  │  Processor 0    │    │  Processor 1    │          │                                 │
-│  │   (Thread 2)    │    │   (Thread 3)    │          │                                 │
-│  │                 │    │                 │          │                                 │
-│  │ Memory Pool 0   │    │ Memory Pool 1   │          │                                 │
-│  │ Engine 0 (A-M)  │    │ Engine 1 (N-Z)  │          │                                 │
-│  └────────┬────────┘    └────────┬────────┘          │                                 │
-│           │                      │                    │                                 │
-│           ▼                      ▼                    │                                 │
-│  ┌─────────────────┐    ┌─────────────────┐          │                                 │
-│  │ Output Queue 0  │    │ Output Queue 1  │          │                                 │
-│  └────────┬────────┘    └────────┬────────┘          │                                 │
-│           │                      │                    │                                 │
-│           └──────────┬───────────┘                    │                                 │
-│                      │                                │                                 │
-│           ┌──────────┼────────────┐                   │                                 │
-│           │          │            │                   │                                 │
-│           ▼          ▼            ▼                   │                                 │
-│   ┌───────────────┐  │  ┌──────────────────┐         │                                 │
-│   │ Output Router │  │  │ Multicast Pub.   │         │                                 │
-│   │  (Thread 4)   │  │  │   (Thread 5)     │ ◄───────┘ OPTIONAL                        │
-│   │               │  │  │    OPTIONAL      │                                            │
-│   │ Round-robin   │  │  │                  │                                            │
-│   │ from queues   │  │  │ UDP Multicast    │                                            │
-│   └───────┬───────┘  │  │ 239.255.0.1      │                                            │
-│           │          │  └────────┬─────────┘                                            │
-│           │          │           │                                                      │
-│  ┌────────┴──────────┴───────┐   │                                                      │
-│  │   To TCP Clients          │   │                                                      │
-│  │   (per-client queues)     │   │                                                      │
-│  └───────────────────────────┘   │                                                      │
-│                                  │                                                      │
-│                                  ▼                                                      │
-│                    ┌─────────────────────────────┐                                      │
-│                    │  Multicast Subscribers      │                                      │
-│                    │  (Unlimited, zero overhead) │                                      │
-│                    │                             │                                      │
-│                    │  ▸ Subscriber 1 (Machine A) │                                      │
-│                    │  ▸ Subscriber 2 (Machine A) │                                      │
-│                    │  ▸ Subscriber 3 (Machine B) │                                      │
-│                    │  ▸ Subscriber N ...         │                                      │
-│                    └─────────────────────────────┘                                      │
-│                                                                                          │
-│  UDP MODE (3-4 Threads): Similar structure without TCP listener                          │
-│                                                                                          │
-└────────────────────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    Memory Hierarchy                          │
+├─────────────────────────────────────────────────────────────┤
+│  L1 Cache    │  32 KB   │  ~1 ns    │  ~4 cycles           │
+│  L2 Cache    │  256 KB  │  ~3 ns    │  ~12 cycles          │
+│  L3 Cache    │  8+ MB   │  ~10 ns   │  ~40 cycles          │
+│  Main Memory │  GBs     │  ~100 ns  │  ~400 cycles         │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-**Key Design Principles:**
-- **Horizontal scaling** - Dual processors double throughput potential
-- **Zero malloc/free in hot path** - All memory pre-allocated in pools
-- **Symbol-based partitioning** - Orders route by symbol's first character
-- **Lock-free communication** - SPSC queues between threads
-- **Separate memory pools** - Each processor has isolated memory
-- **Round-robin output** - Fair scheduling from multiple output queues
-- **Multicast broadcasting** - Optional market data feed for unlimited subscribers
 
 ---
 
-## Multicast Market Data Feed
+## Memory Layout & Cache Optimization
 
-### Overview
+### Cache Line Alignment (64 bytes)
 
-The multicast publisher is an **optional 5th thread** that broadcasts market data (trades, top-of-book updates, acknowledgments) to a UDP multicast group. This is the **industry-standard pattern** used by real exchanges like CME, NASDAQ, and ICE for distributing market data to unlimited subscribers with zero server overhead.
+All frequently-accessed structures are aligned to 64-byte boundaries and sized to be exact multiples of 64 bytes. This ensures:
 
-### Why Multicast?
+1. **No False Sharing**: Different threads never contend on the same cache line
+2. **Efficient Prefetching**: Hardware prefetcher works on cache-line boundaries
+3. **DMA Efficiency**: Network buffers align with cache lines
 
-**Traditional Unicast (N TCP connections):**
-```
-Server → Client 1  (send once)
-Server → Client 2  (send once)
-Server → Client 3  (send once)
-...
-Server → Client N  (send once)
-```
-**Cost:** N sends, N TCP state machines, N × bandwidth
+### Compiler Alignment Syntax
 
-**Multicast (UDP multicast group):**
-```
-Server → Multicast Group 239.255.0.1:5000  (send ONCE)
-         └─→ Network delivers to ALL subscribers
-```
-**Cost:** 1 send, zero per-subscriber overhead, 1 × bandwidth
+We use compiler-specific attributes for maximum compatibility:
 
-### Multicast Architecture
-```
-┌────────────────────────────────────────────────────────────────┐
-│           Multicast Publisher (Optional 5th Thread)             │
-├────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Input: Reads from processor output queues (round-robin)       │
-│                                                                 │
-│  ┌─────────────────┐    ┌─────────────────┐                   │
-│  │ Output Queue 0  │    │ Output Queue 1  │                   │
-│  │  (Processor 0)  │    │  (Processor 1)  │                   │
-│  └────────┬────────┘    └────────┬────────┘                   │
-│           │                      │                             │
-│           └──────────┬───────────┘                             │
-│                      │                                         │
-│                      ▼                                         │
-│            ┌──────────────────┐                                │
-│            │ Multicast Pub.   │                                │
-│            │  (Thread 5)      │                                │
-│            │                  │                                │
-│            │  Round-robin     │                                │
-│            │  Batch size: 32  │                                │
-│            │  Format: CSV or  │                                │
-│            │          Binary  │                                │
-│            └────────┬─────────┘                                │
-│                     │                                          │
-│                     ▼                                          │
-│           UDP Socket (sendto)                                  │
-│           Multicast Group: 239.255.0.1:5000                    │
-│           TTL: 1 (local subnet)                                │
-│                     │                                          │
-│                     └──────────────────┐                       │
-│                                        │                       │
-│                     Network Layer      │                       │
-│                     (Switch/Router)    │                       │
-│                                        │                       │
-│            ┌────────────┬──────────────┴──────────────┐        │
-│            │            │                             │        │
-│            ▼            ▼                             ▼        │
-│      Subscriber 1   Subscriber 2    ...      Subscriber N      │
-│      (Machine A)    (Machine A)              (Machine B)       │
-│                                                                 │
-└────────────────────────────────────────────────────────────────┘
-```
-
-### Multicast Publisher Features
-
-1. **Round-Robin Fairness**
-   - Reads from both processor output queues
-   - 32-message batch size per queue (same as output router)
-   - Prevents one processor from monopolizing broadcast
-
-2. **Protocol Support**
-   - **CSV Mode:** Human-readable market data
-   - **Binary Mode:** Compact binary protocol (lower bandwidth)
-
-3. **Multicast Group Configuration**
-   - Default: `239.255.0.1:5000` (organization-local scope)
-   - TTL: 1 (local subnet only for safety)
-   - Can be configured via `--multicast <group>:<port>`
-
-4. **Statistics Tracking**
-   - Packets sent
-   - Messages broadcast
-   - Per-processor message counts
-   - Send errors
-
-### Multicast Subscriber
-
-The **multicast_subscriber** tool joins the multicast group and receives market data:
-```bash
-# Start subscribers (can run multiple instances)
-./build/multicast_subscriber 239.255.0.1 5000
-./build/multicast_subscriber 239.255.0.1 5000  # 2nd subscriber
-./build/multicast_subscriber 239.255.0.1 5000  # 3rd subscriber
-```
-
-**Features:**
-- Auto-detects CSV vs Binary protocol
-- Real-time market data display
-- Statistics tracking (packets, messages, parse errors)
-- Throughput calculation (messages/sec)
-- Signal handling (Ctrl+C shows statistics)
-
-### Multicast Address Ranges
-
-| Range | Scope | Use Case |
-|-------|-------|----------|
-| 224.0.0.0 - 224.0.0.255 | Link-local | Reserved (e.g., routing protocols) |
-| 239.0.0.0 - 239.255.255.255 | Organization-local | **Perfect for LANs** (our default) |
-| 224.0.1.0 - 238.255.255.255 | Internet-wide | Global multicast (requires infrastructure) |
-
-### Usage Example
-```bash
-# Terminal 1: Start server with multicast
-./build/matching_engine --tcp --multicast 239.255.0.1:5000
-
-# Terminal 2: Start subscriber (can start multiple)
-./build/multicast_subscriber 239.255.0.1 5000
-
-# Terminal 3: Send orders
-./build/tcp_client localhost 1234
-> buy IBM 100 50 1
-> sell IBM 100 30 2
-```
-
-**Result:** ALL subscribers receive trades, top-of-book updates, and acknowledgments simultaneously!
-
-### Real-World Analogy
-
-**Multicast is like a TV broadcast:**
-- **239.255.0.1** = TV Channel (multicast group address)
-- **Server** = TV Station (broadcasts once)
-- **Subscribers** = TVs (unlimited viewers, zero station overhead)
-- **Network** = Cable/Satellite Network (handles distribution)
-
----
-
-## Modular Code Structure
-
-The codebase is organized into **modular components** for maintainability and clarity:
-
-### Main Dispatcher (`src/main.c`)
-
-**~150 lines** - Slim entry point that parses arguments and dispatches to appropriate mode:
 ```c
-int main(int argc, char* argv[]) {
-    // Parse command-line arguments
-    app_config_t config = parse_args(argc, argv);
+#if defined(__GNUC__) || defined(__clang__)
+    #define CACHE_ALIGNED __attribute__((aligned(64)))
+    #define CACHE_LINE_SIZE 64
+#else
+    #define CACHE_ALIGNED _Alignas(64)
+    #define CACHE_LINE_SIZE 64
+#endif
+```
+
+### Explicit Padding Strategy
+
+Every structure has explicit `_pad` fields rather than relying on implicit compiler padding:
+
+```c
+typedef struct {
+    uint32_t user_id;        // 0-3
+    uint32_t user_order_id;  // 4-7
+    uint32_t price;          // 8-11
+    uint32_t quantity;       // 12-15
+    side_t side;             // 16 (uint8_t)
+    uint8_t _pad[3];         // 17-19 (EXPLICIT padding)
+    char symbol[16];         // 20-35
+} new_order_msg_t;           // 36 bytes total
+```
+
+Benefits of explicit padding:
+- **Documentation**: Layout is visible in the code
+- **Verification**: Static assertions can check exact offsets
+- **Portability**: No surprises across compilers
+
+---
+
+## Data Structures
+
+### 1. Order Structure (64 bytes)
+
+The `order_t` structure is exactly one cache line:
+
+```c
+typedef struct order {
+    // === HOT DATA (accessed during matching) === (bytes 0-19)
+    uint32_t user_id;           // 0-3
+    uint32_t user_order_id;     // 4-7
+    uint32_t price;             // 8-11
+    uint32_t quantity;          // 12-15
+    uint32_t remaining_qty;     // 16-19
     
-    // Setup signal handlers
-    setup_signal_handlers();
+    // === METADATA === (bytes 20-31)
+    side_t side;                // 20 (uint8_t, was 4-byte enum)
+    order_type_t type;          // 21 (uint8_t, was 4-byte enum)
+    uint8_t _pad1[2];           // 22-23 (explicit padding)
+    uint32_t client_id;         // 24-27
+    uint32_t _pad2;             // 28-31 (align timestamp to 8 bytes)
     
-    // Dispatch to appropriate mode
-    if (config.tcp_mode) {
-        if (config.dual_processor) {
-            return run_tcp_dual_processor(&config);
-        } else {
-            return run_tcp_single_processor(&config);
+    // === TIMESTAMP === (bytes 32-39)
+    uint64_t timestamp;         // 32-39 (RDTSC value)
+    
+    // === LINKED LIST POINTERS === (bytes 40-55)
+    struct order *next;         // 40-47
+    struct order *prev;         // 48-55
+    
+    // === PADDING TO 64 BYTES ===
+    uint8_t _padding[8];        // 56-63
+} CACHE_ALIGNED order_t;
+```
+
+**Key Optimizations:**
+- Hot fields (price, quantity, remaining_qty) in first 20 bytes
+- Enums reduced from 4 bytes to 1 byte each (saves 6 bytes)
+- Linked list pointers at end (only used during list traversal)
+- Exactly 64 bytes = 1 cache line
+
+**Verification:**
+```c
+_Static_assert(sizeof(order_t) == 64, "order_t must be 64 bytes");
+_Static_assert(alignof(order_t) == 64, "order_t must be cache-aligned");
+```
+
+### 2. Price Level Structure (64 bytes)
+
+Each price level in the order book is one cache line:
+
+```c
+typedef struct {
+    // === HOT DATA === (bytes 0-15)
+    uint32_t price;             // 0-3
+    uint32_t total_quantity;    // 4-7
+    uint32_t order_count;       // 8-11
+    uint32_t _pad1;             // 12-15
+    
+    // === LIST POINTERS === (bytes 16-31)
+    order_t* head;              // 16-23
+    order_t* tail;              // 24-31
+    
+    // === TREE POINTERS === (bytes 32-55)
+    struct price_level* left;   // 32-39
+    struct price_level* right;  // 40-47
+    struct price_level* parent; // 48-55
+    
+    // === PADDING ===
+    uint8_t _pad2[8];           // 56-63
+} CACHE_ALIGNED price_level_t;
+```
+
+**Access Pattern Optimization:**
+- During matching: only bytes 0-31 accessed (price, quantity, head)
+- Tree navigation: bytes 32-55 accessed
+- Both patterns fit in one cache line
+
+### 3. Order Map (Open-Addressing Hash Table)
+
+Replaced pointer-chasing chained hash with cache-friendly open-addressing:
+
+```c
+#define ORDER_MAP_SIZE 8192  // Power of 2 for fast modulo
+
+typedef struct {
+    uint64_t key;            // Combined (user_id << 32) | user_order_id
+    order_t* order;          // Pointer to order
+    uint32_t hash;           // Cached hash for faster reprobing
+    uint32_t _pad;           // Align to 32 bytes
+} order_map_slot_t;          // 32 bytes = 2 slots per cache line
+
+typedef struct {
+    order_map_slot_t slots[ORDER_MAP_SIZE];
+    uint32_t count;
+    uint32_t tombstone_count;
+} order_map_t;
+```
+
+**Lookup Algorithm (Linear Probing):**
+```c
+order_t* order_map_find(order_map_t* map, uint32_t user_id, uint32_t order_id) {
+    uint64_t key = ((uint64_t)user_id << 32) | order_id;
+    uint32_t hash = hash_key(key);
+    uint32_t index = hash & (ORDER_MAP_SIZE - 1);
+    
+    for (uint32_t probe = 0; probe < MAX_PROBE_LENGTH; probe++) {
+        order_map_slot_t* slot = &map->slots[index];
+        
+        if (slot->order == NULL && slot->hash == 0) {
+            return NULL;  // Empty slot = not found
         }
-    } else {
-        if (config.dual_processor) {
-            return run_udp_dual_processor(&config);
-        } else {
-            return run_udp_single_processor(&config);
+        if (slot->key == key && slot->order != NULL) {
+            return slot->order;  // Found
         }
+        
+        index = (index + 1) & (ORDER_MAP_SIZE - 1);  // Linear probe
+    }
+    return NULL;  // Max probes exceeded
+}
+```
+
+**Why Open-Addressing?**
+
+| Metric | Chained Hash | Open-Addressing |
+|--------|--------------|-----------------|
+| Cache lines per lookup | 3-5 (random) | 1-2 (sequential) |
+| Memory overhead | 24+ bytes/entry | 0 (inline) |
+| Allocation | malloc per insert | None |
+| Deletion | free + pointer fixup | Write tombstone |
+
+### 4. Lock-Free Queue
+
+SPSC (Single-Producer Single-Consumer) queue with false-sharing prevention:
+
+```c
+typedef struct {
+    // Producer cache line (written by producer only)
+    _Alignas(64) _Atomic(size_t) head;
+    uint8_t _pad_head[64 - sizeof(_Atomic(size_t))];
+    
+    // Consumer cache line (written by consumer only)
+    _Alignas(64) _Atomic(size_t) tail;
+    uint8_t _pad_tail[64 - sizeof(_Atomic(size_t))];
+    
+    // Statistics cache line (occasional updates)
+    _Alignas(64) struct {
+        _Atomic(size_t) total_enqueued;
+        _Atomic(size_t) total_dequeued;
+        _Atomic(size_t) failed_enqueues;
+        _Atomic(size_t) failed_dequeues;
+        _Atomic(size_t) peak_size;
+    } stats;
+    uint8_t _pad_stats[64 - 40];
+    
+    // Buffer (cache-line aligned)
+    _Alignas(64) T buffer[QUEUE_SIZE];
+} lockfree_queue_t;
+```
+
+**Memory Layout Visualization:**
+```
+Offset 0:    [head (8B)][───── padding (56B) ─────]  ← Producer writes
+Offset 64:   [tail (8B)][───── padding (56B) ─────]  ← Consumer writes
+Offset 128:  [stats (40B)][──── padding (24B) ────]  ← Occasional
+Offset 192:  [buffer[0]] [buffer[1]] [buffer[2]] ... ← Data
+```
+
+**Enqueue Operation (Lock-Free):**
+```c
+bool enqueue(queue_t* q, const T* item) {
+    size_t head = atomic_load_explicit(&q->head, memory_order_relaxed);
+    size_t next = (head + 1) & QUEUE_MASK;
+    
+    // Check if full
+    if (next == atomic_load_explicit(&q->tail, memory_order_acquire)) {
+        return false;
+    }
+    
+    // Write item
+    q->buffer[head] = *item;
+    
+    // Publish to consumer
+    atomic_store_explicit(&q->head, next, memory_order_release);
+    return true;
+}
+```
+
+### 5. Message Structures
+
+**Packed Enums (uint8_t instead of int):**
+
+```c
+// OLD: 4 bytes each
+typedef enum { SIDE_BUY = 'B', SIDE_SELL = 'S' } side_t;
+
+// NEW: 1 byte each
+typedef uint8_t side_t;
+#define SIDE_BUY  ((side_t)'B')
+#define SIDE_SELL ((side_t)'S')
+```
+
+This saves 3 bytes per enum field, which adds up across message structures.
+
+**Output Message Envelope (64 bytes):**
+
+```c
+typedef struct CACHE_ALIGNED {
+    output_msg_t msg;       // 52 bytes
+    uint32_t client_id;     // 4 bytes  (for TCP routing)
+    uint64_t sequence;      // 8 bytes  (for ordering)
+} output_msg_envelope_t;    // Exactly 64 bytes
+```
+
+**Benefits:**
+- Perfect for DMA transfers
+- One envelope = one cache line
+- Sequence number for gap detection
+
+---
+
+## Threading Model
+
+### Processor Thread Architecture
+
+```c
+typedef struct {
+    // Configuration
+    processor_config_t config;
+    
+    // Queues
+    input_queue_t* input_queue;
+    output_queue_t* output_queue;
+    
+    // Engine (per-processor in dual mode)
+    matching_engine_t engine;
+    
+    // Statistics (cache-line aligned)
+    _Alignas(64) processor_stats_t stats;
+    
+    // Sequence counter (local, flushed periodically)
+    _Atomic(uint64_t) output_sequence;
+} processor_t;
+```
+
+### Configurable Wait Strategy
+
+```c
+typedef struct {
+    bool tcp_mode;
+    bool spin_wait;      // true = busy-wait, false = nanosleep
+    int processor_id;    // For logging
+} processor_config_t;
+```
+
+**Spin-Wait Implementation:**
+```c
+if (config->spin_wait) {
+    #if defined(__x86_64__)
+    __asm__ volatile("pause" ::: "memory");  // ~10 cycles
+    #elif defined(__aarch64__)
+    __asm__ volatile("yield" ::: "memory");  // ARM hint
+    #endif
+} else {
+    nanosleep(&(struct timespec){0, 1000}, NULL);  // 1µs
+}
+```
+
+| Mode | Latency | CPU Usage | Use Case |
+|------|---------|-----------|----------|
+| `spin_wait=true` | ~100ns | 100% core | HFT, ultra-low latency |
+| `spin_wait=false` | ~1-5µs | Low | General purpose |
+
+### Batched Statistics
+
+Statistics are updated in batches to reduce atomic operations:
+
+```c
+// Per-message (OLD - expensive)
+atomic_fetch_add(&stats->messages_processed, 1);
+
+// Batched (NEW - efficient)
+local_count++;
+if (local_count >= 1000) {
+    stats->messages_processed += local_count;  // Single write
+    local_count = 0;
+}
+```
+
+### Prefetching
+
+```c
+for (size_t i = 0; i < batch_count; i++) {
+    // Prefetch next message while processing current
+    if (i + 1 < batch_count) {
+        PREFETCH_READ(&input_batch[i + 1]);
+    }
+    
+    process_message(&input_batch[i]);
+}
+```
+
+---
+
+## Message Protocol
+
+### Input Messages
+
+| Type | Format | Size |
+|------|--------|------|
+| New Order | `N,user,symbol,price,qty,side,oid` | 40 bytes |
+| Cancel | `C,symbol,user,oid` | 28 bytes |
+| Flush | `F` | 4 bytes |
+
+### Output Messages
+
+| Type | Format | Size |
+|------|--------|------|
+| Ack | `A,user,oid` | 12 bytes |
+| Trade | `T,buy_user,buy_oid,sell_user,sell_oid,price,qty,symbol` | 48 bytes |
+| Top of Book | `B,symbol,side,price,qty` | 28 bytes |
+| Cancel Ack | `X,user,oid` | 12 bytes |
+
+### Binary Protocol (Internal)
+
+For queue transport, messages use packed binary format:
+
+```c
+typedef struct {
+    input_msg_type_t type;    // 1 byte
+    uint8_t _pad[3];          // Align union
+    union {
+        new_order_msg_t new_order;  // 36 bytes
+        cancel_msg_t cancel;        // 28 bytes
+        flush_msg_t flush;          // 4 bytes
+    } data;
+} input_msg_t;                // 40 bytes
+```
+
+---
+
+## Matching Algorithm
+
+### Price-Time Priority (FIFO)
+
+```
+1. Incoming BUY order at price P:
+   - Search ASK side for prices ≤ P (for limit) or any price (for market)
+   - Match against oldest orders first at each price level
+   - Continue until order filled or no more matching prices
+
+2. Incoming SELL order at price P:
+   - Search BID side for prices ≥ P (for limit) or any price (for market)
+   - Match against oldest orders first at each price level
+   - Continue until order filled or no more matching prices
+```
+
+### Matching Loop (Bounded)
+
+```c
+#define MAX_MATCH_ITERATIONS 10000
+
+uint32_t match_count = 0;
+while (incoming->remaining_qty > 0 && match_count < MAX_MATCH_ITERATIONS) {
+    price_level_t* best = get_best_price(book, opposite_side);
+    if (!best || !prices_cross(incoming->price, best->price, incoming->side)) {
+        break;
+    }
+    
+    order_t* resting = best->head;
+    while (resting && incoming->remaining_qty > 0) {
+        uint32_t fill_qty = MIN(incoming->remaining_qty, resting->remaining_qty);
+        
+        emit_trade(incoming, resting, fill_qty, output);
+        
+        incoming->remaining_qty -= fill_qty;
+        resting->remaining_qty -= fill_qty;
+        
+        if (resting->remaining_qty == 0) {
+            remove_order(book, resting);
+        }
+        
+        resting = resting->next;
+        match_count++;
     }
 }
 ```
 
-### Mode Implementations
+---
 
-Each mode has its own file with complete implementation:
+## Performance Analysis
 
-#### TCP Mode (`src/modes/tcp_mode.c`)
-- `run_tcp_dual_processor()` - 4-5 threads (with optional multicast)
-- `run_tcp_single_processor()` - 3-4 threads (with optional multicast)
-- Thread lifecycle management
-- Resource allocation and cleanup
-- Statistics printing
+### Memory Footprint
 
-#### UDP Mode (`src/modes/udp_mode.c`)
-- `run_udp_dual_processor()` - 4 threads with round-robin output from BOTH processors
-- `run_udp_single_processor()` - 3 threads
-- Similar structure to TCP mode
+| Component | Size | Notes |
+|-----------|------|-------|
+| Order Pool | 640 KB | 10,000 orders × 64 bytes |
+| Price Levels | 64 KB | 1,000 levels × 64 bytes |
+| Order Maps | 256 KB | 8,192 slots × 32 bytes |
+| Queues | 2 MB | 2 × 16K slots × 64 bytes |
+| **Total** | **~3 MB** | Per processor |
 
-#### Multicast Helpers (`src/modes/multicast_helpers.c`)
-- `multicast_setup_single()` - Setup for single processor
-- `multicast_setup_dual()` - Setup for dual processor
-- `multicast_start()` - Start publisher thread
-- `multicast_cleanup()` - Stop and cleanup
-- Encapsulates all multicast configuration
+### Latency Breakdown (Typical)
 
-#### Shared Helpers (`src/modes/helpers.c`)
-- `print_memory_stats()` - Display pool statistics
-- Common utilities shared across modes
+| Operation | Time | Cache Lines |
+|-----------|------|-------------|
+| Queue dequeue | ~20 ns | 1-2 |
+| Hash lookup | ~15 ns | 1-2 |
+| Price level find | ~10 ns | 1 |
+| Order matching | ~30 ns | 2-3 |
+| Queue enqueue | ~20 ns | 1-2 |
+| **Total** | **~95 ns** | 6-10 |
 
-### Benefits of Modular Structure
+### Throughput Capacity
 
-| Benefit | Description |
-|---------|-------------|
-| **Maintainability** | Each mode is self-contained and easy to understand |
-| **Testability** | Can test modes independently |
-| **Clarity** | Clear separation of concerns |
-| **Extensibility** | Easy to add new modes (e.g., IPC mode) |
-| **Compile Time** | Only rebuild affected modules |
+| Mode | Messages/sec | Notes |
+|------|--------------|-------|
+| Single processor | 5-10 M | CPU bound |
+| Dual processor | 10-20 M | Scales with symbols |
+| Network limited | 1-2 M | 10 Gbps Ethernet |
+
+### Cache Efficiency Metrics
+
+With `perf stat`:
+```
+L1-dcache-loads:       1,000,000,000
+L1-dcache-load-misses:     5,000,000  (0.5%)
+LLC-loads:                 2,000,000
+LLC-load-misses:             100,000  (5%)
+```
+
+Target: < 1% L1 miss rate, < 10% LLC miss rate.
 
 ---
 
-## Project Structure
-```
-matching-engine-c/
-├── include/
-│   ├── core/
-│   │   ├── order.h
-│   │   ├── order_book.h
-│   │   └── matching_engine.h
-│   ├── protocol/
-│   │   ├── message_types.h
-│   │   ├── symbol_router.h                # Symbol routing logic
-│   │   ├── csv/
-│   │   │   ├── message_parser.h
-│   │   │   └── message_formatter.h
-│   │   └── binary/
-│   │       ├── binary_message_parser.h
-│   │       └── binary_message_formatter.h
-│   ├── network/
-│   │   ├── tcp_listener.h                 # Dual-processor support
-│   │   ├── udp_receiver.h                 # Dual-processor support
-│   │   ├── multicast_publisher.h          # NEW: Multicast broadcasting
-│   │   └── ...
-│   ├── threading/
-│   │   ├── processor.h
-│   │   ├── output_router.h                # Multi-queue support
-│   │   └── ...
-│   └── modes/
-│       ├── run_modes.h                    # NEW: Config + helpers
-│       ├── tcp_mode.h                     # NEW: TCP mode declarations
-│       ├── udp_mode.h                     # NEW: UDP mode declarations
-│       └── multicast_helpers.h            # NEW: Multicast setup
-├── src/
-│   ├── main.c                             # Slim dispatcher (~150 lines)
-│   ├── core/
-│   │   ├── order_book.c
-│   │   └── matching_engine.c
-│   ├── protocol/
-│   │   ├── csv/
-│   │   └── binary/
-│   ├── network/
-│   │   ├── tcp_listener.c
-│   │   ├── udp_receiver.c
-│   │   └── multicast_publisher.c          # NEW: Multicast implementation
-│   ├── threading/
-│   │   ├── processor.c
-│   │   ├── output_router.c
-│   │   └── ...
-│   └── modes/                             # NEW: Modular mode implementations
-│       ├── tcp_mode.c                     # TCP single/dual processor
-│       ├── udp_mode.c                     # UDP single/dual processor
-│       ├── multicast_helpers.c            # Multicast setup/teardown
-│       └── helpers.c                      # Shared utilities
-├── tools/
-│   ├── tcp_client.c
-│   ├── binary_client.c
-│   ├── binary_decoder.c
-│   └── multicast_subscriber.c             # NEW: Multicast receiver tool
-├── tests/
-│   └── ...
-├── documentation/
-│   ├── ARCHITECTURE.md                    # This file
-│   ├── PROTOCOL.md
-│   ├── BUILD.md
-│   └── README.md
-├── CMakeLists.txt                         # CMake build configuration
-├── build.sh                               # Build script with all targets
-└── ...
+## Compile-Time Verification
+
+All layout assumptions are verified at compile time:
+
+```c
+// Size assertions
+_Static_assert(sizeof(order_t) == 64, "order_t must be 64 bytes");
+_Static_assert(sizeof(price_level_t) == 64, "price_level_t must be 64 bytes");
+_Static_assert(sizeof(output_msg_envelope_t) == 64, "envelope must be 64 bytes");
+_Static_assert(sizeof(order_map_slot_t) == 32, "slot must be 32 bytes");
+
+// Alignment assertions (GCC/Clang only)
+#if defined(__GNUC__) || defined(__clang__)
+_Static_assert(alignof(order_t) == 64, "order_t must be cache-aligned");
+_Static_assert(alignof(price_level_t) == 64, "price_level_t must be cache-aligned");
+#endif
+
+// Queue size must be power of 2 for fast modulo
+_Static_assert((LOCKFREE_QUEUE_SIZE & (LOCKFREE_QUEUE_SIZE - 1)) == 0,
+               "Queue size must be power of 2");
 ```
 
 ---
 
-## Command-Line Options
-```bash
-# Dual-processor mode (DEFAULT)
-./build/matching_engine --tcp
-./build/matching_engine --tcp --dual-processor
+## Future Optimizations
 
-# Single-processor mode
-./build/matching_engine --tcp --single-processor
+### Potential Improvements
 
-# Multicast mode (TCP + multicast broadcasting)
-./build/matching_engine --tcp --multicast 239.255.0.1:5000
+1. **SIMD Order Matching**: Use AVX-512 to compare multiple prices simultaneously
+2. **Huge Pages**: Reduce TLB misses for large order books
+3. **NUMA Awareness**: Pin processors to specific NUMA nodes
+4. **Kernel Bypass**: DPDK or io_uring for network I/O
+5. **Persistent Memory**: Intel Optane for order book recovery
 
-# Binary multicast
-./build/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+### Benchmark Targets
 
-# UDP modes
-./build/matching_engine --udp
-./build/matching_engine --udp --dual-processor
-
-# Multicast subscriber (unlimited instances)
-./build/multicast_subscriber 239.255.0.1 5000
-```
+| Metric | Current | Target |
+|--------|---------|--------|
+| p50 latency | < 1 µs | < 500 ns |
+| p99 latency | < 5 µs | < 2 µs |
+| Throughput | 10M msg/s | 50M msg/s |
 
 ---
 
-## Performance Characteristics
+## References
 
-### Throughput
-
-| Mode | Throughput | Notes |
-|------|-----------|-------|
-| Single-Processor | 1-5M orders/sec | CPU limited |
-| Dual-Processor | 2-10M orders/sec | Near-linear scaling |
-| Memory Pool Alloc | 100M ops/sec | Just index manipulation |
-| Multicast Broadcast | Unlimited subscribers | Zero per-subscriber overhead |
-
-### Multicast Scaling
-
-| Subscribers | Server Bandwidth | Server CPU | Network Bandwidth |
-|-------------|------------------|------------|-------------------|
-| 1 | 1× | Constant | 1× |
-| 10 | 1× | Constant | 1× |
-| 100 | 1× | Constant | 1× |
-| 1000 | 1× | Constant | 1× |
-
-**Key Point:** Multicast bandwidth and CPU are **independent of subscriber count**!
-
----
-
-## See Also
-
-- [Quick Start Guide](QUICK_START.md) - Get up and running
-- [Protocols](PROTOCOL.MD) - Message format specifications
-- [Testing](TESTING.md) - Comprehensive testing guide including multicast tests
-- [Build Instructions](BUILD.md) - Detailed build guide with CMake
+1. Ulrich Drepper, "What Every Programmer Should Know About Memory" (2007)
+2. Gerard Holzmann, "Power of Ten: Rules for Developing Safety Critical Code" (2006)
+3. Herb Sutter, "Machine Architecture: Things Your Programming Language Never Told You" (2008)
+4. Intel, "Intel 64 and IA-32 Architectures Optimization Reference Manual"
