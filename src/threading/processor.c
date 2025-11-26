@@ -3,11 +3,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <assert.h>
 
-static const struct timespec ts = {
+/* ============================================================================
+ * Constants
+ * ============================================================================ */
+
+static const struct timespec sleep_ts = {
     .tv_sec = 0,
-    .tv_nsec = 1000
+    .tv_nsec = PROCESSOR_SLEEP_NS
 };
+
+/* ============================================================================
+ * Initialization
+ * ============================================================================ */
 
 bool processor_init(processor_t* processor,
                     const processor_config_t* config,
@@ -15,6 +24,14 @@ bool processor_init(processor_t* processor,
                     input_envelope_queue_t* input_queue,
                     output_envelope_queue_t* output_queue,
                     atomic_bool* shutdown_flag) {
+    /* Rule 5: Validate parameters */
+    assert(processor != NULL);
+    assert(config != NULL);
+    assert(engine != NULL);
+    assert(input_queue != NULL);
+    assert(output_queue != NULL);
+    assert(shutdown_flag != NULL);
+    
     memset(processor, 0, sizeof(*processor));
     
     processor->config = *config;
@@ -25,132 +42,307 @@ bool processor_init(processor_t* processor,
     
     atomic_init(&processor->running, false);
     atomic_init(&processor->started, false);
-    atomic_init(&processor->messages_processed, 0);
-    atomic_init(&processor->batches_processed, 0);
     atomic_init(&processor->output_sequence, 0);
+    
+    /* Initialize statistics - regular uint64_t, not atomic */
+    processor->stats.messages_processed = 0;
+    processor->stats.batches_processed = 0;
+    processor->stats.output_messages = 0;
+    processor->stats.trades_processed = 0;
+    processor->stats.empty_polls = 0;
+    processor->stats.output_queue_full = 0;
     
     return true;
 }
 
 void processor_cleanup(processor_t* processor) {
-    (void)processor;  // Nothing to clean up for now
+    assert(processor != NULL);
+    /* Nothing to clean up - no dynamic allocation (Rule 3) */
+    (void)processor;
 }
+
+/* ============================================================================
+ * Helper: Enqueue output with error tracking
+ * ============================================================================ */
+
+static inline bool enqueue_output(processor_t* processor,
+                                  const output_msg_t* msg,
+                                  uint32_t client_id,
+                                  uint64_t seq,
+                                  uint64_t* local_output_count,
+                                  uint64_t* local_queue_full) {
+    output_msg_envelope_t env = create_output_envelope(msg, client_id, seq);
+    
+    if (output_envelope_queue_enqueue(processor->output_queue, &env)) {
+        (*local_output_count)++;
+        return true;
+    } else {
+        (*local_queue_full)++;
+        return false;
+    }
+}
+
+/* ============================================================================
+ * Main Processing Loop
+ * ============================================================================ */
 
 void* processor_thread(void* arg) {
     processor_t* processor = (processor_t*)arg;
+    assert(processor != NULL);
     
-    fprintf(stderr, "[Processor] Starting (mode: %s)\n",
-            processor->config.tcp_mode ? "TCP" : "UDP");
+    fprintf(stderr, "[Processor %d] Starting (mode: %s, wait: %s)\n",
+            processor->config.processor_id,
+            processor->config.tcp_mode ? "TCP" : "UDP",
+            processor->config.spin_wait ? "spin" : "sleep");
     
+    atomic_store(&processor->started, true);
+    atomic_store(&processor->running, true);
+    
+    /* Pre-allocated batch buffer - no allocation in loop (Rule 3) */
     input_msg_envelope_t input_batch[PROCESSOR_BATCH_SIZE];
+    
+    /* Output buffer - reused across all messages in batch */
     output_buffer_t output_buffer;
     
+    /* Local counters - batched update to atomics */
+    uint64_t local_messages = 0;
+    uint64_t local_batches = 0;
+    uint64_t local_outputs = 0;
+    uint64_t local_trades = 0;
+    uint64_t local_empty_polls = 0;
+    uint64_t local_queue_full = 0;
+    
+    /* Local sequence counter - reduces atomic contention */
+    uint64_t local_sequence = atomic_load(&processor->output_sequence);
+    
+    /* Spin counter for hybrid wait strategy */
+    int spin_count = 0;
+    
+    /* Stats flush interval */
+    const uint64_t STATS_FLUSH_INTERVAL = 1000;
+    uint64_t since_last_flush = 0;
+    
+    /* Main loop - Rule 2: bounded by shutdown flag */
     while (!atomic_load(processor->shutdown_flag)) {
-        // Dequeue batch of input messages
+        
+        /* ================================================================
+         * Phase 1: Dequeue batch of input messages
+         * ================================================================ */
         size_t count = 0;
+        
+        /* Rule 2: Loop bounded by PROCESSOR_BATCH_SIZE */
         for (size_t i = 0; i < PROCESSOR_BATCH_SIZE; i++) {
             if (input_envelope_queue_dequeue(processor->input_queue, &input_batch[count])) {
                 count++;
             } else {
+                /* Queue empty - could retry, but usually means we got everything */
                 break;
             }
         }
         
+        /* ================================================================
+         * Phase 2: Handle empty queue (spin or sleep)
+         * ================================================================ */
         if (count == 0) {
-            nanosleep(&ts, NULL);
+            local_empty_polls++;
+            
+            if (processor->config.spin_wait) {
+                /* Spin-wait: better latency, uses more CPU */
+                spin_count++;
+                if (spin_count >= PROCESSOR_SPIN_ITERATIONS) {
+                    /* Yield after spinning to avoid starving other threads */
+                    sched_yield();
+                    spin_count = 0;
+                }
+                /* CPU pause hint - reduces power, helps hyperthreading */
+                #if defined(__x86_64__)
+                __asm__ volatile("pause" ::: "memory");
+                #elif defined(__aarch64__)
+                __asm__ volatile("yield" ::: "memory");
+                #endif
+            } else {
+                /* Sleep-wait: saves CPU, adds latency */
+                nanosleep(&sleep_ts, NULL);
+            }
             continue;
         }
         
-        atomic_fetch_add(&processor->batches_processed, 1);
+        /* Reset spin counter on successful dequeue */
+        spin_count = 0;
+        local_batches++;
         
-        // Process each message
+        /* ================================================================
+         * Phase 3: Process each message in batch
+         * ================================================================ */
+        
+        /* Rule 2: Loop bounded by count <= PROCESSOR_BATCH_SIZE */
         for (size_t i = 0; i < count; i++) {
             input_msg_envelope_t* envelope = &input_batch[i];
+            
+            /* Prefetch next message while processing current */
+            if (i + 1 < count) {
+                PREFETCH_READ(&input_batch[i + 1]);
+            }
+            
             input_msg_t* msg = &envelope->msg;
             uint32_t client_id = envelope->client_id;
             
-            // Initialize output buffer
-            output_buffer_init(&output_buffer);
+            /* Reset output buffer (just set count to 0, no memset) */
+            output_buffer.count = 0;
             
-            // Process through matching engine
+            /* Process through matching engine */
             matching_engine_process_message(processor->engine, msg, client_id, &output_buffer);
             
-            // Wrap outputs in envelopes with routing logic
+            /* ============================================================
+             * Phase 4: Route outputs to appropriate clients
+             * ============================================================ */
+            
+            /* Rule 2: Loop bounded by output_buffer.count <= MAX_OUTPUT_MESSAGES */
             for (int j = 0; j < output_buffer.count; j++) {
                 output_msg_t* out_msg = &output_buffer.messages[j];
-                uint64_t seq = atomic_fetch_add(&processor->output_sequence, 1);
+                uint64_t seq = local_sequence++;
                 
                 if (out_msg->type == OUTPUT_MSG_TRADE) {
-                    // Trade - route to BOTH participants
+                    /* Trade: route to BOTH buyer and seller */
+                    local_trades++;
+                    
                     uint32_t buy_client = out_msg->data.trade.buy_client_id;
                     uint32_t sell_client = out_msg->data.trade.sell_client_id;
                     
-                    // Send to buyer
-                    output_msg_envelope_t env1 = create_output_envelope(out_msg, buy_client, seq);
-                    if (!output_envelope_queue_enqueue(processor->output_queue, &env1)) {
-                        fprintf(stderr, "[Processor] Output queue full!\n");
-                    }
+                    /* Send to buyer */
+                    enqueue_output(processor, out_msg, buy_client, seq,
+                                   &local_outputs, &local_queue_full);
                     
-                    // Send to seller if different client
+                    /* Send to seller (if different client) */
                     if (buy_client != sell_client) {
-                        output_msg_envelope_t env2 = create_output_envelope(out_msg, sell_client, seq);
-                        if (!output_envelope_queue_enqueue(processor->output_queue, &env2)) {
-                            fprintf(stderr, "[Processor] Output queue full!\n");
-                        }
+                        enqueue_output(processor, out_msg, sell_client, seq,
+                                       &local_outputs, &local_queue_full);
                     }
                 } else {
-                    // Ack, Cancel, TOB - route to originating client
-                    output_msg_envelope_t env = create_output_envelope(out_msg, client_id, seq);
-                    if (!output_envelope_queue_enqueue(processor->output_queue, &env)) {
-                        fprintf(stderr, "[Processor] Output queue full!\n");
-                    }
+                    /* Ack, CancelAck, TopOfBook: route to originating client */
+                    enqueue_output(processor, out_msg, client_id, seq,
+                                   &local_outputs, &local_queue_full);
                 }
             }
             
-            atomic_fetch_add(&processor->messages_processed, 1);
+            local_messages++;
+        }
+        
+        /* ================================================================
+         * Phase 5: Periodic flush of statistics to atomics
+         * ================================================================ */
+        since_last_flush += count;
+        
+        if (since_last_flush >= STATS_FLUSH_INTERVAL) {
+            /* Batch update stats - single write per counter */
+            processor->stats.messages_processed += local_messages;
+            processor->stats.batches_processed += local_batches;
+            processor->stats.output_messages += local_outputs;
+            processor->stats.trades_processed += local_trades;
+            processor->stats.empty_polls += local_empty_polls;
+            processor->stats.output_queue_full += local_queue_full;
+            atomic_store(&processor->output_sequence, local_sequence);
+            
+            /* Reset local counters */
+            local_messages = 0;
+            local_batches = 0;
+            local_outputs = 0;
+            local_trades = 0;
+            local_empty_polls = 0;
+            local_queue_full = 0;
+            since_last_flush = 0;
         }
     }
     
-    fprintf(stderr, "[Processor] Shutting down\n");
+    /* Final flush of remaining statistics */
+    processor->stats.messages_processed += local_messages;
+    processor->stats.batches_processed += local_batches;
+    processor->stats.output_messages += local_outputs;
+    processor->stats.trades_processed += local_trades;
+    processor->stats.empty_polls += local_empty_polls;
+    processor->stats.output_queue_full += local_queue_full;
+    atomic_store(&processor->output_sequence, local_sequence);
+    
+    atomic_store(&processor->running, false);
+    
+    fprintf(stderr, "[Processor %d] Shutting down\n", processor->config.processor_id);
     processor_print_stats(processor);
+    
     return NULL;
 }
 
+/* ============================================================================
+ * Statistics
+ * ============================================================================ */
+
 void processor_print_stats(const processor_t* processor) {
-    fprintf(stderr, "\n=== Processor Statistics ===\n");
-    fprintf(stderr, "Messages processed:    %llu\n", 
-           (unsigned long long) atomic_load(&processor->messages_processed));
-    fprintf(stderr, "Batches processed:     %llu\n", 
-           (unsigned long long)atomic_load(&processor->batches_processed));
+    assert(processor != NULL);
+    
+    /* Read stats - may be slightly stale, acceptable for monitoring */
+    uint64_t messages = processor->stats.messages_processed;
+    uint64_t batches = processor->stats.batches_processed;
+    uint64_t outputs = processor->stats.output_messages;
+    uint64_t trades = processor->stats.trades_processed;
+    uint64_t empty = processor->stats.empty_polls;
+    uint64_t full = processor->stats.output_queue_full;
+    
+    double avg_batch = batches > 0 ? (double)messages / batches : 0.0;
+    double outputs_per_msg = messages > 0 ? (double)outputs / messages : 0.0;
+    
+    fprintf(stderr, "\n=== Processor %d Statistics ===\n", 
+            processor->config.processor_id);
+    fprintf(stderr, "Messages processed:    %llu\n", (unsigned long long)messages);
+    fprintf(stderr, "Batches processed:     %llu\n", (unsigned long long)batches);
+    fprintf(stderr, "Average batch size:    %.1f\n", avg_batch);
+    fprintf(stderr, "Output messages:       %llu\n", (unsigned long long)outputs);
+    fprintf(stderr, "Outputs per message:   %.2f\n", outputs_per_msg);
+    fprintf(stderr, "Trades processed:      %llu\n", (unsigned long long)trades);
+    fprintf(stderr, "Empty polls:           %llu\n", (unsigned long long)empty);
+    fprintf(stderr, "Output queue full:     %llu\n", (unsigned long long)full);
 }
 
+/* ============================================================================
+ * Client Order Cancellation
+ * ============================================================================ */
+
 void processor_cancel_client_orders(processor_t* processor, uint32_t client_id) {
-    fprintf(stderr, "[Processor] Cancelling all orders for client %u\n", client_id);
+    assert(processor != NULL);
+    assert(client_id > 0);  /* 0 is reserved for broadcast/UDP */
     
-    // Initialize output buffer for cancel acknowledgements
+    fprintf(stderr, "[Processor %d] Cancelling all orders for client %u\n",
+            processor->config.processor_id, client_id);
+    
+    /* Output buffer for cancel acknowledgements */
     output_buffer_t output_buffer;
-    output_buffer_init(&output_buffer);
+    output_buffer.count = 0;
     
-    // Call matching engine to cancel all orders for this client
+    /* Call matching engine to cancel all orders for this client */
     size_t cancelled = matching_engine_cancel_client_orders(
         processor->engine,
         client_id,
         &output_buffer
     );
     
-    fprintf(stderr, "[Processor] Cancelled %zu orders for client %u\n", 
-            cancelled, client_id);
+    fprintf(stderr, "[Processor %d] Cancelled %zu orders for client %u\n",
+            processor->config.processor_id, cancelled, client_id);
     
-    // Enqueue cancel acknowledgements to output queue
+    /* Enqueue cancel acknowledgements */
+    uint64_t local_seq = atomic_fetch_add(&processor->output_sequence, 
+                                          (uint64_t)output_buffer.count);
+    
+    /* Rule 2: Loop bounded by output_buffer.count */
     for (int i = 0; i < output_buffer.count; i++) {
         output_msg_t* out_msg = &output_buffer.messages[i];
-        uint64_t seq = atomic_fetch_add(&processor->output_sequence, 1);
         
-        // Route cancel acks back to the disconnected client (for logging/cleanup)
-        output_msg_envelope_t envelope = create_output_envelope(out_msg, client_id, seq);
+        output_msg_envelope_t envelope = create_output_envelope(
+            out_msg, client_id, local_seq + i);
         
         if (!output_envelope_queue_enqueue(processor->output_queue, &envelope)) {
-            fprintf(stderr, "[Processor] Output queue full while cancelling client orders!\n");
+            fprintf(stderr, "[Processor %d] Output queue full during client cancel!\n",
+                    processor->config.processor_id);
+            processor->stats.output_queue_full++;
+        } else {
+            processor->stats.output_messages++;
         }
     }
 }

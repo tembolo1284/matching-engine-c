@@ -5,6 +5,8 @@
 #include "protocol/message_types.h"
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdalign.h>
+#include <assert.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,83 +15,87 @@ extern "C" {
 /**
  * MatchingEngine - Multi-symbol order book orchestrator
  *
- * Power of 10 Compliant:
+ * Power of Ten Compliant:
  * - Rule 2: All loops bounded
- * - Rule 3: No malloc after init (uses memory pools)
+ * - Rule 3: No malloc after init (open-addressing hash tables, no pools needed)
  * - Rule 5: Assertions for invariant checking
  * - Rule 7: Parameter validation
  *
- * Updated for TCP multi-client support:
+ * Updated for cache optimization:
+ * - Open-addressing hash tables (no pointer chasing)
+ * - Power-of-2 table sizes for fast masking
+ * - Tombstone-based deletion
+ *
+ * TCP multi-client support:
  * - Tracks client_id with each order for ownership
  * - Supports cancelling all orders for a disconnected client
- * - Passes client_id through to order books
- *
- * Design decisions:
- * - Maintains one OrderBook per symbol
- * - Creates order books on-demand when first order arrives
- * - Routes input messages to appropriate order book
- * - Aggregates output messages from all order books
- * - Uses hash table for symbol -> order book mapping
- * - Tracks order -> symbol mapping for cancellations
- * - Pre-allocated memory pools for zero runtime allocation
  */
 
+/* ============================================================================
+ * Configuration Constants
+ * ============================================================================ */
+
 #define MAX_SYMBOLS 256
-#define SYMBOL_MAP_SIZE 256
-#define ORDER_SYMBOL_MAP_SIZE 8192
 
-/* Memory pool sizes for hash table entries */
-#define MAX_SYMBOL_MAP_ENTRIES 512
-#define MAX_ORDER_SYMBOL_ENTRIES 10000
+/* 
+ * Hash table sizes - MUST be power of 2 for fast masking
+ * Symbol map: 512 slots for up to ~256 symbols at 50% load
+ * Order-symbol map: 16384 slots for up to ~8192 orders at 50% load
+ */
+#define SYMBOL_MAP_SIZE 512
+#define SYMBOL_MAP_MASK (SYMBOL_MAP_SIZE - 1)
 
-/* Maximum iterations for hash table traversal (Rule 2) */
-#define MAX_HASH_CHAIN_ITERATIONS 100
+#define ORDER_SYMBOL_MAP_SIZE 16384
+#define ORDER_SYMBOL_MAP_MASK (ORDER_SYMBOL_MAP_SIZE - 1)
+
+/* Maximum probe length for open-addressing (Rule 2) */
+#define MAX_SYMBOL_PROBE_LENGTH 64
+#define MAX_ORDER_SYMBOL_PROBE_LENGTH 128
+
+/* Sentinel values for open-addressing */
+#define SYMBOL_SLOT_EMPTY   0   /* symbol[0] == '\0' means empty */
+#define ORDER_KEY_EMPTY     0ULL
+#define ORDER_KEY_TOMBSTONE UINT64_MAX
 
 /* ============================================================================
- * Memory Pools for Hash Table Entries (Rule 3)
+ * Open-Addressing Hash Table Structures
  * ============================================================================ */
 
 /**
- * Symbol to order book mapping entry
+ * Symbol map slot (symbol → order book index)
+ * Empty slot: symbol[0] == '\0'
  */
-typedef struct symbol_map_entry {
+typedef struct {
     char symbol[MAX_SYMBOL_LENGTH];
-    order_book_t* book;
-    struct symbol_map_entry* next;  /* Hash collision chain */
-} symbol_map_entry_t;
+    int book_index;  /* Index into books[] array, -1 if empty */
+} symbol_map_slot_t;
 
 /**
- * Order to symbol mapping entry (for cancel operations)
+ * Order-to-symbol map slot (order key → symbol)
+ * Used for cancel operations to find which book an order belongs to
+ * Empty slot: order_key == 0, Tombstone: order_key == UINT64_MAX
  */
-typedef struct order_symbol_entry {
+typedef struct {
     uint64_t order_key;  /* (user_id << 32) | user_order_id */
     char symbol[MAX_SYMBOL_LENGTH];
-    struct order_symbol_entry* next;  /* Hash collision chain */
-} order_symbol_entry_t;
+} order_symbol_slot_t;
 
 /**
- * Memory pool for symbol map entries
+ * Open-addressing hash table for symbol → order book mapping
  */
 typedef struct {
-    symbol_map_entry_t entries[MAX_SYMBOL_MAP_ENTRIES];
-    uint32_t free_list[MAX_SYMBOL_MAP_ENTRIES];
-    int free_count;
-    uint32_t total_allocations;
-    uint32_t peak_usage;
-    uint32_t allocation_failures;
-} symbol_map_pool_t;
+    symbol_map_slot_t slots[SYMBOL_MAP_SIZE];
+    uint32_t count;
+} symbol_map_t;
 
 /**
- * Memory pool for order->symbol entries
+ * Open-addressing hash table for order → symbol mapping
  */
 typedef struct {
-    order_symbol_entry_t entries[MAX_ORDER_SYMBOL_ENTRIES];
-    uint32_t free_list[MAX_ORDER_SYMBOL_ENTRIES];
-    int free_count;
-    uint32_t total_allocations;
-    uint32_t peak_usage;
-    uint32_t allocation_failures;
-} order_symbol_pool_t;
+    order_symbol_slot_t slots[ORDER_SYMBOL_MAP_SIZE];
+    uint32_t count;
+    uint32_t tombstone_count;
+} order_symbol_map_t;
 
 /* ============================================================================
  * Matching Engine Structure
@@ -99,22 +105,18 @@ typedef struct {
  * Matching engine structure
  */
 typedef struct {
-    /* Symbol -> OrderBook mapping */
-    symbol_map_entry_t* symbol_map[SYMBOL_MAP_SIZE];
+    /* Symbol → OrderBook mapping (open-addressing) */
+    symbol_map_t symbol_map;
     
-    /* Order -> Symbol mapping (for cancellations) */
-    order_symbol_entry_t* order_to_symbol[ORDER_SYMBOL_MAP_SIZE];
+    /* Order → Symbol mapping for cancellations (open-addressing) */
+    order_symbol_map_t order_to_symbol;
     
     /* Pre-allocated order books */
     order_book_t books[MAX_SYMBOLS];
     int num_books;
     
-    /* Memory pools - shared reference */
+    /* Memory pools - shared reference (for order books) */
     memory_pools_t* pools;
-    
-    /* Engine-specific memory pools */
-    symbol_map_pool_t symbol_pool;
-    order_symbol_pool_t order_symbol_pool;
     
 } matching_engine_t;
 
@@ -131,7 +133,7 @@ typedef struct {
 void matching_engine_init(matching_engine_t* engine, memory_pools_t* pools);
 
 /**
- * Destroy matching engine and return all memory to pools
+ * Destroy matching engine
  */
 void matching_engine_destroy(matching_engine_t* engine);
 
@@ -150,11 +152,6 @@ void matching_engine_process_message(matching_engine_t* engine,
 
 /**
  * Process new order
- * 
- * @param engine Matching engine
- * @param msg New order message
- * @param client_id Client ID who placed this order
- * @param output Output buffer
  */
 void matching_engine_process_new_order(matching_engine_t* engine,
                                        const new_order_msg_t* msg,
@@ -177,9 +174,6 @@ void matching_engine_process_flush(matching_engine_t* engine,
 /**
  * Cancel all orders for a specific client (TCP mode)
  * 
- * Called when a TCP client disconnects. Walks through all order books
- * and cancels orders where order->client_id matches.
- * 
  * @param engine Matching engine
  * @param client_id Client ID to cancel orders for
  * @param output Output buffer for cancel acknowledgements
@@ -196,26 +190,34 @@ order_book_t* matching_engine_get_order_book(matching_engine_t* engine,
                                              const char* symbol);
 
 /* ============================================================================
- * Helper Functions (Internal)
+ * Hash Functions (Inline)
  * ============================================================================ */
 
 /**
- * Simple string hash function (djb2)
+ * Hash function for symbol string
+ * Uses FNV-1a for good distribution
  */
-static inline uint32_t hash_string(const char* str) {
-    uint32_t hash = 5381;
-    int c;
-    while ((c = *str++)) {
-        hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
+static inline uint32_t me_hash_symbol(const char* symbol) {
+    uint32_t hash = 2166136261u;  /* FNV offset basis */
+    
+    for (int i = 0; i < MAX_SYMBOL_LENGTH && symbol[i] != '\0'; i++) {
+        hash ^= (uint8_t)symbol[i];
+        hash *= 16777619u;  /* FNV prime */
     }
-    return hash;
+    
+    return hash & SYMBOL_MAP_MASK;
 }
 
 /**
  * Hash function for order key
+ * Uses multiply-shift for 64-bit keys
  */
-static inline uint32_t hash_order_key(uint64_t key) {
-    return (uint32_t)(key ^ (key >> 32));
+static inline uint32_t me_hash_order_key(uint64_t key) {
+    const uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ULL;
+    key ^= key >> 33;
+    key *= GOLDEN_RATIO;
+    key ^= key >> 29;
+    return (uint32_t)(key & ORDER_SYMBOL_MAP_MASK);
 }
 
 #ifdef __cplusplus

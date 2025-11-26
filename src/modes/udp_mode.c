@@ -135,7 +135,7 @@ int run_udp_dual_processor(const app_config_t* config) {
 
     fprintf(stderr, "\nMemory Pools Initialized (per processor):\n");
     fprintf(stderr, "  Order pool:      %d slots each\n", MAX_ORDERS_IN_POOL);
-    fprintf(stderr, "  Hash pool:       %d slots each\n", MAX_HASH_ENTRIES_IN_POOL);
+    fprintf(stderr, "  Hash table:       %d slots (open-addressing)\n", ORDER_MAP_SIZE);
     fprintf(stderr, "========================================\n\n");
 
     // Initialize matching engines
@@ -322,7 +322,7 @@ int run_udp_single_processor(const app_config_t* config) {
 
     fprintf(stderr, "\nMemory Pools Initialized:\n");
     fprintf(stderr, "  Order pool:      %d slots\n", MAX_ORDERS_IN_POOL);
-    fprintf(stderr, "  Hash pool:       %d slots\n", MAX_HASH_ENTRIES_IN_POOL);
+    fprintf(stderr, "  Hash table:       %d slots (open-addressing)\n", ORDER_MAP_SIZE);
     fprintf(stderr, "========================================\n\n");
 
     // Initialize matching engine

@@ -200,5 +200,5 @@ void test_SymbolRouter_ValidProcessorIds(void) {
     
     TEST_ASSERT_TRUE(id_a >= 0 && id_a < NUM_PROCESSORS);
     TEST_ASSERT_TRUE(id_n >= 0 && id_n < NUM_PROCESSORS);
-    TEST_ASSERT_NOT_EQUAL(id_a, id_n);
+    TEST_ASSERT_TRUE(id_a != id_n);
 }

@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdalign.h>
+#include <assert.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +15,13 @@ extern "C" {
 
 /**
  * OrderBook - Single symbol order book with price-time priority
+ * 
+ * Design principles (Power of Ten + Roman Bansal's rules):
+ * - No dynamic allocation after init (Rule 3)
+ * - All loops have fixed upper bounds (Rule 2)
+ * - Open-addressing hash table for cache-friendly lookups
+ * - Cache-line aligned orders to prevent false sharing
+ * - Pre-allocated memory pools
  */
 
 /* ============================================================================
@@ -28,32 +37,49 @@ extern "C" {
 /* Maximum output messages from a single operation */
 #define MAX_OUTPUT_MESSAGES 1024
 
-/* Hash table size for order lookup */
-#define ORDER_MAP_SIZE 4096
+/* 
+ * Hash table size - MUST be power of 2 for fast masking
+ * Load factor target: ~50% for good probe performance
+ */
+#define ORDER_MAP_SIZE 16384
+#define ORDER_MAP_MASK (ORDER_MAP_SIZE - 1)
+
+/* Maximum probe length for open-addressing (Rule 2 compliance) */
+#define MAX_PROBE_LENGTH 128
 
 /* Maximum iterations for matching loops (Rule 2 compliance) */
 #define MAX_MATCH_ITERATIONS (MAX_PRICE_LEVELS * TYPICAL_ORDERS_PER_LEVEL)
 #define MAX_ORDERS_AT_PRICE_LEVEL (TYPICAL_ORDERS_PER_LEVEL * 10)
-#define MAX_HASH_CHAIN_LENGTH 100
 
 /* Memory pool sizes */
 #define MAX_ORDERS_IN_POOL 10000
-#define MAX_HASH_ENTRIES_IN_POOL 10000
+
+/* Sentinel values for open-addressing hash table */
+#define HASH_SLOT_EMPTY     0ULL
+#define HASH_SLOT_TOMBSTONE UINT64_MAX
 
 /* ============================================================================
- * Core Data Structures (MUST BE DEFINED FIRST)
+ * Core Data Structures
  * ============================================================================ */
 
 /**
  * Price level - holds orders at a specific price
+ * Aligned to avoid false sharing between adjacent levels
  */
+#if defined(__GNUC__) || defined(__clang__)
+typedef struct __attribute__((aligned(64))) {
+#else
 typedef struct {
+#endif
     uint32_t price;
     uint32_t total_quantity;
     order_t* orders_head;
     order_t* orders_tail;
     bool active;
+    uint8_t _padding[64 - sizeof(uint32_t)*2 - sizeof(order_t*)*2 - sizeof(bool)];
 } price_level_t;
+
+_Static_assert(sizeof(price_level_t) == 64, "price_level_t should be cache-line aligned");
 
 /**
  * Order location for cancellation lookup
@@ -65,27 +91,33 @@ typedef struct {
 } order_location_t;
 
 /**
- * Hash table entry for order lookup
- */
-typedef struct order_map_entry {
-    uint64_t key;
-    order_location_t location;
-    struct order_map_entry* next;
-} order_map_entry_t;
-
-/**
- * Simple hash table for order lookup
+ * Open-addressing hash table slot
+ * Key = 0 means empty, Key = UINT64_MAX means tombstone (deleted)
  */
 typedef struct {
-    order_map_entry_t* buckets[ORDER_MAP_SIZE];
+    uint64_t key;               /* Combined user_id + user_order_id */
+    order_location_t location;
+} order_map_slot_t;
+
+/**
+ * Open-addressing hash table for order lookup
+ * - No pointer chasing = cache-friendly
+ * - Linear probing for locality
+ * - Power-of-2 size for fast modulo via masking
+ */
+typedef struct {
+    order_map_slot_t slots[ORDER_MAP_SIZE];
+    uint32_t count;             /* Number of active entries */
+    uint32_t tombstone_count;   /* Number of tombstones (for rehash decision) */
 } order_map_t;
 
 /* ============================================================================
- * Memory Pool Structures (NOW order_map_entry_t IS DEFINED)
+ * Memory Pool Structure (Simplified - no hash entry pool needed)
  * ============================================================================ */
 
 /**
  * Pre-allocated memory pool for orders
+ * All orders come from this pool - zero malloc in hot path
  */
 typedef struct {
     order_t orders[MAX_ORDERS_IN_POOL];
@@ -97,23 +129,10 @@ typedef struct {
 } order_pool_t;
 
 /**
- * Pre-allocated memory pool for hash table entries
- */
-typedef struct {
-    order_map_entry_t entries[MAX_HASH_ENTRIES_IN_POOL];  // ← Now this works!
-    uint32_t free_list[MAX_HASH_ENTRIES_IN_POOL];
-    int free_count;
-    uint32_t total_allocations;
-    uint32_t peak_usage;
-    uint32_t allocation_failures;
-} hash_entry_pool_t;
-
-/**
- * Combined memory pools for an order book
+ * Memory pools container (simplified - only order pool now)
  */
 typedef struct {
     order_pool_t order_pool;
-    hash_entry_pool_t hash_entry_pool;
 } memory_pools_t;
 
 /* ============================================================================
@@ -132,7 +151,7 @@ typedef struct {
     int num_bid_levels;
     int num_ask_levels;
 
-    /* Order lookup for cancellations */
+    /* Order lookup - open-addressing hash table */
     order_map_t order_map;
 
     /* Track previous best bid/ask for TOB change detection */
@@ -174,13 +193,14 @@ typedef struct {
     uint32_t order_allocations;
     uint32_t order_peak_usage;
     uint32_t order_failures;
-    uint32_t hash_allocations;
-    uint32_t hash_peak_usage;
-    uint32_t hash_failures;
+    uint32_t hash_count;        /* Current entries in hash table */
+    uint32_t hash_tombstones;   /* Tombstone count */
     size_t total_memory_bytes;
 } memory_pool_stats_t;
 
-void memory_pools_get_stats(const memory_pools_t* pools, memory_pool_stats_t* stats);
+void memory_pools_get_stats(const memory_pools_t* pools, 
+                            const order_book_t* book,
+                            memory_pool_stats_t* stats);
 
 /* ============================================================================
  * Order Book Public API
@@ -219,13 +239,43 @@ static inline void output_buffer_init(output_buffer_t* buf) {
 }
 
 static inline void output_buffer_add(output_buffer_t* buf, const output_msg_t* msg) {
+    assert(buf != NULL && "NULL buffer in output_buffer_add");
+    assert(msg != NULL && "NULL message in output_buffer_add");
+    
     if (buf->count < MAX_OUTPUT_MESSAGES) {
         buf->messages[buf->count++] = *msg;
+    } else {
+        /* Rule 5: Log overflow but don't crash */
+        #ifdef DEBUG
+        fprintf(stderr, "WARNING: Output buffer overflow\n");
+        #endif
     }
 }
 
+/**
+ * Create order key from user_id and user_order_id
+ * This is the key used in the hash table
+ */
 static inline uint64_t make_order_key(uint32_t user_id, uint32_t user_order_id) {
     return ((uint64_t)user_id << 32) | user_order_id;
+}
+
+/**
+ * Fast hash function using multiply-shift
+ * Based on Knuth's multiplicative hash
+ * Much faster than modulo, and mixes bits well
+ */
+static inline uint32_t hash_order_key(uint64_t key) {
+    /* Golden ratio constant for 64-bit */
+    const uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ULL;
+    
+    /* Multiply and take high bits - mixes all input bits */
+    key ^= key >> 33;
+    key *= GOLDEN_RATIO;
+    key ^= key >> 29;
+    
+    /* Mask to table size (power of 2) */
+    return (uint32_t)(key & ORDER_MAP_MASK);
 }
 
 #ifdef __cplusplus

@@ -106,7 +106,7 @@ int format_trade(char* buffer, size_t buffer_size, const trade_msg_t* msg) {
  * Eliminated: B, side (B or S), -, -
  */
 int format_top_of_book(char* buffer, size_t buffer_size, const top_of_book_msg_t* msg) {
-    if (msg->eliminated) {
+    if (top_of_book_is_eliminated(msg)) {
         return snprintf(buffer, buffer_size, "B, %c, -, -", (char)msg->side);
     } else {
         return snprintf(buffer, buffer_size, "B, %c, %u, %u",

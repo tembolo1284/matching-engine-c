@@ -83,7 +83,7 @@ static size_t format_top_of_book(binary_message_formatter_t* formatter, const to
     format_symbol(bin->symbol, msg->symbol);
     bin->side = (msg->side == SIDE_BUY) ? 'B' : 'S';
     
-    if (msg->eliminated) {
+    if (top_of_book_is_eliminated(msg)) {
         bin->price = 0;
         bin->quantity = 0;
     } else {

@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <assert.h>
 #include <stdio.h>
+#include <stdalign.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,23 +16,24 @@ extern "C" {
 /**
  * LockFreeQueue - Single-producer, single-consumer lock-free queue
  *
- * Power of Ten Compliant:
- * - Rule 1: No recursion or goto
- * - Rule 2: No loops (completely loop-free implementation!)
- * - Rule 3: Fixed-size, no dynamic allocation
- * - Rule 4: All functions < 20 lines
- * - Rule 5: Assertions for invariants
- * - Rule 7: Parameter validation
- * - Rule 9: Single-level pointer dereferencing only
- *
  * Design decisions:
  * - Fixed-size ring buffer (power of 2 for efficient modulo via bitmasking)
  * - Cache-line padding to prevent false sharing
  * - Lock-free using C11 atomic operations
  * - Template-like functionality via macros
  *
+ * Power of Ten Compliance:
+ * - Rule 2: All loops bounded by queue size
+ * - Rule 3: No dynamic allocation (fixed-size buffer)
+ * - Rule 5: Assertions verify invariants
+ * - Rule 7: All return values checked
+ *
  * CRITICAL: Default size 16384 to handle UDP bursts
  */
+
+/* ============================================================================
+ * Configuration
+ * ============================================================================ */
 
 /* Cache line size (typically 64 bytes on modern CPUs) */
 #ifndef CACHE_LINE_SIZE
@@ -43,21 +45,24 @@ extern "C" {
 #define LOCKFREE_QUEUE_SIZE 16384
 #endif
 
+/* Index mask for fast modulo */
+#define LOCKFREE_QUEUE_MASK (LOCKFREE_QUEUE_SIZE - 1)
+
 /* Maximum reasonable queue size for safety */
 #define MAX_QUEUE_SIZE 1048576  /* 1M entries */
 
 /* Compile-time checks for queue size */
-_Static_assert((LOCKFREE_QUEUE_SIZE & (LOCKFREE_QUEUE_SIZE - 1)) == 0, 
+_Static_assert((LOCKFREE_QUEUE_SIZE & (LOCKFREE_QUEUE_SIZE - 1)) == 0,
                "LOCKFREE_QUEUE_SIZE must be power of 2");
-_Static_assert(LOCKFREE_QUEUE_SIZE >= 16, 
+_Static_assert(LOCKFREE_QUEUE_SIZE >= 16,
                "LOCKFREE_QUEUE_SIZE too small (min 16)");
 _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
                "LOCKFREE_QUEUE_SIZE too large (max 1M)");
 
-/* Padding macro to prevent false sharing */
-#define CACHE_LINE_PAD(n) char _pad##n[CACHE_LINE_SIZE]
+/* ============================================================================
+ * Debug Assertions
+ * ============================================================================ */
 
-/* Rule 5: Assertion macro with error recovery */
 #ifdef DEBUG
   #define QUEUE_ASSERT(expr) \
     do { \
@@ -67,7 +72,7 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
         return false; \
       } \
     } while(0)
-  
+
   #define QUEUE_ASSERT_VOID(expr) \
     do { \
       if (!(expr)) { \
@@ -81,49 +86,50 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
   #define QUEUE_ASSERT_VOID(expr) ((void)0)
 #endif
 
-/**
- * Macro to declare a lock-free queue type
+/* ============================================================================
+ * Queue Declaration Macro
+ * ============================================================================
  *
  * Usage:
  *   DECLARE_LOCKFREE_QUEUE(input_msg_t, input_queue)
  *
  * Generates:
  *   - struct input_queue_t { ... }
- *   - Functions for init/destroy/enqueue/dequeue/empty/size/verify
+ *   - Function declarations for init/destroy/enqueue/dequeue/etc.
+ *
+ * Memory Layout (assuming 64-byte cache lines):
+ *   Offset 0:   head (8 bytes) + padding (56 bytes) = 64 bytes
+ *   Offset 64:  tail (8 bytes) + padding (56 bytes) = 64 bytes
+ *   Offset 128: stats (40 bytes) + padding (24 bytes) = 64 bytes
+ *   Offset 192: buffer[LOCKFREE_QUEUE_SIZE] - cache-line aligned
  */
 #define DECLARE_LOCKFREE_QUEUE(TYPE, NAME) \
     typedef struct NAME##_t { \
-        /* Head index (consumer side) - aligned to cache line */ \
+        /* Head index (consumer side) - own cache line */ \
         _Alignas(CACHE_LINE_SIZE) atomic_size_t head; \
+        uint8_t _pad_head[CACHE_LINE_SIZE - sizeof(atomic_size_t)]; \
         \
-        /* Padding to prevent false sharing between head and tail */ \
-        CACHE_LINE_PAD(1); \
-        \
-        /* Tail index (producer side) - aligned to cache line */ \
+        /* Tail index (producer side) - own cache line */ \
         _Alignas(CACHE_LINE_SIZE) atomic_size_t tail; \
+        uint8_t _pad_tail[CACHE_LINE_SIZE - sizeof(atomic_size_t)]; \
         \
-        /* Padding after tail */ \
-        CACHE_LINE_PAD(2); \
-        \
-        /* Debug/monitoring fields (on separate cache line) */ \
+        /* Statistics - own cache line */ \
         _Alignas(CACHE_LINE_SIZE) struct { \
             atomic_size_t total_enqueues; \
             atomic_size_t total_dequeues; \
             atomic_size_t failed_enqueues; \
             atomic_size_t failed_dequeues; \
-            size_t peak_size; \
+            atomic_size_t peak_size; \
         } stats; \
+        uint8_t _pad_stats[CACHE_LINE_SIZE - 5 * sizeof(atomic_size_t)]; \
         \
-        /* Padding after stats */ \
-        CACHE_LINE_PAD(3); \
-        \
-        /* Ring buffer storage */ \
-        TYPE buffer[LOCKFREE_QUEUE_SIZE]; \
-        \
-        /* Configuration */ \
-        size_t capacity; \
-        size_t index_mask; /* For fast modulo */ \
+        /* Ring buffer storage - cache-line aligned */ \
+        _Alignas(CACHE_LINE_SIZE) TYPE buffer[LOCKFREE_QUEUE_SIZE]; \
     } NAME##_t; \
+    \
+    /* Compile-time check: head and tail on separate cache lines */ \
+    _Static_assert(offsetof(NAME##_t, tail) >= CACHE_LINE_SIZE, \
+                   #NAME "_t: head and tail must be on separate cache lines"); \
     \
     /* Function declarations */ \
     void NAME##_init(NAME##_t* queue); \
@@ -139,8 +145,9 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
                           size_t* failed_enq, size_t* failed_deq, \
                           size_t* peak);
 
-/**
- * Macro to implement lock-free queue functions
+/* ============================================================================
+ * Queue Implementation Macro
+ * ============================================================================
  *
  * Usage (in .c file):
  *   DEFINE_LOCKFREE_QUEUE(input_msg_t, input_queue)
@@ -149,7 +156,6 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
     \
     /* Initialize queue */ \
     void NAME##_init(NAME##_t* queue) { \
-        /* Rule 7: Parameter validation */ \
         if (queue == NULL) { \
             return; \
         } \
@@ -163,50 +169,46 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
         atomic_init(&queue->stats.total_dequeues, 0); \
         atomic_init(&queue->stats.failed_enqueues, 0); \
         atomic_init(&queue->stats.failed_dequeues, 0); \
-        queue->stats.peak_size = 0; \
-        \
-        /* Set configuration */ \
-        queue->capacity = LOCKFREE_QUEUE_SIZE; \
-        queue->index_mask = LOCKFREE_QUEUE_SIZE - 1; \
-        \
-        /* Rule 5: Verify post-conditions */ \
-        QUEUE_ASSERT_VOID(queue->capacity == LOCKFREE_QUEUE_SIZE); \
-        QUEUE_ASSERT_VOID((queue->index_mask & LOCKFREE_QUEUE_SIZE) == 0); \
+        atomic_init(&queue->stats.peak_size, 0); \
     } \
     \
     /* Destroy queue (no-op for fixed array, provided for API consistency) */ \
-    void NAME##_destroy(NAME##_t* queue) { (void)queue; } \
+    void NAME##_destroy(NAME##_t* queue) { \
+        (void)queue; \
+    } \
     \
     /* Enqueue element (returns false if queue is full) */ \
     bool NAME##_enqueue(NAME##_t* queue, const TYPE* item) { \
-        /* Rule 7: Parameter validation */ \
         if (queue == NULL || item == NULL) { \
             return false; \
         } \
         \
         const size_t current_tail = atomic_load_explicit(&queue->tail, memory_order_relaxed); \
+        const size_t next_tail = (current_tail + 1) & LOCKFREE_QUEUE_MASK; \
         \
-        /* Rule 5: Invariant check */ \
-        QUEUE_ASSERT(current_tail < LOCKFREE_QUEUE_SIZE); \
-        \
-        const size_t next_tail = (current_tail + 1) & queue->index_mask; \
-        \
+        /* Check if full */ \
         if (next_tail == atomic_load_explicit(&queue->head, memory_order_acquire)) { \
-            /* Queue is full */ \
             atomic_fetch_add(&queue->stats.failed_enqueues, 1); \
             return false; \
         } \
         \
+        /* Store item and advance tail */ \
         queue->buffer[current_tail] = *item; \
         atomic_store_explicit(&queue->tail, next_tail, memory_order_release); \
         \
         /* Update stats */ \
         atomic_fetch_add(&queue->stats.total_enqueues, 1); \
         \
-        /* Update peak size if in debug mode */ \
-        size_t current_size = NAME##_size(queue); \
-        if (current_size > queue->stats.peak_size) { \
-            queue->stats.peak_size = current_size; \
+        /* Update peak size (relaxed - approximate is fine) */ \
+        size_t current_size = (next_tail - atomic_load_explicit(&queue->head, memory_order_relaxed)) \
+                              & LOCKFREE_QUEUE_MASK; \
+        size_t old_peak = atomic_load_explicit(&queue->stats.peak_size, memory_order_relaxed); \
+        while (current_size > old_peak) { \
+            if (atomic_compare_exchange_weak_explicit(&queue->stats.peak_size, \
+                    &old_peak, current_size, \
+                    memory_order_relaxed, memory_order_relaxed)) { \
+                break; \
+            } \
         } \
         \
         return true; \
@@ -214,26 +216,23 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
     \
     /* Dequeue element (returns false if queue is empty) */ \
     bool NAME##_dequeue(NAME##_t* queue, TYPE* item) { \
-        /* Rule 7: Parameter validation */ \
         if (queue == NULL || item == NULL) { \
             return false; \
         } \
         \
         const size_t current_head = atomic_load_explicit(&queue->head, memory_order_relaxed); \
         \
-        /* Rule 5: Invariant check */ \
-        QUEUE_ASSERT(current_head < LOCKFREE_QUEUE_SIZE); \
-        \
+        /* Check if empty */ \
         if (current_head == atomic_load_explicit(&queue->tail, memory_order_acquire)) { \
-            /* Queue is empty */ \
             atomic_fetch_add(&queue->stats.failed_dequeues, 1); \
             return false; \
         } \
         \
+        /* Load item and advance head */ \
         *item = queue->buffer[current_head]; \
         atomic_store_explicit(&queue->head, \
-                            (current_head + 1) & queue->index_mask, \
-                            memory_order_release); \
+                             (current_head + 1) & LOCKFREE_QUEUE_MASK, \
+                             memory_order_release); \
         \
         /* Update stats */ \
         atomic_fetch_add(&queue->stats.total_dequeues, 1); \
@@ -243,9 +242,8 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
     \
     /* Check if queue is empty */ \
     bool NAME##_empty(const NAME##_t* queue) { \
-        /* Rule 7: Parameter validation */ \
         if (queue == NULL) { \
-            return true; /* Treat NULL as empty */ \
+            return true; \
         } \
         \
         return atomic_load_explicit(&queue->head, memory_order_acquire) == \
@@ -254,29 +252,27 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
     \
     /* Get approximate size (may be stale due to concurrent access) */ \
     size_t NAME##_size(const NAME##_t* queue) { \
-        /* Rule 7: Parameter validation */ \
         if (queue == NULL) { \
             return 0; \
         } \
         \
-        const size_t current_head = atomic_load_explicit(&queue->head, memory_order_acquire); \
-        const size_t current_tail = atomic_load_explicit(&queue->tail, memory_order_acquire); \
+        const size_t head = atomic_load_explicit(&queue->head, memory_order_acquire); \
+        const size_t tail = atomic_load_explicit(&queue->tail, memory_order_acquire); \
         \
-        /* Rule 5: Invariants */ \
-        assert(current_head < LOCKFREE_QUEUE_SIZE); \
-        assert(current_tail < LOCKFREE_QUEUE_SIZE); \
-        \
-        return (current_tail - current_head) & queue->index_mask; \
+        return (tail - head) & LOCKFREE_QUEUE_MASK; \
     } \
     \
     /* Get capacity */ \
     size_t NAME##_capacity(const NAME##_t* queue) { \
-        return (queue != NULL) ? queue->capacity : 0; \
+        (void)queue; \
+        return LOCKFREE_QUEUE_SIZE - 1; /* One slot reserved for full detection */ \
     } \
     \
-    /* Rule 5: Verify queue invariants (for testing/debugging) */ \
+    /* Verify queue invariants (for testing/debugging) */ \
     bool NAME##_verify_invariants(const NAME##_t* queue) { \
-        if (queue == NULL) return false; \
+        if (queue == NULL) { \
+            return false; \
+        } \
         \
         size_t head = atomic_load(&queue->head); \
         size_t tail = atomic_load(&queue->tail); \
@@ -289,15 +285,9 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
         } \
         \
         /* Check size calculation doesn't overflow */ \
-        size_t size = (tail - head) & queue->index_mask; \
+        size_t size = (tail - head) & LOCKFREE_QUEUE_MASK; \
         if (size >= LOCKFREE_QUEUE_SIZE) { \
             fprintf(stderr, "Queue size calculation error: size=%zu\n", size); \
-            return false; \
-        } \
-        \
-        /* Verify mask is correct */ \
-        if (queue->index_mask != LOCKFREE_QUEUE_SIZE - 1) { \
-            fprintf(stderr, "Queue mask incorrect: mask=%zu\n", queue->index_mask); \
             return false; \
         } \
         \
@@ -309,16 +299,18 @@ _Static_assert(LOCKFREE_QUEUE_SIZE <= MAX_QUEUE_SIZE,
                          size_t* total_enq, size_t* total_deq, \
                          size_t* failed_enq, size_t* failed_deq, \
                          size_t* peak) { \
-        if (queue == NULL) return; \
+        if (queue == NULL) { \
+            return; \
+        } \
         \
         if (total_enq) *total_enq = atomic_load(&queue->stats.total_enqueues); \
         if (total_deq) *total_deq = atomic_load(&queue->stats.total_dequeues); \
         if (failed_enq) *failed_enq = atomic_load(&queue->stats.failed_enqueues); \
         if (failed_deq) *failed_deq = atomic_load(&queue->stats.failed_dequeues); \
-        if (peak) *peak = queue->stats.peak_size; \
+        if (peak) *peak = atomic_load(&queue->stats.peak_size); \
     }
 
-/* Legacy aliases for backward compatibility */
+/* Legacy alias for backward compatibility */
 #define IMPLEMENT_LOCKFREE_QUEUE(TYPE, NAME) DEFINE_LOCKFREE_QUEUE(TYPE, NAME)
 
 #ifdef __cplusplus

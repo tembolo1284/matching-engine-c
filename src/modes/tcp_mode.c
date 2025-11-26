@@ -55,12 +55,10 @@ int run_tcp_dual_processor(const app_config_t* config) {
     
     fprintf(stderr, "\nMemory Pools Initialized (per processor):\n");
     fprintf(stderr, "  Order pool:      %d slots each\n", MAX_ORDERS_IN_POOL);
-    fprintf(stderr, "  Hash pool:       %d slots each\n", MAX_HASH_ENTRIES_IN_POOL);
+    fprintf(stderr, "  Hash table:       %d slots (open-addressing)\n", ORDER_MAP_SIZE);
     fprintf(stderr, "  Total memory:    %.2f MB (2 x %.2f MB)\n",
-            2 * ((MAX_ORDERS_IN_POOL * sizeof(order_t)) +
-                 (MAX_HASH_ENTRIES_IN_POOL * sizeof(order_map_entry_t))) / (1024.0 * 1024.0),
-            ((MAX_ORDERS_IN_POOL * sizeof(order_t)) +
-             (MAX_HASH_ENTRIES_IN_POOL * sizeof(order_map_entry_t))) / (1024.0 * 1024.0));
+        (2 * ORDER_MAP_SIZE * sizeof(order_map_slot_t)) / (1024.0 * 1024.0),
+        (ORDER_MAP_SIZE * sizeof(order_map_slot_t)) / (1024.0 * 1024.0));
     fprintf(stderr, "========================================\n\n");
 
     // ========================================================================
@@ -359,10 +357,10 @@ int run_tcp_single_processor(const app_config_t* config) {
     
     fprintf(stderr, "\nMemory Pools Initialized:\n");
     fprintf(stderr, "  Order pool:      %d slots\n", MAX_ORDERS_IN_POOL);
-    fprintf(stderr, "  Hash pool:       %d slots\n", MAX_HASH_ENTRIES_IN_POOL);
+    fprintf(stderr, "  Hash table:       %d slots (open-addressing)\n", ORDER_MAP_SIZE);
     fprintf(stderr, "  Total memory:    %.2f MB\n",
             ((MAX_ORDERS_IN_POOL * sizeof(order_t)) +
-             (MAX_HASH_ENTRIES_IN_POOL * sizeof(order_map_entry_t))) / (1024.0 * 1024.0));
+             (ORDER_MAP_SIZE * sizeof(order_map_slot_t))) / (1024.0 * 1024.0));
     fprintf(stderr, "========================================\n\n");
 
     // Initialize matching engine

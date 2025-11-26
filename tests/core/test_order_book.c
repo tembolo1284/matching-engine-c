@@ -4,11 +4,11 @@
 
 /* Test fixture */
 static order_book_t book;
-static memory_pools_t test_pools;  // ← ADD THIS
+static memory_pools_t test_pools;
 
 static void setUp(void) {
-    memory_pools_init(&test_pools);  // ← ADD THIS
-    order_book_init(&book, "TEST", &test_pools);  // ← ADD &test_pools
+    memory_pools_init(&test_pools);
+    order_book_init(&book, "TEST", &test_pools);
 }
 
 static void tearDown(void) {
@@ -21,17 +21,17 @@ void test_AddSingleBuyOrder(void) {
 
     new_order_msg_t msg = {
         .user_id = 1,
-        .symbol = "TEST",
+        .user_order_id = 1,
         .price = 100,
         .quantity = 50,
         .side = SIDE_BUY,
-        .user_order_id = 1
+        .symbol = "TEST"
     };
 
     output_buffer_t output;
     output_buffer_init(&output);
 
-    order_book_add_order(&book, &msg, 0, &output);  // client_id = 0 for tests
+    order_book_add_order(&book, &msg, 0, &output);  /* client_id = 0 for tests */
 
     /* Should get: 1 ack + 1 TOB update */
     TEST_ASSERT_EQUAL(2, output.count);
@@ -56,7 +56,14 @@ void test_AddSingleBuyOrder(void) {
 void test_AddSingleSellOrder(void) {
     setUp();
 
-    new_order_msg_t msg = {1, "TEST", 105, 30, SIDE_SELL, 1};
+    new_order_msg_t msg = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 105,
+        .quantity = 30,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
 
     output_buffer_t output;
     output_buffer_init(&output);
@@ -74,13 +81,27 @@ void test_MatchingBuyAndSell(void) {
     setUp();
 
     /* Add sell order at 100 */
-    new_order_msg_t sell = {1, "TEST", 100, 50, SIDE_SELL, 1};
+    new_order_msg_t sell = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
     output_buffer_t output1;
     output_buffer_init(&output1);
     order_book_add_order(&book, &sell, 1, &output1);
 
     /* Add buy order at 100 (should match) */
-    new_order_msg_t buy = {2, "TEST", 100, 50, SIDE_BUY, 2};
+    new_order_msg_t buy = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
     output_buffer_t output2;
     output_buffer_init(&output2);
     order_book_add_order(&book, &buy, 2, &output2);
@@ -116,13 +137,27 @@ void test_PartialFill(void) {
     setUp();
 
     /* Add sell order at 100 for 100 shares */
-    new_order_msg_t sell = {1, "TEST", 100, 100, SIDE_SELL, 1};
+    new_order_msg_t sell = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 100,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
     output_buffer_t output1;
     output_buffer_init(&output1);
     order_book_add_order(&book, &sell, 1, &output1);
 
     /* Add buy order at 100 for 30 shares (partial fill) */
-    new_order_msg_t buy = {2, "TEST", 100, 30, SIDE_BUY, 2};
+    new_order_msg_t buy = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 100,
+        .quantity = 30,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
     output_buffer_t output2;
     output_buffer_init(&output2);
     order_book_add_order(&book, &buy, 2, &output2);
@@ -148,13 +183,27 @@ void test_MarketOrderBuy(void) {
     setUp();
 
     /* Add sell order at 100 */
-    new_order_msg_t sell = {1, "TEST", 100, 50, SIDE_SELL, 1};
+    new_order_msg_t sell = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
     output_buffer_t output1;
     output_buffer_init(&output1);
     order_book_add_order(&book, &sell, 1, &output1);
 
     /* Market buy (price = 0) */
-    new_order_msg_t market_buy = {2, "TEST", 0, 50, SIDE_BUY, 2};
+    new_order_msg_t market_buy = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 0,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
     output_buffer_t output2;
     output_buffer_init(&output2);
     order_book_add_order(&book, &market_buy, 2, &output2);
@@ -178,13 +227,27 @@ void test_MarketOrderSell(void) {
     setUp();
 
     /* Add buy order at 100 */
-    new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
+    new_order_msg_t buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
     output_buffer_t output1;
     output_buffer_init(&output1);
     order_book_add_order(&book, &buy, 1, &output1);
 
     /* Market sell (price = 0) */
-    new_order_msg_t market_sell = {2, "TEST", 0, 50, SIDE_SELL, 2};
+    new_order_msg_t market_sell = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 0,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
     output_buffer_t output2;
     output_buffer_init(&output2);
     order_book_add_order(&book, &market_sell, 2, &output2);
@@ -207,9 +270,30 @@ void test_PriceTimePriority(void) {
     setUp();
 
     /* Add three buy orders at same price */
-    new_order_msg_t buy1 = {1, "TEST", 100, 10, SIDE_BUY, 1};
-    new_order_msg_t buy2 = {2, "TEST", 100, 20, SIDE_BUY, 2};
-    new_order_msg_t buy3 = {3, "TEST", 100, 30, SIDE_BUY, 3};
+    new_order_msg_t buy1 = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 10,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
+    new_order_msg_t buy2 = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 100,
+        .quantity = 20,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
+    new_order_msg_t buy3 = {
+        .user_id = 3,
+        .user_order_id = 3,
+        .price = 100,
+        .quantity = 30,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
 
     output_buffer_t out1, out2, out3;
     output_buffer_init(&out1);
@@ -223,7 +307,14 @@ void test_PriceTimePriority(void) {
     TEST_ASSERT_EQUAL(60, order_book_get_best_bid_quantity(&book));
 
     /* Sell order should match in time priority (FIFO) */
-    new_order_msg_t sell = {4, "TEST", 100, 35, SIDE_SELL, 4};
+    new_order_msg_t sell = {
+        .user_id = 4,
+        .user_order_id = 4,
+        .price = 100,
+        .quantity = 35,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
     output_buffer_t output;
     output_buffer_init(&output);
     order_book_add_order(&book, &sell, 4, &output);
@@ -259,7 +350,14 @@ void test_CancelOrder(void) {
     setUp();
 
     /* Add order */
-    new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
+    new_order_msg_t buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
     output_buffer_t output1;
     output_buffer_init(&output1);
     order_book_add_order(&book, &buy, 1, &output1);
@@ -300,8 +398,22 @@ void test_FlushOrderBook(void) {
     setUp();
 
     /* Add some orders */
-    new_order_msg_t buy = {1, "TEST", 100, 50, SIDE_BUY, 1};
-    new_order_msg_t sell = {2, "TEST", 105, 30, SIDE_SELL, 2};
+    new_order_msg_t buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
+    new_order_msg_t sell = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 105,
+        .quantity = 30,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
 
     output_buffer_t out1, out2, flush_out;
     output_buffer_init(&out1);
@@ -315,11 +427,11 @@ void test_FlushOrderBook(void) {
     order_book_flush(&book, &flush_out);
 
     /* Verify cancel acks were generated */
-    TEST_ASSERT_EQUAL(4, flush_out.count);  // 2 cancel acks + 2 TOB eliminated messages
+    TEST_ASSERT_EQUAL(4, flush_out.count);  /* 2 cancel acks + 2 TOB eliminated messages */
     TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, flush_out.messages[0].type);
     TEST_ASSERT_EQUAL(OUTPUT_MSG_CANCEL_ACK, flush_out.messages[1].type);
-    TEST_ASSERT_EQUAL(OUTPUT_MSG_TOP_OF_BOOK, flush_out.messages[2].type);  // Bid eliminated
-    TEST_ASSERT_EQUAL(OUTPUT_MSG_TOP_OF_BOOK, flush_out.messages[3].type);  // Ask eliminated
+    TEST_ASSERT_EQUAL(OUTPUT_MSG_TOP_OF_BOOK, flush_out.messages[2].type);  /* Bid eliminated */
+    TEST_ASSERT_EQUAL(OUTPUT_MSG_TOP_OF_BOOK, flush_out.messages[3].type);  /* Ask eliminated */
 
     /* Book should be empty */
     TEST_ASSERT_EQUAL(0, order_book_get_best_bid_price(&book));
@@ -333,10 +445,38 @@ void test_MultipleOrdersAtDifferentPrices(void) {
     setUp();
 
     /* Build a book with depth */
-    new_order_msg_t buy1 = {1, "TEST", 100, 50, SIDE_BUY, 1};
-    new_order_msg_t buy2 = {1, "TEST", 99, 50, SIDE_BUY, 2};
-    new_order_msg_t sell1 = {2, "TEST", 101, 50, SIDE_SELL, 3};
-    new_order_msg_t sell2 = {2, "TEST", 102, 50, SIDE_SELL, 4};
+    new_order_msg_t buy1 = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
+    new_order_msg_t buy2 = {
+        .user_id = 1,
+        .user_order_id = 2,
+        .price = 99,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "TEST"
+    };
+    new_order_msg_t sell1 = {
+        .user_id = 2,
+        .user_order_id = 3,
+        .price = 101,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
+    new_order_msg_t sell2 = {
+        .user_id = 2,
+        .user_order_id = 4,
+        .price = 102,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "TEST"
+    };
 
     output_buffer_t out1, out2, out3, out4;
     output_buffer_init(&out1);

@@ -4,11 +4,11 @@
 
 /* Test fixture */
 static matching_engine_t engine;
-static memory_pools_t test_pools;  // ← ADD THIS
+static memory_pools_t test_pools;
 
 static void setUp(void) {
-    memory_pools_init(&test_pools);  // ← ADD THIS
-    matching_engine_init(&engine, &test_pools);  // ← ADD &test_pools
+    memory_pools_init(&test_pools);
+    matching_engine_init(&engine, &test_pools);
 }
 
 static void tearDown(void) {
@@ -19,7 +19,14 @@ static void tearDown(void) {
 void test_ProcessSingleOrder(void) {
     setUp();
 
-    new_order_msg_t msg = {1, "IBM", 100, 50, SIDE_BUY, 1};
+    new_order_msg_t msg = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "IBM"
+    };
     input_msg_t input = make_new_order_msg(&msg);
 
     output_buffer_t output;
@@ -38,8 +45,22 @@ void test_MultipleSymbols(void) {
     setUp();
 
     /* Add orders for different symbols */
-    new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
-    new_order_msg_t aapl_buy = {1, "AAPL", 150, 30, SIDE_BUY, 2};
+    new_order_msg_t ibm_buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "IBM"
+    };
+    new_order_msg_t aapl_buy = {
+        .user_id = 1,
+        .user_order_id = 2,
+        .price = 150,
+        .quantity = 30,
+        .side = SIDE_BUY,
+        .symbol = "AAPL"
+    };
 
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
@@ -53,7 +74,14 @@ void test_MultipleSymbols(void) {
 
     /* Each symbol should have its own order book */
     /* Verify by adding matching order for IBM */
-    new_order_msg_t ibm_sell = {2, "IBM", 100, 50, SIDE_SELL, 3};
+    new_order_msg_t ibm_sell = {
+        .user_id = 2,
+        .user_order_id = 3,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "IBM"
+    };
     input_msg_t input3 = make_new_order_msg(&ibm_sell);
 
     output_buffer_t out3;
@@ -77,15 +105,26 @@ void test_CancelOrderAcrossSymbols(void) {
     setUp();
 
     /* Add order for IBM */
-    new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
+    new_order_msg_t ibm_buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "IBM"
+    };
     input_msg_t input1 = make_new_order_msg(&ibm_buy);
 
     output_buffer_t out1;
     output_buffer_init(&out1);
     matching_engine_process_message(&engine, &input1, 0, &out1);
 
-    /* Cancel the order (no symbol in cancel message) */
-    cancel_msg_t cancel = {"IBM", 1, 1};
+    /* Cancel the order */
+    cancel_msg_t cancel = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .symbol = "IBM"
+    };
     input_msg_t input2 = make_cancel_msg(&cancel);
 
     output_buffer_t out2;
@@ -104,8 +143,22 @@ void test_FlushAllOrderBooks(void) {
     setUp();
 
     /* Add orders for multiple symbols */
-    new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
-    new_order_msg_t aapl_buy = {1, "AAPL", 150, 30, SIDE_BUY, 2};
+    new_order_msg_t ibm_buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "IBM"
+    };
+    new_order_msg_t aapl_buy = {
+        .user_id = 1,
+        .user_order_id = 2,
+        .price = 150,
+        .quantity = 30,
+        .side = SIDE_BUY,
+        .symbol = "AAPL"
+    };
 
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
@@ -140,8 +193,22 @@ void test_IsolatedOrderBooks(void) {
     setUp();
 
     /* Orders in different symbols should not interact */
-    new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
-    new_order_msg_t aapl_sell = {2, "AAPL", 100, 50, SIDE_SELL, 2};
+    new_order_msg_t ibm_buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "IBM"
+    };
+    new_order_msg_t aapl_sell = {
+        .user_id = 2,
+        .user_order_id = 2,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_SELL,
+        .symbol = "AAPL"
+    };
 
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
@@ -170,7 +237,11 @@ void test_CancelNonExistentOrderEngine(void) {
     setUp();
 
     /* Try to cancel order that was never added */
-    cancel_msg_t cancel = {"IBM", 1, 99};
+    cancel_msg_t cancel = {
+        .user_id = 1,
+        .user_order_id = 99,
+        .symbol = "IBM"
+    };
     input_msg_t input = make_cancel_msg(&cancel);
 
     output_buffer_t output;
@@ -189,8 +260,22 @@ void test_SameUserOrderIdDifferentSymbols(void) {
     setUp();
 
     /* Same user_order_id but different symbols (should be allowed) */
-    new_order_msg_t ibm_buy = {1, "IBM", 100, 50, SIDE_BUY, 1};
-    new_order_msg_t aapl_buy = {1, "AAPL", 150, 30, SIDE_BUY, 1};  /* Same order ID */
+    new_order_msg_t ibm_buy = {
+        .user_id = 1,
+        .user_order_id = 1,
+        .price = 100,
+        .quantity = 50,
+        .side = SIDE_BUY,
+        .symbol = "IBM"
+    };
+    new_order_msg_t aapl_buy = {
+        .user_id = 1,
+        .user_order_id = 1,  /* Same order ID - should be OK in different symbol */
+        .price = 150,
+        .quantity = 30,
+        .side = SIDE_BUY,
+        .symbol = "AAPL"
+    };
 
     output_buffer_t out1, out2;
     output_buffer_init(&out1);
