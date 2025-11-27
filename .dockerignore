@@ -1,0 +1,29 @@
+# Build artifacts
+build/
+build-*/
+*.o
+*.a
+*.so
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Scripts (not needed in container)
+*.sh
+
+# Test data
+*.log
+*.txt
+core
