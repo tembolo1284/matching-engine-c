@@ -60,6 +60,7 @@ void test_MemoryPools_TotalMemorySize(void) {
 
     /* Calculate expected size */
     size_t expected_size = sizeof(memory_pools_t);
+    (void)expected_size;
 
     /* Memory should be substantial (pools contain large arrays) */
     TEST_ASSERT_TRUE(stats.total_memory_bytes >= 640 * 1024);  /* At least 640KB */
