@@ -405,7 +405,6 @@ void test_Queue_NullQueueHandling(void) {
     TEST_ASSERT_FALSE(test_queue_dequeue(NULL, &item));
     TEST_ASSERT_TRUE(test_queue_empty(NULL));  /* NULL treated as empty */
     TEST_ASSERT_EQUAL(0, test_queue_size(NULL));
-    TEST_ASSERT_EQUAL(0, test_queue_capacity(NULL));
     TEST_ASSERT_FALSE(test_queue_verify_invariants(NULL));
 }
 

@@ -4,7 +4,7 @@
 
 /* ============================================================================
  * Symbol Router Unit Tests
- * 
+ *
  * Tests the symbol-based processor routing logic:
  *   - Symbols A-M → Processor 0
  *   - Symbols N-Z → Processor 1
@@ -143,7 +143,7 @@ void test_SymbolRouter_SingleCharSymbols(void) {
     TEST_ASSERT_EQUAL(PROCESSOR_ID_A_TO_M, get_processor_id_for_symbol("A"));
     TEST_ASSERT_EQUAL(PROCESSOR_ID_A_TO_M, get_processor_id_for_symbol("F"));
     TEST_ASSERT_EQUAL(PROCESSOR_ID_A_TO_M, get_processor_id_for_symbol("M"));
-    
+
     /* N-Z single chars */
     TEST_ASSERT_EQUAL(PROCESSOR_ID_N_TO_Z, get_processor_id_for_symbol("N"));
     TEST_ASSERT_EQUAL(PROCESSOR_ID_N_TO_Z, get_processor_id_for_symbol("T"));
@@ -154,18 +154,23 @@ void test_SymbolRouter_SingleCharSymbols(void) {
  * Validation Function Tests
  * ---------------------------------------------------------------------------- */
 
-/* Test: symbol_is_valid with valid symbols */
+/* Test: symbol_is_valid with valid symbols (must start with a letter) */
 void test_SymbolIsValid_ValidSymbols(void) {
     TEST_ASSERT_TRUE(symbol_is_valid("IBM"));
     TEST_ASSERT_TRUE(symbol_is_valid("A"));
     TEST_ASSERT_TRUE(symbol_is_valid("AAPL"));
-    TEST_ASSERT_TRUE(symbol_is_valid("1234"));  /* Non-alpha but non-empty */
+    TEST_ASSERT_TRUE(symbol_is_valid("TSLA"));
+    TEST_ASSERT_TRUE(symbol_is_valid("a"));      /* Lowercase OK */
+    TEST_ASSERT_TRUE(symbol_is_valid("test"));   /* Lowercase OK */
 }
 
 /* Test: symbol_is_valid with invalid symbols */
 void test_SymbolIsValid_InvalidSymbols(void) {
     TEST_ASSERT_FALSE(symbol_is_valid(NULL));
     TEST_ASSERT_FALSE(symbol_is_valid(""));
+    /* Numeric-first symbols are invalid (handled by router but not "valid") */
+    TEST_ASSERT_FALSE(symbol_is_valid("1234"));
+    TEST_ASSERT_FALSE(symbol_is_valid("$SPX"));
 }
 
 /* ----------------------------------------------------------------------------
@@ -197,7 +202,7 @@ void test_SymbolRouter_Consistency(void) {
 void test_SymbolRouter_ValidProcessorIds(void) {
     int id_a = get_processor_id_for_symbol("AAPL");
     int id_n = get_processor_id_for_symbol("NVDA");
-    
+
     TEST_ASSERT_TRUE(id_a >= 0 && id_a < NUM_PROCESSORS);
     TEST_ASSERT_TRUE(id_n >= 0 && id_n < NUM_PROCESSORS);
     TEST_ASSERT_TRUE(id_a != id_n);
