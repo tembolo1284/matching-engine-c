@@ -25,22 +25,33 @@ Assumptions / design:
 - If you pass an explicit existing path (absolute or relative),
   that path is used as-is and *not* rewritten.
 
-- Each schema file contains a top-level dict assignment like:
+- Each schema file contains a top-level dict assignment like either:
 
-      ifi_extra_props = {
-          "properties": {
-              "trade_pg": {...},
-              ...
+      ifi_mbs_trade_schema = {
+          "name": "ifi_mbs_trade_6",
+          "type": 3,
+          "schema": {
+              "description": "...",
+              "type": "object",
+              "$schema": "https://json-schema.org/draft/2020-12/schema",
+              "required": [...],
+              "properties": {
+                  ...
+              }
           }
       }
 
-- If the top-level dict contains a `"properties"` key whose value
-  is a dict, the script compares and merges those `properties`
-  dictionaries. The output schema has the same shape:
+  or the simpler:
 
-      combined_var = {"properties": { ...merged... }}
+      ifi_extra_props = {
+          "properties": { ... }
+      }
 
-- For each property key:
+- The script *preserves the outer structure from the first file*:
+  everything except the `"properties"` section is copied as-is from
+  the first schema file. Only the `"properties"` dictionary is merged.
+
+- Property merge rules:
     * Only in file1: taken from file1.
     * Only in file2: taken from file2.
     * In both and equal: take file1's value.
@@ -52,15 +63,27 @@ Assumptions / design:
 - The third optional CLI argument `output_name` controls the
   *variable name* and *filename* of the combined schema:
 
-      python scripts/schema_creator.py extra_template mmkt_trades ifi_all_props
+      python scripts/schema_creator.py base_schema extra_template ifi_mbs_trades
 
   writes:
 
-      <project_root>/mediation/schemas/ifi_all_props.py
+      <project_root>/mediation/schemas/ifi_mbs_trades.py
 
-  containing:
+  containing something like:
 
-      ifi_all_props = {"properties": {...}}
+      ifi_mbs_trades = {
+          "name": "...",          # copied from first file
+          "type": ...,
+          "schema": {
+              "description": "...",
+              "type": "object",
+              "$schema": "...",
+              "required": [...],
+              "properties": {
+                  ... merged properties ...
+              }
+          }
+      }
 
 - SAFETY FEATURE:
     If the output file already exists, the script prints an error
@@ -69,7 +92,7 @@ Assumptions / design:
 
 import argparse
 import ast
-import os
+import copy
 import pprint
 import re
 from pathlib import Path
@@ -93,7 +116,7 @@ def resolve_schema_path(arg: str) -> Path:
     - Otherwise, treat it as a schema name under SCHEMAS_DIR, adding `.py`
       if needed:
 
-          arg = "extra_template"  ->  mediation/schemas/extra_template.py
+          arg = "extra_template"    -> mediation/schemas/extra_template.py
           arg = "extra_template.py" -> mediation/schemas/extra_template.py
     """
     p = Path(arg)
@@ -116,11 +139,10 @@ def extract_first_dict_schema(path: Path) -> Tuple[str, Dict[str, Any]]:
     Parse a Python file and return (variable_name, dict_value) for the
     first top-level assignment whose value is a dict literal.
 
-    Typical expected pattern inside schema files:
+    Example patterns expected inside schema files:
 
-        ifi_extra_props = {
-            "properties": {...}
-        }
+        ifi_mbs_trade_schema = { ... }
+        ifi_extra_props = { ... }
     """
     with path.open("r", encoding="utf-8") as f:
         source = f.read()
@@ -175,7 +197,9 @@ def compare_and_merge_schemas(
     label1: str,
     label2: str,
 ) -> Dict[str, Any]:
-
+    """
+    Compare two property dicts and produce a merged one.
+    """
     combined: Dict[str, Any] = {}
 
     keys1 = set(schema1.keys())
@@ -205,7 +229,7 @@ def compare_and_merge_schemas(
                 combined[key] = v1
                 print(f"KEY '{key}': identical in both (taken from {label1})")
             else:
-                combined[key] = v1
+                combined[key] = v1  # prefer first file
                 print(f"KEY '{key}': DIFFERENCE DETECTED")
                 print(f"  {label1}: {describe_schema_type(v1)}")
                 print(f"  {label2}: {describe_schema_type(v2)}")
@@ -244,15 +268,66 @@ def compare_and_merge_schemas(
     return combined
 
 
-def get_properties_view(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
-    """Return (properties_dict, True) if schema contains 'properties'."""
+def locate_properties(schema: Dict[str, Any]) -> Tuple[Dict[str, Any], Tuple[str, ...]]:
+    """
+    Locate the 'properties' dict within a schema and return:
+
+        (properties_dict, location_tuple)
+
+    where location_tuple is one of:
+        ("schema", "properties")  -> schema["schema"]["properties"]
+        ("properties",)           -> schema["properties"]
+        ()                        -> no special nesting; treat whole
+                                    dict as the properties dict
+    """
+    if (
+        isinstance(schema, dict)
+        and "schema" in schema
+        and isinstance(schema["schema"], dict)
+        and "properties" in schema["schema"]
+        and isinstance(schema["schema"]["properties"], dict)
+    ):
+        return schema["schema"]["properties"], ("schema", "properties")
+
     if (
         isinstance(schema, dict)
         and "properties" in schema
         and isinstance(schema["properties"], dict)
     ):
-        return schema["properties"], True
-    return schema, False
+        return schema["properties"], ("properties",)
+
+    # Fallback: no special nesting, treat whole dict as properties
+    return schema, ()
+
+
+def build_combined_schema_from_first(
+    schema1: Dict[str, Any],
+    combined_props: Dict[str, Any],
+    location: Tuple[str, ...],
+) -> Dict[str, Any]:
+    """
+    Take the first schema as the "template" and insert combined_props
+    back into the same place where its properties were located.
+
+    This preserves metadata like:
+
+        "name", "type", "schema": { "description", "$schema", "required", ... }
+    """
+    if not location:
+        # No special nesting; just return the merged properties dict
+        return combined_props
+
+    combined_schema = copy.deepcopy(schema1)
+
+    if location == ("schema", "properties"):
+        combined_schema["schema"]["properties"] = combined_props
+    elif location == ("properties",):
+        combined_schema["properties"] = combined_props
+    else:
+        # Unexpected, but fall back to top-level replacement
+        combined_schema = combined_props
+
+    return combined_schema
 
 
 # ---------------------------------------------------------------------------
@@ -263,8 +338,8 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(
         description="Compare two schema files under mediation/schemas/."
     )
-    parser.add_argument("file1")
-    parser.add_argument("file2")
+    parser.add_argument("file1", help="First schema (base / template)")
+    parser.add_argument("file2", help="Second schema to merge in")
     parser.add_argument(
         "output_name",
         nargs="?",
@@ -288,25 +363,22 @@ def main(argv=None) -> None:
     label1 = f"{path1.name}::{name1}"
     label2 = f"{path2.name}::{name2}"
 
-    props1, has_props1 = get_properties_view(schema1)
-    props2, has_props2 = get_properties_view(schema2)
+    props1, loc1 = locate_properties(schema1)
+    props2, _ = locate_properties(schema2)
 
     combined_props = compare_and_merge_schemas(props1, props2, label1, label2)
 
-    combined_schema = (
-        {"properties": combined_props}
-        if has_props1 or has_props2
-        else combined_props
-    )
+    # Build final combined schema by reusing outer structure from first file
+    combined_schema = build_combined_schema_from_first(schema1, combined_props, loc1)
 
+    # Determine output file and variable name
     base = args.output_name
-    out_filename = (
-        Path(base).with_suffix(".py").name
-        if not base.endswith(".py")
-        else Path(base).name
-    )
-    var_name = sanitize_var_name(Path(out_filename).stem)
+    if base.endswith(".py"):
+        out_filename = Path(base).name
+    else:
+        out_filename = base + ".py"
 
+    var_name = sanitize_var_name(Path(out_filename).stem)
     out_path = SCHEMAS_DIR / out_filename
 
     # ---------- SAFETY CHECK: DO NOT OVERWRITE ----------
@@ -320,7 +392,13 @@ def main(argv=None) -> None:
         raise FileExistsError(msg)
     # -----------------------------------------------------
 
-    schema_text = pprint.pformat(combined_schema, indent=4, sort_dicts=True)
+    # Pretty-print without re-sorting keys so structure/order from the first
+    # file is mostly preserved.
+    schema_text = pprint.pformat(
+        combined_schema,
+        indent=4,
+        sort_dicts=False,
+    )
 
     SCHEMAS_DIR.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
