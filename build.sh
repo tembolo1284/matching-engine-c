@@ -114,7 +114,7 @@ require_multicast_built() {
 }
 
 require_valgrind_built() {
-    if [ ! -x "$VALGRIND_BUILD_DIR/matching_engine" ]; then
+    if [ ! -x "$VALGRIND_BUILD_DIR/matching_engine_tests" ]; then
         print_error "Valgrind-compatible build not found."
         print_status "Building valgrind-compatible version..."
         build_for_valgrind
@@ -386,23 +386,55 @@ run_unit_tests() {
 
 run_valgrind() {
     if [ "$PLATFORM" != "Linux" ]; then
-        print_error "valgrind only supported on Linux here"
+        print_error "valgrind only supported on Linux"
         exit 1
     fi
     if ! command_exists valgrind; then
         print_error "valgrind not found. Install with: sudo apt install valgrind"
         exit 1
     fi
-    
+
     # Ensure valgrind-compatible build exists
     require_valgrind_built
-    
-    print_status "Running valgrind (TCP server) with AVX-512-free build. Ctrl+C to stop."
+
+    print_status "Running valgrind on unit tests (AVX-512-free build)..."
     echo ""
     echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
     echo ""
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-        "./${VALGRIND_BUILD_DIR}/matching_engine" --tcp "$DEFAULT_PORT"
+        --error-exitcode=1 \
+        "./${VALGRIND_BUILD_DIR}/matching_engine_tests"
+    
+    print_success "Valgrind memory check passed - no leaks detected!"
+}
+
+run_valgrind_server() {
+    if [ "$PLATFORM" != "Linux" ]; then
+        print_error "valgrind only supported on Linux"
+        exit 1
+    fi
+    if ! command_exists valgrind; then
+        print_error "valgrind not found. Install with: sudo apt install valgrind"
+        exit 1
+    fi
+
+    # Ensure valgrind-compatible build exists
+    require_valgrind_built
+
+    local timeout_secs="${1:-5}"
+    
+    print_status "Running valgrind on TCP server for ${timeout_secs} seconds..."
+    echo ""
+    echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
+    echo "      Server will auto-terminate after ${timeout_secs} seconds."
+    echo ""
+    
+    # Use timeout to auto-terminate the server
+    timeout --signal=SIGINT "${timeout_secs}" \
+        valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+        "./${VALGRIND_BUILD_DIR}/matching_engine" --tcp "$DEFAULT_PORT" || true
+    
+    print_success "Valgrind server check complete"
 }
 
 run_server() {
@@ -446,7 +478,10 @@ README Run-Modes (2-terminal workflows):
   test-single-processor TCP server single-processor mode (comparison)
   test-multicast       TCP server with multicast market data feed (NEW!)
   test-all             Prints all README run-modes (does not start anything)
-  valgrind             Run valgrind server (Linux, auto-builds if needed)
+
+Memory Checking:
+  valgrind             Run unit tests under valgrind (auto-exits)
+  valgrind-server [s]  Run TCP server under valgrind for [s] seconds (default: 5)
 
 Scenario examples:
   ./build.sh test-binary 1234 all
@@ -603,6 +638,10 @@ main() {
             ;;
         valgrind)
             run_valgrind
+            ;;
+        valgrind-server)
+            shift
+            run_valgrind_server "$@"
             ;;
         run)
             run_server "$@"
