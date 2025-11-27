@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
-
+#include <netinet/in.h>
 #include "protocol/message_types_extended.h"
 #include "threading/queues.h"
 #include "network/tcp_connection.h"
@@ -21,14 +21,20 @@
  *   - Uses round-robin batching for fairness
  *   - Prevents starvation of either processor's output
  * 
+ * Updated for integrated multicast:
+ *   - Optionally broadcasts ALL messages to a multicast group
+ *   - Multicast is in ADDITION to TCP unicast routing
+ *   - Single thread handles both unicast and broadcast (no queue contention)
+ * 
  * Flow:
  *   Processor 0 → Output Queue 0 ┐
- *                                 ├→ Output Router → Per-client queues
- *   Processor 1 → Output Queue 1 ┘                  → TCP Listener writes
+ *                                 ├→ Output Router ─┬→ Per-client queues (TCP)
+ *   Processor 1 → Output Queue 1 ┘                  └→ Multicast group (all subscribers)
  * 
  * Responsibilities:
  *   - Dequeue output envelopes from all processor output queues
  *   - Route to appropriate client's output queue
+ *   - Broadcast to multicast group (if enabled)
  *   - Handle disconnected clients (drop messages)
  *   - Fair scheduling across multiple input queues
  */
@@ -37,38 +43,58 @@
 #define ROUTER_BATCH_SIZE 32
 
 /**
+ * Multicast configuration (embedded in router)
+ */
+typedef struct {
+    char multicast_group[64];   /* e.g., "239.255.0.1" */
+    uint16_t port;              /* e.g., 5000 */
+    uint8_t ttl;                /* 1=subnet, 32=site, 255=global */
+    bool use_binary_output;     /* true=binary protocol, false=CSV */
+} output_router_mcast_config_t;
+
+/**
  * Output router configuration
  */
 typedef struct {
-    bool tcp_mode;                          // true = route to clients, false = stdout
+    bool tcp_mode;              /* true = route to clients, false = stdout */
 } output_router_config_t;
 
 /**
  * Output router context
  */
 typedef struct {
-    // Configuration
+    /* Configuration */
     output_router_config_t config;
     
-    // Client registry (for TCP mode)
+    /* Client registry (for TCP mode) */
     tcp_client_registry_t* client_registry;
     
-    // Input queues (from processors) - supports dual-processor mode
+    /* Input queues (from processors) - supports dual-processor mode */
     output_envelope_queue_t* input_queues[MAX_OUTPUT_QUEUES];
-    int num_input_queues;                   // 1 = single, 2 = dual
+    int num_input_queues;                   /* 1 = single, 2 = dual */
     
-    // Legacy single-queue pointer for backward compatibility
-    output_envelope_queue_t* input_queue;   // Points to input_queues[0]
+    /* Legacy single-queue pointer for backward compatibility */
+    output_envelope_queue_t* input_queue;   /* Points to input_queues[0] */
     
-    // Shutdown coordination
+    /* Shutdown coordination */
     atomic_bool* shutdown_flag;
     
-    // Statistics - overall
-    uint64_t messages_routed;               // Total messages routed
-    uint64_t messages_dropped;              // Messages to disconnected clients
+    /* Multicast support (integrated into router) */
+    bool mcast_enabled;
+    output_router_mcast_config_t mcast_config;
+    int mcast_sockfd;
+    struct sockaddr_in mcast_addr;
     
-    // Statistics - per processor
+    /* Statistics - overall */
+    uint64_t messages_routed;               /* Total messages routed to TCP clients */
+    uint64_t messages_dropped;              /* Messages to disconnected clients */
+    
+    /* Statistics - per processor */
     uint64_t messages_from_processor[MAX_OUTPUT_QUEUES];
+    
+    /* Statistics - multicast */
+    uint64_t mcast_messages;                /* Messages broadcast to multicast */
+    uint64_t mcast_errors;                  /* Multicast send errors */
     
 } output_router_context_t;
 
@@ -107,7 +133,29 @@ bool output_router_init_dual(output_router_context_t* ctx,
                              atomic_bool* shutdown_flag);
 
 /**
+ * Enable multicast broadcasting on the router
+ * 
+ * Call this AFTER output_router_init/init_dual but BEFORE starting the thread.
+ * When enabled, the router broadcasts ALL output messages to the multicast
+ * group in addition to routing them to individual TCP clients.
+ * 
+ * @param ctx           Router context (must be initialized)
+ * @param multicast_group  Multicast group address (e.g., "239.255.0.1")
+ * @param port          Multicast port (e.g., 5000)
+ * @param ttl           Time-to-live (1=local subnet, 32=site, 255=global)
+ * @param use_binary    true=binary protocol, false=CSV text
+ * @return true on success, false on socket error
+ */
+bool output_router_enable_multicast(output_router_context_t* ctx,
+                                    const char* multicast_group,
+                                    uint16_t port,
+                                    uint8_t ttl,
+                                    bool use_binary);
+
+/**
  * Cleanup output router context
+ * 
+ * Closes multicast socket if open.
  */
 void output_router_cleanup(output_router_context_t* ctx);
 
@@ -124,4 +172,4 @@ void* output_router_thread(void* arg);
  */
 void output_router_print_stats(const output_router_context_t* ctx);
 
-#endif // OUTPUT_ROUTER_H
+#endif /* OUTPUT_ROUTER_H */

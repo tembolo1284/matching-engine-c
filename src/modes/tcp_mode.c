@@ -68,11 +68,10 @@ int run_tcp_dual_processor(const app_config_t* config) {
     if (multicast_is_enabled(config)) {
         fprintf(stderr, "Multicast:      %s:%u (✓ ENABLED)\n", 
                 config->multicast_group, config->multicast_port);
-        fprintf(stderr, "Threads:        5 (Listener, Proc0, Proc1, Router, Multicast)\n");
     } else {
         fprintf(stderr, "Multicast:      Disabled\n");
-        fprintf(stderr, "Threads:        4 (Listener, Proc0, Proc1, Router)\n");
     }
+    fprintf(stderr, "Threads:        4 (Listener, Proc0, Proc1, Router)\n");
     fprintf(stderr, "========================================\n");
 
     /* Use pointers to static storage */
@@ -116,7 +115,6 @@ int run_tcp_dual_processor(const app_config_t* config) {
     processor_t processor_ctx_0;
     processor_t processor_ctx_1;
     output_router_context_t router_ctx;
-    multicast_helper_t mcast_helper;
 
     /* Configure TCP listener (dual mode) */
     tcp_listener_config_t listener_config = {
@@ -166,10 +164,14 @@ int run_tcp_dual_processor(const app_config_t* config) {
         goto cleanup;
     }
 
-    /* Configure multicast publisher (optional) */
+    /* Enable multicast on the output router (if configured) */
     if (multicast_is_enabled(config)) {
-        if (!multicast_setup_dual(&mcast_helper, config, output_queue_0, output_queue_1, &g_shutdown)) {
-            fprintf(stderr, "[TCP Dual] Failed to setup multicast\n");
+        if (!output_router_enable_multicast(&router_ctx,
+                                            config->multicast_group,
+                                            config->multicast_port,
+                                            1,  /* TTL = 1 for local subnet */
+                                            config->binary_output)) {
+            fprintf(stderr, "[TCP Dual] Failed to enable multicast on router\n");
             goto cleanup;
         }
     }
@@ -206,32 +208,12 @@ int run_tcp_dual_processor(const app_config_t* config) {
         goto cleanup;
     }
 
-    /* Start multicast thread (optional) */
-    if (multicast_is_enabled(config)) {
-        if (!multicast_start(&mcast_helper)) {
-            fprintf(stderr, "[TCP Dual] Failed to start multicast thread\n");
-            atomic_store(&g_shutdown, true);
-            pthread_join(listener_tid, NULL);
-            pthread_join(processor_0_tid, NULL);
-            pthread_join(processor_1_tid, NULL);
-            pthread_join(router_tid, NULL);
-            goto cleanup;
-        }
-        
-        fprintf(stderr, "✓ All threads started successfully (5 threads)\n");
-        fprintf(stderr, "  - TCP Listener (routes by symbol)\n");
-        fprintf(stderr, "  - Processor 0 (symbols A-M)\n");
-        fprintf(stderr, "  - Processor 1 (symbols N-Z)\n");
-        fprintf(stderr, "  - Output Router (round-robin → TCP clients)\n");
-        fprintf(stderr, "  - Multicast Publisher (broadcasts to %s:%u)\n",
-                config->multicast_group, config->multicast_port);
-    } else {
-        fprintf(stderr, "✓ All threads started successfully (4 threads)\n");
-        fprintf(stderr, "  - TCP Listener (routes by symbol)\n");
-        fprintf(stderr, "  - Processor 0 (symbols A-M)\n");
-        fprintf(stderr, "  - Processor 1 (symbols N-Z)\n");
-        fprintf(stderr, "  - Output Router (round-robin)\n");
-    }
+    fprintf(stderr, "✓ All threads started successfully (4 threads)\n");
+    fprintf(stderr, "  - TCP Listener (routes by symbol)\n");
+    fprintf(stderr, "  - Processor 0 (symbols A-M)\n");
+    fprintf(stderr, "  - Processor 1 (symbols N-Z)\n");
+    fprintf(stderr, "  - Output Router (TCP unicast%s)\n",
+            multicast_is_enabled(config) ? " + multicast broadcast" : "");
     
     fprintf(stderr, "✓ Matching engine ready\n\n");
     
@@ -287,10 +269,8 @@ int run_tcp_dual_processor(const app_config_t* config) {
     print_memory_stats("Processor 1 (N-Z)", pools_1);
 
 cleanup:
-    /* Cleanup multicast (if enabled) */
-    if (multicast_is_enabled(config)) {
-        multicast_cleanup(&mcast_helper);
-    }
+    /* Cleanup output router (closes multicast socket if open) */
+    output_router_cleanup(&router_ctx);
     
     /* Cleanup in reverse order of initialization */
     tcp_client_registry_destroy(client_registry);
@@ -321,10 +301,10 @@ int run_tcp_single_processor(const app_config_t* config) {
     if (multicast_is_enabled(config)) {
         fprintf(stderr, "Multicast:      %s:%u (✓ ENABLED)\n",
                 config->multicast_group, config->multicast_port);
-        fprintf(stderr, "Threads:        4 (Listener, Processor, Router, Multicast)\n");
     } else {
-        fprintf(stderr, "Threads:        3 (Listener, Processor, Router)\n");
+        fprintf(stderr, "Multicast:      Disabled\n");
     }
+    fprintf(stderr, "Threads:        3 (Listener, Processor, Router)\n");
     fprintf(stderr, "========================================\n");
 
     /* Use pointers to static storage */
@@ -359,7 +339,6 @@ int run_tcp_single_processor(const app_config_t* config) {
     tcp_listener_context_t listener_ctx;
     processor_t processor_ctx;
     output_router_context_t router_ctx;
-    multicast_helper_t mcast_helper;
 
     /* Configure TCP listener (single mode) */
     tcp_listener_config_t listener_config = {
@@ -398,10 +377,14 @@ int run_tcp_single_processor(const app_config_t* config) {
         goto cleanup;
     }
 
-    /* Configure multicast publisher (optional) */
+    /* Enable multicast on the output router (if configured) */
     if (multicast_is_enabled(config)) {
-        if (!multicast_setup_single(&mcast_helper, config, output_queue, &g_shutdown)) {
-            fprintf(stderr, "[TCP Single] Failed to setup multicast\n");
+        if (!output_router_enable_multicast(&router_ctx,
+                                            config->multicast_group,
+                                            config->multicast_port,
+                                            1,  /* TTL = 1 for local subnet */
+                                            config->binary_output)) {
+            fprintf(stderr, "[TCP Single] Failed to enable multicast on router\n");
             goto cleanup;
         }
     }
@@ -427,17 +410,6 @@ int run_tcp_single_processor(const app_config_t* config) {
         pthread_join(listener_tid, NULL);
         pthread_join(processor_tid, NULL);
         goto cleanup;
-    }
-
-    if (multicast_is_enabled(config)) {
-        if (!multicast_start(&mcast_helper)) {
-            fprintf(stderr, "[TCP Single] Failed to start multicast thread\n");
-            atomic_store(&g_shutdown, true);
-            pthread_join(listener_tid, NULL);
-            pthread_join(processor_tid, NULL);
-            pthread_join(router_tid, NULL);
-            goto cleanup;
-        }
     }
 
     fprintf(stderr, "✓ All threads started successfully\n");
@@ -478,9 +450,7 @@ int run_tcp_single_processor(const app_config_t* config) {
     print_memory_stats("Single Processor", pools);
 
 cleanup:
-    if (multicast_is_enabled(config)) {
-        multicast_cleanup(&mcast_helper);
-    }
+    output_router_cleanup(&router_ctx);
     
     tcp_client_registry_destroy(client_registry);
     
