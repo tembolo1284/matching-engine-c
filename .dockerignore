@@ -20,10 +20,6 @@ build-*/
 *.md
 docs/
 
-# Scripts (not needed in container)
-*.sh
-
 # Test data
 *.log
-*.txt
 core

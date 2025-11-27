@@ -59,21 +59,25 @@ static bool recv_framed_message(int sockfd, char* msg_buffer, size_t* msg_len) {
     }
     
     uint32_t length = ntohl(length_be);
-    if (length > MAX_MESSAGE_SIZE) {
-        fprintf(stderr, "Message too large: %u bytes\n", length);
+    if (length > MAX_MESSAGE_SIZE || length == 0) {
+        fprintf(stderr, "Message too large or empty: %u bytes\n", length);
         return false;
     }
     
+    /* Use a local bounded variable to help the compiler understand the limit */
+    size_t bytes_to_read = (size_t)length;
+    
     received = 0;
-    while (received < length) {
-        ssize_t n = read(sockfd, msg_buffer + received, length - received);
+    while (received < bytes_to_read) {
+        size_t remaining = bytes_to_read - received;
+        ssize_t n = read(sockfd, msg_buffer + received, remaining);
         if (n <= 0) {
             return false;
         }
-        received += n;
+        received += (size_t)n;
     }
     
-    *msg_len = length;
+    *msg_len = bytes_to_read;
     return true;
 }
 
