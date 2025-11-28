@@ -45,7 +45,12 @@ static bool send_framed_message(int sockfd, const char* msg, size_t msg_len) {
     return true;
 }
 
-static bool recv_framed_message(int sockfd, char* msg_buffer, size_t* msg_len) {
+/*
+ * Wrapper to receive a framed message with explicit bounds checking.
+ * Marked noinline to prevent fortify false positives from aggressive inlining.
+ */
+__attribute__((noinline))
+static bool recv_framed_message(int sockfd, char* msg_buffer, size_t buffer_size, size_t* msg_len) {
     uint32_t length_be;
     size_t received = 0;
     
@@ -55,29 +60,25 @@ static bool recv_framed_message(int sockfd, char* msg_buffer, size_t* msg_len) {
         if (n <= 0) {
             return false;
         }
-        received += n;
+        received += (size_t)n;
     }
     
     uint32_t length = ntohl(length_be);
-    if (length > MAX_MESSAGE_SIZE || length == 0) {
-        fprintf(stderr, "Message too large or empty: %u bytes\n", length);
+    if (length == 0 || length > buffer_size) {
+        fprintf(stderr, "Invalid message length: %u bytes\n", length);
         return false;
     }
     
-    /* Use a local bounded variable to help the compiler understand the limit */
-    size_t bytes_to_read = (size_t)length;
-    
     received = 0;
-    while (received < bytes_to_read) {
-        size_t remaining = bytes_to_read - received;
-        ssize_t n = read(sockfd, msg_buffer + received, remaining);
+    while (received < length) {
+        ssize_t n = read(sockfd, msg_buffer + received, length - received);
         if (n <= 0) {
             return false;
         }
         received += (size_t)n;
     }
     
-    *msg_len = bytes_to_read;
+    *msg_len = (size_t)length;
     return true;
 }
 
@@ -305,7 +306,7 @@ static void* response_reader_thread(void* arg) {
     fprintf(stderr, "\n=== Server Responses ===\n");
     
     while (1) {
-        if (!recv_framed_message(sockfd, buffer, &len)) {
+        if (!recv_framed_message(sockfd, buffer, sizeof(buffer), &len)) {
             fprintf(stderr, "\n[Connection closed or error]\n");
             break;
         }
