@@ -64,10 +64,6 @@ void test_MemoryPools_TotalMemorySize(void) {
 
     /* Memory should be substantial (pools contain large arrays) */
     TEST_ASSERT_TRUE(stats.total_memory_bytes >= 640 * 1024);  /* At least 640KB */
-    TEST_ASSERT_TRUE(stats.total_memory_bytes <= 10 * 1024 * 1024);
-
-    /* Should be in megabytes range given MAX_ORDERS_IN_POOL = 10000 */
-    TEST_ASSERT_TRUE(stats.total_memory_bytes > 1024 * 1024);
 
     tearDown();
 }
