@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+build-*/
+*.o
+*.a
+*.so
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# Test data
+*.log
+core

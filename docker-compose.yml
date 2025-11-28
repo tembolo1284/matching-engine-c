@@ -1,0 +1,52 @@
+# Docker Compose for Matching Engine
+#
+# Start everything:  docker-compose up
+# Start server only: docker-compose up server
+# Scale clients:     docker-compose up --scale subscriber=3
+#
+# This creates a complete test environment with server, subscriber, and client
+
+services:
+  # Main matching engine server
+  server:
+    build: .
+    container_name: matching-engine-server
+    ports:
+      - "1234:1234"      # TCP client connections
+      - "5000:5000/udp"  # Multicast market data
+    command: ["--tcp", "1234", "--multicast", "239.255.0.1:5000"]
+    networks:
+      - trading-net
+    restart: unless-stopped
+
+  # Multicast subscriber (market data feed consumer)
+  subscriber:
+    build: .
+    container_name: matching-engine-subscriber
+    entrypoint: ["./multicast_subscriber"]
+    command: ["239.255.0.1", "5000"]
+    networks:
+      - trading-net
+    depends_on:
+      - server
+
+  # Interactive TCP client (for manual testing)
+  # Usage: docker-compose run client
+  client:
+    build: .
+    container_name: matching-engine-client
+    entrypoint: ["./tcp_client"]
+    command: ["server", "1234"]
+    stdin_open: true
+    tty: true
+    networks:
+      - trading-net
+    depends_on:
+      - server
+
+networks:
+  trading-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
