@@ -408,6 +408,33 @@ run_valgrind() {
     print_success "Valgrind memory check passed - no leaks detected!"
 }
 
+run_valgrind_server_udp() {
+    if [ "$PLATFORM" != "Linux" ]; then
+        print_error "valgrind only supported on Linux"
+        exit 1
+    fi
+    if ! command_exists valgrind; then
+        print_error "valgrind not found. Install with: sudo apt install valgrind"
+        exit 1
+    fi
+
+    require_valgrind_built
+
+    local timeout_secs="${1:-5}"
+
+    print_status "Running valgrind on UDP server for ${timeout_secs} seconds..."
+    echo ""
+    echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
+    echo "      Server will auto-terminate after ${timeout_secs} seconds."
+    echo ""
+
+    timeout --signal=SIGINT "${timeout_secs}" \
+        valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+        "./${VALGRIND_BUILD_DIR}/matching_engine" --udp "$DEFAULT_PORT" || true
+
+    print_success "Valgrind UDP server check complete"
+}
+
 run_valgrind_server() {
     if [ "$PLATFORM" != "Linux" ]; then
         print_error "valgrind only supported on Linux"
@@ -642,6 +669,10 @@ main() {
         valgrind-server)
             shift
             run_valgrind_server "$@"
+            ;;
+        valgrind-server-udp)
+            shift
+            run_valgrind_server_udp "$@"
             ;;
         run)
             run_server "$@"
