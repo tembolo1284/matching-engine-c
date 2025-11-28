@@ -20,6 +20,18 @@
 extern atomic_bool g_shutdown;
 
 /**
+ * Helper function for 64-byte aligned allocation
+ * Required because AVX-512 vectorized loops need 64-byte aligned memory
+ */
+static inline void* aligned_alloc_64(size_t size) {
+    void* ptr = NULL;
+    if (posix_memalign(&ptr, 64, size) != 0) {
+        return NULL;
+    }
+    return ptr;
+}
+
+/**
  * Dual-output publisher thread for UDP dual-processor mode
  * Reads from both output queues in round-robin fashion
  */
@@ -122,8 +134,10 @@ int run_udp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "========================================\n");
 
     // Initialize memory pools (one per processor)
-    memory_pools_t* pools_0 = malloc(sizeof(memory_pools_t));
-    memory_pools_t* pools_1 = malloc(sizeof(memory_pools_t));
+    // Use 64-byte aligned allocation for AVX-512 compatibility
+    memory_pools_t* pools_0 = aligned_alloc_64(sizeof(memory_pools_t));
+    memory_pools_t* pools_1 = aligned_alloc_64(sizeof(memory_pools_t));
+
     if (!pools_0 || !pools_1) {
         fprintf(stderr, "[UDP Dual] Failed to allocate memory pools\n");
         free(pools_0);
@@ -313,7 +327,8 @@ int run_udp_single_processor(const app_config_t* config) {
     fprintf(stderr, "========================================\n");
 
     // Initialize memory pools
-    memory_pools_t* pools = malloc(sizeof(memory_pools_t));
+    // Use 64-byte aligned allocation for AVX-512 compatibility
+    memory_pools_t* pools = aligned_alloc_64(sizeof(memory_pools_t));
     if (!pools) {
         fprintf(stderr, "[UDP Single] Failed to allocate memory pools\n");
         return 1;
@@ -440,4 +455,3 @@ cleanup:
     fprintf(stderr, "\n=== UDP Single Processor Mode Stopped ===\n");
     return 0;
 }
-

@@ -17,7 +17,7 @@ const char* message_formatter_format(message_formatter_t* formatter, const outpu
     switch (msg->type) {
         case OUTPUT_MSG_ACK:
             snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
-                    "A, %s, %u, %u",
+                    "A, %s, %u, %u\n",
                     msg->data.ack.symbol,
                     msg->data.ack.user_id,
                     msg->data.ack.user_order_id);
@@ -25,7 +25,7 @@ const char* message_formatter_format(message_formatter_t* formatter, const outpu
             
         case OUTPUT_MSG_CANCEL_ACK:
             snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
-                    "C, %s, %u, %u",
+                    "C, %s, %u, %u\n",
                     msg->data.cancel_ack.symbol,
                     msg->data.cancel_ack.user_id,
                     msg->data.cancel_ack.user_order_id);
@@ -33,7 +33,7 @@ const char* message_formatter_format(message_formatter_t* formatter, const outpu
             
         case OUTPUT_MSG_TRADE:
             snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
-                    "T, %s, %u, %u, %u, %u, %u, %u",
+                    "T, %s, %u, %u, %u, %u, %u, %u\n",
                     msg->data.trade.symbol,
                     msg->data.trade.user_id_buy,
                     msg->data.trade.user_order_id_buy,
@@ -47,12 +47,12 @@ const char* message_formatter_format(message_formatter_t* formatter, const outpu
             if (msg->data.top_of_book.price == 0) {
                 /* Top of book eliminated */
                 snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
-                        "B, %s, %s, -, -",
+                        "B, %s, %s, -, -\n",
                         msg->data.top_of_book.symbol,
                         msg->data.top_of_book.side == SIDE_BUY ? "B" : "S");
             } else {
                 snprintf(formatter->buffer, MAX_OUTPUT_LINE_LENGTH,
-                        "B, %s, %s, %u, %u",
+                        "B, %s, %s, %u, %u\n",
                         msg->data.top_of_book.symbol,
                         msg->data.top_of_book.side == SIDE_BUY ? "B" : "S",
                         msg->data.top_of_book.price,
@@ -73,7 +73,7 @@ const char* message_formatter_format(message_formatter_t* formatter, const outpu
  * Format: A, userId, userOrderId
  */
 int format_ack(char* buffer, size_t buffer_size, const ack_msg_t* msg) {
-    return snprintf(buffer, buffer_size, "A, %u, %u", 
+    return snprintf(buffer, buffer_size, "A, %u, %u\n", 
                     msg->user_id, msg->user_order_id);
 }
 
@@ -82,7 +82,7 @@ int format_ack(char* buffer, size_t buffer_size, const ack_msg_t* msg) {
  * Format: C, userId, userOrderId
  */
 int format_cancel_ack(char* buffer, size_t buffer_size, const cancel_ack_msg_t* msg) {
-    return snprintf(buffer, buffer_size, "C, %u, %u", 
+    return snprintf(buffer, buffer_size, "C, %u, %u\n", 
                     msg->user_id, msg->user_order_id);
 }
 
@@ -91,7 +91,7 @@ int format_cancel_ack(char* buffer, size_t buffer_size, const cancel_ack_msg_t* 
  * Format: T, userIdBuy, userOrderIdBuy, userIdSell, userOrderIdSell, price, quantity
  */
 int format_trade(char* buffer, size_t buffer_size, const trade_msg_t* msg) {
-    return snprintf(buffer, buffer_size, "T, %u, %u, %u, %u, %u, %u",
+    return snprintf(buffer, buffer_size, "T, %u, %u, %u, %u, %u, %u\n",
                     msg->user_id_buy,
                     msg->user_order_id_buy,
                     msg->user_id_sell,
@@ -107,9 +107,9 @@ int format_trade(char* buffer, size_t buffer_size, const trade_msg_t* msg) {
  */
 int format_top_of_book(char* buffer, size_t buffer_size, const top_of_book_msg_t* msg) {
     if (top_of_book_is_eliminated(msg)) {
-        return snprintf(buffer, buffer_size, "B, %c, -, -", (char)msg->side);
+        return snprintf(buffer, buffer_size, "B, %c, -, -\n", (char)msg->side);
     } else {
-        return snprintf(buffer, buffer_size, "B, %c, %u, %u",
+        return snprintf(buffer, buffer_size, "B, %c, %u, %u\n",
                         (char)msg->side,
                         msg->price,
                         msg->total_quantity);

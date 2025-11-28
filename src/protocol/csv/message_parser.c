@@ -70,9 +70,12 @@ bool parse_new_order(message_parser_t* parser, input_msg_t* msg) {
     order.user_id = parse_uint32(parser->tokens[1]);
     
     // Symbol
-    strncpy(order.symbol, parser->tokens[2], MAX_SYMBOL_LENGTH - 1);
-    order.symbol[MAX_SYMBOL_LENGTH - 1] = '\0';
-    
+    size_t sym_len = strlen(parser->tokens[2]);
+    if (sym_len >= MAX_SYMBOL_LENGTH) {
+        sym_len = MAX_SYMBOL_LENGTH - 1;
+    }
+    memcpy(order.symbol, parser->tokens[2], sym_len);
+    order.symbol[sym_len] = '\0'; 
     order.price = parse_uint32(parser->tokens[3]);
     order.quantity = parse_uint32(parser->tokens[4]);
     
