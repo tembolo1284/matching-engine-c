@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
+#include <assert.h>
 
 // Platform-specific event mechanism includes
 #ifdef __linux__
@@ -42,7 +43,7 @@ static void handle_client_write(tcp_listener_context_t* ctx, uint32_t client_id)
 static void disconnect_client(tcp_listener_context_t* ctx, uint32_t client_id);
 static bool set_nonblocking(int fd);
 static void process_output_queues(tcp_listener_context_t* ctx);
-static bool route_message_to_queues(tcp_listener_context_t* ctx, 
+static bool route_message_to_queues(tcp_listener_context_t* ctx,
                                      const input_msg_envelope_t* envelope,
                                      const input_msg_t* msg);
 
@@ -73,7 +74,7 @@ static const char* get_symbol_from_input_msg(const input_msg_t* msg) {
 static bool route_message_to_queues(tcp_listener_context_t* ctx,
                                      const input_msg_envelope_t* envelope,
                                      const input_msg_t* msg) {
-    
+
     if (ctx->num_input_queues == 1) {
         // Single processor mode - send to the only queue
         if (input_envelope_queue_enqueue(ctx->input_queues[0], envelope)) {
@@ -82,29 +83,29 @@ static bool route_message_to_queues(tcp_listener_context_t* ctx,
         }
         return false;
     }
-    
+
     // Dual processor mode - route by symbol
     const char* symbol = get_symbol_from_input_msg(msg);
-    
+
     if (msg->type == INPUT_MSG_FLUSH || !symbol_is_valid(symbol)) {
         // Flush or cancel without symbol → send to BOTH queues
         bool success_0 = input_envelope_queue_enqueue(ctx->input_queues[0], envelope);
         bool success_1 = input_envelope_queue_enqueue(ctx->input_queues[1], envelope);
-        
+
         if (success_0) ctx->messages_to_processor[0]++;
         if (success_1) ctx->messages_to_processor[1]++;
-        
+
         return success_0 && success_1;
     }
-    
+
     // Route by symbol
     int processor_id = get_processor_id_for_symbol(symbol);
-    
+
     if (input_envelope_queue_enqueue(ctx->input_queues[processor_id], envelope)) {
         ctx->messages_to_processor[processor_id]++;
         return true;
     }
-    
+
     return false;
 }
 
@@ -189,7 +190,7 @@ void tcp_listener_cleanup(tcp_listener_context_t* ctx) {
 void* tcp_listener_thread(void* arg) {
     tcp_listener_context_t* ctx = (tcp_listener_context_t*)arg;
 
-    fprintf(stderr, "[TCP Listener] Starting on port %u (mode: %s)\n", 
+    fprintf(stderr, "[TCP Listener] Starting on port %u (mode: %s)\n",
             ctx->config.port,
             ctx->num_input_queues == 2 ? "dual-processor" : "single-processor");
 
@@ -448,12 +449,12 @@ static bool setup_event_loop(tcp_listener_context_t* ctx) {
 static bool add_fd_to_kqueue(int kq, int fd, int filter) {
     struct kevent ev;
     EV_SET(&ev, fd, filter, EV_ADD | EV_ENABLE, 0, 0, NULL);
-    
+
     if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
         fprintf(stderr, "[TCP Listener] kevent(EV_ADD) failed: %s\n", strerror(errno));
         return false;
     }
-    
+
     return true;
 }
 
@@ -461,12 +462,12 @@ static bool modify_fd_in_kqueue(int kq, int fd, int filter, bool enable) {
     struct kevent ev;
     uint16_t flags = enable ? (EV_ADD | EV_ENABLE) : (EV_ADD | EV_DISABLE);
     EV_SET(&ev, fd, filter, flags, 0, 0, NULL);
-    
+
     if (kevent(kq, &ev, 1, NULL, 0, NULL) < 0) {
         fprintf(stderr, "[TCP Listener] kevent(modify) failed: %s\n", strerror(errno));
         return false;
     }
-    
+
     return true;
 }
 #endif
@@ -520,13 +521,26 @@ static void handle_new_connection(tcp_listener_context_t* ctx) {
     ctx->total_connections++;
 }
 
+/**
+ * Handle incoming data from a client connection
+ * 
+ * Power of Ten Compliance:
+ * - Rule 1: No recursion (iterative message extraction)
+ * - Rule 2: Loop bounded by MAX_MESSAGES_PER_READ
+ * - Rule 5: Assertions for parameter validation
+ * - Rule 7: All return values checked
+ */
 static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) {
+    /* Rule 5: Parameter assertions */
+    assert(ctx != NULL && "NULL context in handle_client_read");
+    assert(ctx->client_registry != NULL && "NULL client registry");
+    
     tcp_client_t* client = tcp_client_get(ctx->client_registry, client_id);
     if (!client) {
         return;
     }
 
-    // Read from socket
+    /* Read from socket into temporary buffer */
     char buffer[4096];
     ssize_t n = read(client->socket_fd, buffer, sizeof(buffer));
 
@@ -540,76 +554,132 @@ static void handle_client_read(tcp_listener_context_t* ctx, uint32_t client_id) 
     }
 
     if (n == 0) {
+        /* Client closed connection */
         disconnect_client(ctx, client_id);
         return;
     }
 
-    client->bytes_received += n;
-    ctx->total_bytes_received += n;
+    /* Update statistics */
+    client->bytes_received += (size_t)n;
+    ctx->total_bytes_received += (size_t)n;
 
-    // Process incoming data through framing layer
-    const char* msg_data;
-    size_t msg_len;
+    /* Append incoming data to client's framing buffer */
+    size_t consumed = framing_read_append(&client->read_state, buffer, (size_t)n);
+    
+    if (consumed < (size_t)n) {
+        /* Buffer overflow - log and reset */
+        fprintf(stderr, "[TCP Listener] Buffer overflow for client %u, resetting framing state\n",
+                client_id);
+        framing_read_state_init(&client->read_state);
+        return;
+    }
 
-    if (framing_read_process(&client->read_state, buffer, n, &msg_data, &msg_len)) {
-        // Complete message received - parse it
+    /* 
+     * Rule 2: Process messages with fixed upper bound
+     * 
+     * Extract and process up to MAX_MESSAGES_PER_READ complete messages.
+     * This prevents unbounded loops while still handling bursts efficiently.
+     */
+    int messages_processed = 0;
+    const int MAX_MESSAGES_THIS_READ = MAX_MESSAGES_PER_READ;  /* Rule 2: explicit bound */
+    
+    while (messages_processed < MAX_MESSAGES_THIS_READ) {
+        const char* msg_data = NULL;
+        size_t msg_len = 0;
+        
+        /* Try to extract a complete message */
+        framing_result_t result = framing_read_extract(&client->read_state, &msg_data, &msg_len);
+        
+        if (result == FRAMING_NEED_MORE_DATA) {
+            /* No more complete messages - wait for more data */
+            break;
+        }
+        
+        if (result == FRAMING_ERROR) {
+            /* Protocol error - disconnect client */
+            fprintf(stderr, "[TCP Listener] Framing error for client %u, disconnecting\n",
+                    client_id);
+            disconnect_client(ctx, client_id);
+            return;
+        }
+        
+        /* Rule 5: Assert we have valid message data */
+        assert(result == FRAMING_MESSAGE_READY && "Unexpected framing result");
+        assert(msg_data != NULL && "NULL message data after successful extract");
+        assert(msg_len > 0 && "Zero-length message after successful extract");
+        
+        /* Parse the complete message */
         input_msg_t input_msg;
         bool parsed = false;
 
-        // Auto-detect CSV vs binary
+        /* Auto-detect CSV vs binary format */
         if (msg_len > 0 && (unsigned char)msg_data[0] == 0x4D) {
+            /* Binary protocol (starts with 'M' = 0x4D magic byte) */
             parsed = binary_message_parser_parse(&g_binary_parser, msg_data, msg_len, &input_msg);
         } else {
+            /* CSV protocol */
             char csv_buffer[4096];
             if (msg_len < sizeof(csv_buffer)) {
                 memcpy(csv_buffer, msg_data, msg_len);
                 csv_buffer[msg_len] = '\0';
                 parsed = message_parser_parse(&g_csv_parser, csv_buffer, &input_msg);
             } else {
+                fprintf(stderr, "[TCP Listener] CSV message too large from client %u (%zu bytes)\n",
+                        client_id, msg_len);
                 parsed = false;
             }
         }
 
-        if (parsed) {
-            // Validate userId matches client_id
-            bool valid = true;
-            switch (input_msg.type) {
-                case INPUT_MSG_NEW_ORDER:
-                    if (input_msg.data.new_order.user_id != client_id) {
-                        fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
-                                client_id, input_msg.data.new_order.user_id);
-                        valid = false;
-                    }
-                    break;
-                case INPUT_MSG_CANCEL:
-                    if (input_msg.data.cancel.user_id != client_id) {
-                        fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
-                                client_id, input_msg.data.cancel.user_id);
-                        valid = false;
-                    }
-                    break;
-                case INPUT_MSG_FLUSH:
-                    break;
-            }
-
-            if (valid) {
-                input_msg_envelope_t envelope = create_input_envelope(
-                    &input_msg, client_id, client->messages_received
-                );
-
-                if (route_message_to_queues(ctx, &envelope, &input_msg)) {
-                    client->messages_received++;
-                    ctx->total_messages_received++;
-                } else {
-                    fprintf(stderr, "[TCP Listener] Input queue full, dropping message from client %u\n",
-                            client_id);
-                }
-            }
-        } else {
+        if (!parsed) {
             fprintf(stderr, "[TCP Listener] Failed to parse message from client %u\n", client_id);
+            messages_processed++;
+            continue;  /* Skip this message, try next */
         }
 
-        framing_read_state_init(&client->read_state);
+        /* Validate userId matches client_id (prevent spoofing) */
+        bool valid = true;
+        switch (input_msg.type) {
+            case INPUT_MSG_NEW_ORDER:
+                if (input_msg.data.new_order.user_id != client_id) {
+                    fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
+                            client_id, input_msg.data.new_order.user_id);
+                    valid = false;
+                }
+                break;
+            case INPUT_MSG_CANCEL:
+                if (input_msg.data.cancel.user_id != client_id) {
+                    fprintf(stderr, "[TCP Listener] Client %u tried to spoof userId %u\n",
+                            client_id, input_msg.data.cancel.user_id);
+                    valid = false;
+                }
+                break;
+            case INPUT_MSG_FLUSH:
+                /* Flush doesn't have userId to validate */
+                break;
+        }
+
+        if (valid) {
+            /* Create envelope and route to processor queue(s) */
+            input_msg_envelope_t envelope = create_input_envelope(
+                &input_msg, client_id, client->messages_received
+            );
+
+            if (route_message_to_queues(ctx, &envelope, &input_msg)) {
+                client->messages_received++;
+                ctx->total_messages_received++;
+            } else {
+                fprintf(stderr, "[TCP Listener] Input queue full, dropping message from client %u\n",
+                        client_id);
+            }
+        }
+        
+        messages_processed++;
+    }
+    
+    /* Rule 5: Log if we hit the bound (potential issue) */
+    if (messages_processed >= MAX_MESSAGES_THIS_READ) {
+        fprintf(stderr, "[TCP Listener] Hit message limit (%d) for client %u, more data pending\n",
+                MAX_MESSAGES_THIS_READ, client_id);
     }
 }
 
@@ -635,9 +705,9 @@ static void handle_client_write(tcp_listener_context_t* ctx, uint32_t client_id)
             return;
         }
 
-        framing_write_mark_written(&client->write_state, n);
-        client->bytes_sent += n;
-        ctx->total_bytes_sent += n;
+        framing_write_mark_written(&client->write_state, (size_t)n);
+        client->bytes_sent += (size_t)n;
+        ctx->total_bytes_sent += (size_t)n;
 
         if (framing_write_is_complete(&client->write_state)) {
             client->has_pending_write = false;
@@ -716,9 +786,9 @@ static void process_output_queues(tcp_listener_context_t* ctx) {
         ssize_t n = write(client->socket_fd, data, len);
 
         if (n > 0) {
-            framing_write_mark_written(&client->write_state, n);
-            client->bytes_sent += n;
-            ctx->total_bytes_sent += n;
+            framing_write_mark_written(&client->write_state, (size_t)n);
+            client->bytes_sent += (size_t)n;
+            ctx->total_bytes_sent += (size_t)n;
 
             if (framing_write_is_complete(&client->write_state)) {
                 client->has_pending_write = false;
@@ -790,11 +860,11 @@ void tcp_listener_print_stats(const tcp_listener_context_t* ctx) {
     fprintf(stderr, "Messages sent:         %llu\n", (unsigned long long)ctx->total_messages_sent);
     fprintf(stderr, "Bytes received:        %llu\n", (unsigned long long)ctx->total_bytes_received);
     fprintf(stderr, "Bytes sent:            %llu\n", (unsigned long long)ctx->total_bytes_sent);
-    
+
     if (ctx->num_input_queues == 2) {
-        fprintf(stderr, "Messages to Proc 0 (A-M): %llu\n", 
+        fprintf(stderr, "Messages to Proc 0 (A-M): %llu\n",
                 (unsigned long long)ctx->messages_to_processor[0]);
-        fprintf(stderr, "Messages to Proc 1 (N-Z): %llu\n", 
+        fprintf(stderr, "Messages to Proc 1 (N-Z): %llu\n",
                 (unsigned long long)ctx->messages_to_processor[1]);
     }
 }
