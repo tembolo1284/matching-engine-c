@@ -521,6 +521,7 @@ Scenario examples:
 Run:
   run [args]       Run server directly (same as README)
   run-tcp          Run TCP server on 1234 (dual-processor, default)
+  run-tcp-binary   Run TCP server on 1234 with binary output
   run-udp          Run UDP server on 1234
   run-dual         Run TCP server in dual-processor mode (default)
   run-single       Run TCP server in single-processor mode
@@ -694,6 +695,9 @@ main() {
             ;;
         run-multicast-binary)
             run_server run --tcp "$DEFAULT_PORT" --binary --multicast "${MULTICAST_GROUP}:${MULTICAST_PORT}"
+            ;;
+        run-tcp-binary)
+            run_server run --tcp "$DEFAULT_PORT" --binary
             ;;
         info)
             show_info
