@@ -42,7 +42,7 @@ extern "C" {
 
 /* Default queue size (must be power of 2) - configurable */
 #ifndef LOCKFREE_QUEUE_SIZE
-#define LOCKFREE_QUEUE_SIZE 262144
+#define LOCKFREE_QUEUE_SIZE 65536
 #endif
 
 /* Index mask for fast modulo */
