@@ -5,13 +5,6 @@
 
 /**
  * Message Framing Implementation
- * 
- * Power of Ten Compliance:
- * - Rule 1: No recursion, goto, setjmp/longjmp
- * - Rule 2: All loops have fixed upper bounds
- * - Rule 3: No dynamic allocation (fixed buffers)
- * - Rule 5: Assertions for parameter validation
- * - Rule 7: All return values checked
  */
 
 /* ============================================================================
