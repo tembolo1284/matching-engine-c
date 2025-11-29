@@ -42,14 +42,14 @@ extern "C" {
 
 /* Default queue size (must be power of 2) - configurable */
 #ifndef LOCKFREE_QUEUE_SIZE
-#define LOCKFREE_QUEUE_SIZE 16384
+#define LOCKFREE_QUEUE_SIZE 262144
 #endif
 
 /* Index mask for fast modulo */
 #define LOCKFREE_QUEUE_MASK (LOCKFREE_QUEUE_SIZE - 1)
 
 /* Maximum reasonable queue size for safety */
-#define MAX_QUEUE_SIZE 1048576  /* 1M entries */
+#define MAX_QUEUE_SIZE 2097152  /* 1M entries */
 
 /* Compile-time checks for queue size */
 _Static_assert((LOCKFREE_QUEUE_SIZE & (LOCKFREE_QUEUE_SIZE - 1)) == 0,
