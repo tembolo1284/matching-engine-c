@@ -749,6 +749,7 @@ Run Server:
   run-single           Run TCP server in single-processor mode
   run-multicast        Run TCP server with multicast feed
   run-multicast-binary Run TCP with binary multicast
+  run-udp-binary       Run UDP with binary output
   run-tcp-binary       Run TCP with binary output
 
 Examples:
@@ -950,6 +951,9 @@ main() {
             ;;
         run-multicast-binary)
             run_server run --tcp "$DEFAULT_PORT" --binary --multicast "${MULTICAST_GROUP}:${MULTICAST_PORT}"
+            ;;
+        run-udp-binary)
+            run_server_run --udp "$DEFAULT_PORT" --binary
             ;;
         run-tcp-binary)
             run_server run --tcp "$DEFAULT_PORT" --binary
