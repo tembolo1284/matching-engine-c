@@ -112,6 +112,7 @@ static bool probe_server_encoding(engine_client_t* client) {
                        &recv_len, CLIENT_PROBE_TIMEOUT_MS)) {
         cfg->detected_encoding = codec_detect_encoding(recv_buf, recv_len);
         client->codec.detected_encoding = cfg->detected_encoding;
+        client->codec.send_encoding = cfg->detected_encoding;  /* Must set send_encoding too! */
         client->codec.encoding_detected = true;
         success = true;
     } else {
@@ -209,20 +210,23 @@ bool engine_client_connect(engine_client_t* client) {
         /* Explicit encoding specified - use directly */
         cfg->detected_encoding = cfg->encoding;
         client->codec.detected_encoding = cfg->encoding;
+        client->codec.send_encoding = cfg->encoding;  /* Must set send_encoding too! */
         client->codec.encoding_detected = true;
     } else if (cfg->fire_and_forget) {
         /* No responses expected - default to binary */
         cfg->detected_encoding = ENCODING_BINARY;
         client->codec.detected_encoding = ENCODING_BINARY;
+        client->codec.send_encoding = ENCODING_BINARY;  /* Must set send_encoding too! */
         client->codec.encoding_detected = true;
     } else if (cfg->detected_transport == TRANSPORT_UDP) {
         /* UDP mode - server doesn't send responses back over UDP, only to stdout */
-        /* Default to binary encoding, no probe needed */
-        cfg->detected_encoding = ENCODING_BINARY;
-        client->codec.detected_encoding = ENCODING_BINARY;
+        /* Default to CSV encoding to match server default, no probe needed */
+        cfg->detected_encoding = ENCODING_CSV;
+        client->codec.detected_encoding = ENCODING_CSV;
+        client->codec.send_encoding = ENCODING_CSV;  /* Must set send_encoding too! */
         client->codec.encoding_detected = true;
         if (!cfg->quiet) {
-            printf("UDP mode: no probe (server outputs to stdout)\n");
+            printf("UDP mode: defaulting to CSV (server outputs to stdout)\n");
         }
     } else {
         /* TCP mode - probe server to detect encoding */
