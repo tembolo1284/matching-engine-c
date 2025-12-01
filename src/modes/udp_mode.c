@@ -16,7 +16,7 @@
 #include "protocol/csv/message_formatter.h"
 #include "protocol/binary/binary_message_formatter.h"
 
-// External shutdown flag (from main.c)
+/* External shutdown flag (from main.c) */
 extern atomic_bool g_shutdown;
 
 /**
@@ -49,7 +49,7 @@ static void* dual_output_publisher_thread(void* arg) {
 
     output_msg_envelope_t envelope;
 
-    // Formatter state (one instance per thread)
+    /* Formatter state (one instance per thread) */
     binary_message_formatter_t bin_formatter;
     message_formatter_t csv_formatter;
     memset(&bin_formatter, 0, sizeof(bin_formatter));
@@ -58,7 +58,7 @@ static void* dual_output_publisher_thread(void* arg) {
     while (!atomic_load(ctx->shutdown_flag)) {
         bool got_message = false;
 
-        // Round-robin: Try queue 0, then queue 1
+        /* Round-robin: Try queue 0, then queue 1 */
         if (output_envelope_queue_dequeue(ctx->queue_0, &envelope)) {
             if (ctx->use_binary_output) {
                 size_t len = 0;
@@ -110,8 +110,8 @@ static void* dual_output_publisher_thread(void* arg) {
         }
 
         if (!got_message) {
-            // Both queues empty, brief sleep
-            struct timespec ts = {0, 1000};  // 1μs
+            /* Both queues empty, brief sleep */
+            struct timespec ts = {0, 1000};  /* 1μs */
             nanosleep(&ts, NULL);
         }
     }
@@ -133,8 +133,8 @@ int run_udp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "Output:         Both processors (round-robin)\n");
     fprintf(stderr, "========================================\n");
 
-    // Initialize memory pools (one per processor)
-    // Use 64-byte aligned allocation for AVX-512 compatibility
+    /* Initialize memory pools (one per processor) */
+    /* Use 64-byte aligned allocation for AVX-512 compatibility */
     memory_pools_t* pools_0 = aligned_alloc_64(sizeof(memory_pools_t));
     memory_pools_t* pools_1 = aligned_alloc_64(sizeof(memory_pools_t));
 
@@ -152,7 +152,7 @@ int run_udp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "  Hash table:       %d slots (open-addressing)\n", ORDER_MAP_SIZE);
     fprintf(stderr, "========================================\n\n");
 
-    // Initialize matching engines
+    /* Initialize matching engines */
     matching_engine_t* engine_0 = malloc(sizeof(matching_engine_t));
     matching_engine_t* engine_1 = malloc(sizeof(matching_engine_t));
     if (!engine_0 || !engine_1) {
@@ -166,7 +166,7 @@ int run_udp_dual_processor(const app_config_t* config) {
     matching_engine_init(engine_0, pools_0);
     matching_engine_init(engine_1, pools_1);
 
-    // Initialize queues
+    /* Initialize queues */
     input_envelope_queue_t* input_queue_0 = malloc(sizeof(input_envelope_queue_t));
     input_envelope_queue_t* input_queue_1 = malloc(sizeof(input_envelope_queue_t));
     output_envelope_queue_t* output_queue_0 = malloc(sizeof(output_envelope_queue_t));
@@ -192,42 +192,48 @@ int run_udp_dual_processor(const app_config_t* config) {
     output_envelope_queue_init(output_queue_0);
     output_envelope_queue_init(output_queue_1);
 
-    // Thread contexts
+    /* Thread contexts */
     udp_receiver_t receiver_ctx;
     processor_t processor_ctx_0;
     processor_t processor_ctx_1;
     dual_output_publisher_ctx_t dual_publisher_ctx;
 
-    // Initialize UDP receiver (dual mode)
+    /* Initialize UDP receiver (dual mode) */
     udp_receiver_init_dual(&receiver_ctx, input_queue_0, input_queue_1, config->port);
 
-    // Configure processors
-    processor_config_t processor_config = {
+    /* Configure processors - each needs its own config with correct processor_id */
+    processor_config_t processor_config_0 = {
+        .processor_id = 0,
         .tcp_mode = false
     };
 
-    if (!processor_init(&processor_ctx_0, &processor_config, engine_0,
+    processor_config_t processor_config_1 = {
+        .processor_id = 1,
+        .tcp_mode = false
+    };
+
+    if (!processor_init(&processor_ctx_0, &processor_config_0, engine_0,
                         input_queue_0, output_queue_0, &g_shutdown)) {
         fprintf(stderr, "[UDP Dual] Failed to initialize processor 0\n");
         goto cleanup;
     }
 
-    if (!processor_init(&processor_ctx_1, &processor_config, engine_1,
+    if (!processor_init(&processor_ctx_1, &processor_config_1, engine_1,
                         input_queue_1, output_queue_1, &g_shutdown)) {
         fprintf(stderr, "[UDP Dual] Failed to initialize processor 1\n");
         goto cleanup;
     }
 
-    // Configure dual output publisher (reads from BOTH queues!)
+    /* Configure dual output publisher (reads from BOTH queues!) */
     dual_publisher_ctx.queue_0 = output_queue_0;
     dual_publisher_ctx.queue_1 = output_queue_1;
     dual_publisher_ctx.use_binary_output = config->binary_output;
     dual_publisher_ctx.shutdown_flag = &g_shutdown;
 
-    // Create threads
+    /* Create threads */
     pthread_t processor_0_tid, processor_1_tid, publisher_tid;
 
-    // Start UDP receiver
+    /* Start UDP receiver */
     if (!udp_receiver_start(&receiver_ctx)) {
         fprintf(stderr, "[UDP Dual] Failed to start UDP receiver\n");
         goto cleanup;
@@ -264,12 +270,12 @@ int run_udp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "  - Dual Output Publisher (round-robin from both)\n");
     fprintf(stderr, "✓ Matching engine ready\n\n");
 
-    // Wait for shutdown signal
+    /* Wait for shutdown signal */
     while (!atomic_load(&g_shutdown)) {
         sleep(1);
     }
 
-    // Graceful shutdown
+    /* Graceful shutdown */
     fprintf(stderr, "\n[UDP Dual] Initiating graceful shutdown...\n");
 
     udp_receiver_stop(&receiver_ctx);
@@ -282,7 +288,7 @@ int run_udp_dual_processor(const app_config_t* config) {
     pthread_join(processor_1_tid, NULL);
     pthread_join(publisher_tid, NULL);
 
-    // Print statistics
+    /* Print statistics */
     fprintf(stderr, "\n--- Processor 0 (A-M) ---\n");
     processor_print_stats(&processor_ctx_0);
     print_memory_stats("Processor 0 (A-M)", pools_0);
@@ -326,8 +332,8 @@ int run_udp_single_processor(const app_config_t* config) {
     fprintf(stderr, "Output format:  %s\n", config->binary_output ? "Binary" : "CSV");
     fprintf(stderr, "========================================\n");
 
-    // Initialize memory pools
-    // Use 64-byte aligned allocation for AVX-512 compatibility
+    /* Initialize memory pools */
+    /* Use 64-byte aligned allocation for AVX-512 compatibility */
     memory_pools_t* pools = aligned_alloc_64(sizeof(memory_pools_t));
     if (!pools) {
         fprintf(stderr, "[UDP Single] Failed to allocate memory pools\n");
@@ -340,7 +346,7 @@ int run_udp_single_processor(const app_config_t* config) {
     fprintf(stderr, "  Hash table:       %d slots (open-addressing)\n", ORDER_MAP_SIZE);
     fprintf(stderr, "========================================\n\n");
 
-    // Initialize matching engine
+    /* Initialize matching engine */
     matching_engine_t* engine = malloc(sizeof(matching_engine_t));
     if (!engine) {
         fprintf(stderr, "[UDP Single] Failed to allocate matching engine\n");
@@ -349,7 +355,7 @@ int run_udp_single_processor(const app_config_t* config) {
     }
     matching_engine_init(engine, pools);
 
-    // Initialize queues
+    /* Initialize queues */
     input_envelope_queue_t* input_queue = malloc(sizeof(input_envelope_queue_t));
     output_envelope_queue_t* output_queue = malloc(sizeof(output_envelope_queue_t));
     if (!input_queue || !output_queue) {
@@ -364,16 +370,17 @@ int run_udp_single_processor(const app_config_t* config) {
     input_envelope_queue_init(input_queue);
     output_envelope_queue_init(output_queue);
 
-    // Thread contexts
+    /* Thread contexts */
     udp_receiver_t receiver_ctx;
     processor_t processor_ctx;
     output_publisher_context_t publisher_ctx;
 
-    // Initialize UDP receiver (single mode)
+    /* Initialize UDP receiver (single mode) */
     udp_receiver_init(&receiver_ctx, input_queue, config->port);
 
-    // Configure processor
+    /* Configure processor */
     processor_config_t processor_config = {
+        .processor_id = 0,
         .tcp_mode = false
     };
 
@@ -383,7 +390,7 @@ int run_udp_single_processor(const app_config_t* config) {
         goto cleanup;
     }
 
-    // Configure output publisher
+    /* Configure output publisher */
     output_publisher_config_t publisher_config = {
         .use_binary_output = config->binary_output
     };
@@ -393,10 +400,10 @@ int run_udp_single_processor(const app_config_t* config) {
         goto cleanup;
     }
 
-    // Create threads
+    /* Create threads */
     pthread_t processor_tid, publisher_tid;
 
-    // Start UDP receiver
+    /* Start UDP receiver */
     if (!udp_receiver_start(&receiver_ctx)) {
         fprintf(stderr, "[UDP Single] Failed to start UDP receiver\n");
         goto cleanup;
@@ -420,12 +427,12 @@ int run_udp_single_processor(const app_config_t* config) {
     fprintf(stderr, "✓ All threads started successfully\n");
     fprintf(stderr, "✓ Matching engine ready\n\n");
 
-    // Wait for shutdown signal
+    /* Wait for shutdown signal */
     while (!atomic_load(&g_shutdown)) {
         sleep(1);
     }
 
-    // Graceful shutdown
+    /* Graceful shutdown */
     fprintf(stderr, "\n[UDP Single] Initiating graceful shutdown...\n");
 
     udp_receiver_stop(&receiver_ctx);
