@@ -1,5 +1,13 @@
 /**
  * engine_client.c - High-level matching engine client implementation
+ *
+ * Design principles (Power of Ten):
+ * - No dynamic memory allocation (all buffers pre-allocated)
+ * - All loops have explicit upper bounds
+ * - All return values checked
+ * - Minimal variable scope
+ * - Simple control flow (early returns for errors)
+ * - No recursion
  */
 
 #include "client/engine_client.h"
@@ -81,6 +89,8 @@ static int drain_transport_buffer(transport_t* transport, int timeout_ms) {
  *   2. Receive first response -> detect encoding (binary or CSV)
  *   3. Send flush -> cancels probe order, triggers Cancel ACK + TOB
  *   4. Wait and drain ALL remaining responses before returning
+ *
+ * If no response is received, the server is not running.
  */
 static bool probe_server_encoding(engine_client_t* client) {
     client_config_t* cfg = &client->config;
@@ -112,11 +122,10 @@ static bool probe_server_encoding(engine_client_t* client) {
         client->codec.encoding_detected = true;
         success = true;
     } else {
-        /* No response - default to CSV */
-        cfg->detected_encoding = ENCODING_CSV;
-        client->codec.detected_encoding = ENCODING_CSV;
-        client->codec.encoding_detected = true;
-        success = true;
+        /* No response - server is not running or not responding */
+        fprintf(stderr, "No response from server (is it running?)\n");
+        success = false;
+        goto cleanup;
     }
 
     /* Send flush - this cancels the probe order */
