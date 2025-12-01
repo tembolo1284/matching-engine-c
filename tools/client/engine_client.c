@@ -1,13 +1,6 @@
 /**
  * engine_client.c - High-level matching engine client implementation
  *
- * Design principles (Power of Ten):
- * - No dynamic memory allocation (all buffers pre-allocated)
- * - All loops have explicit upper bounds
- * - All return values checked
- * - Minimal variable scope
- * - Simple control flow (early returns for errors)
- * - No recursion
  */
 
 #include "client/engine_client.h"
@@ -222,8 +215,17 @@ bool engine_client_connect(engine_client_t* client) {
         cfg->detected_encoding = ENCODING_BINARY;
         client->codec.detected_encoding = ENCODING_BINARY;
         client->codec.encoding_detected = true;
+    } else if (cfg->detected_transport == TRANSPORT_UDP) {
+        /* UDP mode - server doesn't send responses back over UDP, only to stdout */
+        /* Default to binary encoding, no probe needed */
+        cfg->detected_encoding = ENCODING_BINARY;
+        client->codec.detected_encoding = ENCODING_BINARY;
+        client->codec.encoding_detected = true;
+        if (!cfg->quiet) {
+            printf("UDP mode: no probe (server outputs to stdout)\n");
+        }
     } else {
-        /* Must probe server to detect encoding */
+        /* TCP mode - probe server to detect encoding */
         if (!probe_server_encoding(client)) {
             fprintf(stderr, "Failed to detect server encoding\n");
             transport_disconnect(&client->transport);
