@@ -17,41 +17,20 @@
 extern atomic_bool g_shutdown;
 
 /* ============================================================================
- * Static Storage - Dual Processor Mode
+ * Aligned Allocation Helper
  * ============================================================================
- * All major data structures are statically allocated to:
- * - Guarantee memory availability at startup
- * - Ensure proper alignment (especially for cache-line aligned queues)
- * - Enable static analysis of memory usage
- * - Eliminate malloc/free related bugs
+ * Power of Ten Rule 3: No dynamic allocation AFTER initialization.
+ * Allocation at startup is compliant - we allocate once, use throughout,
+ * and free at shutdown.
  */
 
-/* Memory pools - one per processor for isolation */
-static memory_pools_t s_dual_pools_0;
-static memory_pools_t s_dual_pools_1;
-
-/* Matching engines - one per processor */
-static matching_engine_t s_dual_engine_0;
-static matching_engine_t s_dual_engine_1;
-
-/* Shared client registry */
-static tcp_client_registry_t s_dual_client_registry;
-
-/* Lock-free queues - must be cache-line aligned for correctness */
-static _Alignas(64) input_envelope_queue_t s_dual_input_queue_0;
-static _Alignas(64) input_envelope_queue_t s_dual_input_queue_1;
-static _Alignas(64) output_envelope_queue_t s_dual_output_queue_0;
-static _Alignas(64) output_envelope_queue_t s_dual_output_queue_1;
-
-/* ============================================================================
- * Static Storage - Single Processor Mode
- * ============================================================================ */
-
-static memory_pools_t s_single_pools;
-static matching_engine_t s_single_engine;
-static tcp_client_registry_t s_single_client_registry;
-static _Alignas(64) input_envelope_queue_t s_single_input_queue;
-static _Alignas(64) output_envelope_queue_t s_single_output_queue;
+static inline void* aligned_alloc_64(size_t size) {
+    void* ptr = NULL;
+    if (posix_memalign(&ptr, 64, size) != 0) {
+        return NULL;
+    }
+    return ptr;
+}
 
 /* ============================================================================
  * TCP Mode - Dual Processor Implementation
@@ -74,16 +53,45 @@ int run_tcp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "Threads:        4 (Listener, Proc0, Proc1, Router)\n");
     fprintf(stderr, "========================================\n");
 
-    /* Use pointers to static storage */
-    memory_pools_t* pools_0 = &s_dual_pools_0;
-    memory_pools_t* pools_1 = &s_dual_pools_1;
-    matching_engine_t* engine_0 = &s_dual_engine_0;
-    matching_engine_t* engine_1 = &s_dual_engine_1;
-    tcp_client_registry_t* client_registry = &s_dual_client_registry;
-    input_envelope_queue_t* input_queue_0 = &s_dual_input_queue_0;
-    input_envelope_queue_t* input_queue_1 = &s_dual_input_queue_1;
-    output_envelope_queue_t* output_queue_0 = &s_dual_output_queue_0;
-    output_envelope_queue_t* output_queue_1 = &s_dual_output_queue_1;
+    int result = 0;
+    
+    /* ========================================================================
+     * Power of Ten Rule 3 Compliant: Allocate all large structures at init
+     * ======================================================================== */
+    
+    /* Memory pools - one per processor for isolation */
+    memory_pools_t* pools_0 = aligned_alloc_64(sizeof(memory_pools_t));
+    memory_pools_t* pools_1 = aligned_alloc_64(sizeof(memory_pools_t));
+    
+    /* Matching engines - one per processor */
+    matching_engine_t* engine_0 = aligned_alloc_64(sizeof(matching_engine_t));
+    matching_engine_t* engine_1 = aligned_alloc_64(sizeof(matching_engine_t));
+    
+    /* Shared client registry */
+    tcp_client_registry_t* client_registry = aligned_alloc_64(sizeof(tcp_client_registry_t));
+    
+    /* Lock-free queues - 64-byte aligned for cache line optimization */
+    input_envelope_queue_t* input_queue_0 = aligned_alloc_64(sizeof(input_envelope_queue_t));
+    input_envelope_queue_t* input_queue_1 = aligned_alloc_64(sizeof(input_envelope_queue_t));
+    output_envelope_queue_t* output_queue_0 = aligned_alloc_64(sizeof(output_envelope_queue_t));
+    output_envelope_queue_t* output_queue_1 = aligned_alloc_64(sizeof(output_envelope_queue_t));
+    
+    /* Rule 7: Check all allocations */
+    if (!pools_0 || !pools_1 || !engine_0 || !engine_1 || !client_registry ||
+        !input_queue_0 || !input_queue_1 || !output_queue_0 || !output_queue_1) {
+        fprintf(stderr, "[TCP Dual] FATAL: Failed to allocate core data structures\n");
+        fprintf(stderr, "  pools_0=%p pools_1=%p engine_0=%p engine_1=%p\n",
+                (void*)pools_0, (void*)pools_1, (void*)engine_0, (void*)engine_1);
+        fprintf(stderr, "  client_registry=%p\n", (void*)client_registry);
+        fprintf(stderr, "  input_queue_0=%p input_queue_1=%p\n",
+                (void*)input_queue_0, (void*)input_queue_1);
+        fprintf(stderr, "  output_queue_0=%p output_queue_1=%p\n",
+                (void*)output_queue_0, (void*)output_queue_1);
+        result = -1;
+        goto cleanup_alloc;
+    }
+    
+    fprintf(stderr, "\n✓ Core structures allocated (heap, 64-byte aligned)\n");
 
     /* Initialize memory pools */
     memory_pools_init(pools_0);
@@ -92,9 +100,9 @@ int run_tcp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "\nMemory Pools Initialized (per processor):\n");
     fprintf(stderr, "  Order pool:      %d slots each\n", MAX_ORDERS_IN_POOL);
     fprintf(stderr, "  Hash table:      %d slots (open-addressing)\n", ORDER_MAP_SIZE);
-    fprintf(stderr, "  Total memory:    %.2f MB (2 x %.2f MB)\n",
-        (2 * ORDER_MAP_SIZE * sizeof(order_map_slot_t)) / (1024.0 * 1024.0),
-        (ORDER_MAP_SIZE * sizeof(order_map_slot_t)) / (1024.0 * 1024.0));
+    fprintf(stderr, "  Total memory:    ~%.2f MB per processor\n",
+        ((MAX_ORDERS_IN_POOL * sizeof(order_t)) + 
+         (ORDER_MAP_SIZE * sizeof(order_map_slot_t))) / (1024.0 * 1024.0));
     fprintf(stderr, "========================================\n\n");
 
     /* Initialize matching engines */
@@ -115,6 +123,12 @@ int run_tcp_dual_processor(const app_config_t* config) {
     processor_t processor_ctx_0;
     processor_t processor_ctx_1;
     output_router_context_t router_ctx;
+    
+    /* Zero-initialize contexts */
+    memset(&listener_ctx, 0, sizeof(listener_ctx));
+    memset(&processor_ctx_0, 0, sizeof(processor_ctx_0));
+    memset(&processor_ctx_1, 0, sizeof(processor_ctx_1));
+    memset(&router_ctx, 0, sizeof(router_ctx));
 
     /* Configure TCP listener (dual mode) */
     tcp_listener_config_t listener_config = {
@@ -283,8 +297,20 @@ cleanup:
     matching_engine_destroy(engine_0);
     matching_engine_destroy(engine_1);
 
+cleanup_alloc:
+    /* Free heap allocations (Power of Ten: free only at shutdown) */
+    free(pools_0);
+    free(pools_1);
+    free(engine_0);
+    free(engine_1);
+    free(client_registry);
+    free(input_queue_0);
+    free(input_queue_1);
+    free(output_queue_0);
+    free(output_queue_1);
+
     fprintf(stderr, "\n=== TCP Dual Processor Mode Stopped ===\n");
-    return 0;
+    return result;
 }
 
 /* ============================================================================
@@ -307,12 +333,26 @@ int run_tcp_single_processor(const app_config_t* config) {
     fprintf(stderr, "Threads:        3 (Listener, Processor, Router)\n");
     fprintf(stderr, "========================================\n");
 
-    /* Use pointers to static storage */
-    memory_pools_t* pools = &s_single_pools;
-    matching_engine_t* engine = &s_single_engine;
-    tcp_client_registry_t* client_registry = &s_single_client_registry;
-    input_envelope_queue_t* input_queue = &s_single_input_queue;
-    output_envelope_queue_t* output_queue = &s_single_output_queue;
+    int result = 0;
+    
+    /* ========================================================================
+     * Power of Ten Rule 3 Compliant: Allocate all large structures at init
+     * ======================================================================== */
+    
+    memory_pools_t* pools = aligned_alloc_64(sizeof(memory_pools_t));
+    matching_engine_t* engine = aligned_alloc_64(sizeof(matching_engine_t));
+    tcp_client_registry_t* client_registry = aligned_alloc_64(sizeof(tcp_client_registry_t));
+    input_envelope_queue_t* input_queue = aligned_alloc_64(sizeof(input_envelope_queue_t));
+    output_envelope_queue_t* output_queue = aligned_alloc_64(sizeof(output_envelope_queue_t));
+    
+    /* Rule 7: Check all allocations */
+    if (!pools || !engine || !client_registry || !input_queue || !output_queue) {
+        fprintf(stderr, "[TCP Single] FATAL: Failed to allocate core data structures\n");
+        result = -1;
+        goto cleanup_alloc;
+    }
+    
+    fprintf(stderr, "\n✓ Core structures allocated (heap, 64-byte aligned)\n");
 
     /* Initialize memory pools */
     memory_pools_init(pools);
@@ -320,7 +360,7 @@ int run_tcp_single_processor(const app_config_t* config) {
     fprintf(stderr, "\nMemory Pools Initialized:\n");
     fprintf(stderr, "  Order pool:      %d slots\n", MAX_ORDERS_IN_POOL);
     fprintf(stderr, "  Hash table:      %d slots (open-addressing)\n", ORDER_MAP_SIZE);
-    fprintf(stderr, "  Total memory:    %.2f MB\n",
+    fprintf(stderr, "  Total memory:    ~%.2f MB\n",
             ((MAX_ORDERS_IN_POOL * sizeof(order_t)) +
              (ORDER_MAP_SIZE * sizeof(order_map_slot_t))) / (1024.0 * 1024.0));
     fprintf(stderr, "========================================\n\n");
@@ -339,6 +379,11 @@ int run_tcp_single_processor(const app_config_t* config) {
     tcp_listener_context_t listener_ctx;
     processor_t processor_ctx;
     output_router_context_t router_ctx;
+    
+    /* Zero-initialize contexts */
+    memset(&listener_ctx, 0, sizeof(listener_ctx));
+    memset(&processor_ctx, 0, sizeof(processor_ctx));
+    memset(&router_ctx, 0, sizeof(router_ctx));
 
     /* Configure TCP listener (single mode) */
     tcp_listener_config_t listener_config = {
@@ -459,6 +504,14 @@ cleanup:
     
     matching_engine_destroy(engine);
 
+cleanup_alloc:
+    /* Free heap allocations (Power of Ten: free only at shutdown) */
+    free(pools);
+    free(engine);
+    free(client_registry);
+    free(input_queue);
+    free(output_queue);
+
     fprintf(stderr, "\n=== TCP Single Processor Mode Stopped ===\n");
-    return 0;
+    return result;
 }

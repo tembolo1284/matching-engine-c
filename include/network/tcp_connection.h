@@ -25,7 +25,7 @@
 #define MAX_TCP_CLIENTS 100
 
 // Output queue capacity per client
-#define TCP_CLIENT_OUTPUT_QUEUE_SIZE 8192
+#define TCP_CLIENT_OUTPUT_QUEUE_SIZE 524288
 
 // Declare lock-free queue type for output messages
 DECLARE_LOCKFREE_QUEUE(output_msg_t, output_queue)

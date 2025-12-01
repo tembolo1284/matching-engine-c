@@ -113,6 +113,17 @@ require_multicast_built() {
     fi
 }
 
+require_client_built() {
+    if [ ! -x "$BUILD_DIR/matching_engine" ]; then
+        print_error "matching_engine not built. Run ./build.sh build first."
+        exit 1
+    fi
+    if [ ! -x "$BUILD_DIR/matching_engine_client" ]; then
+        print_error "matching_engine_client not built. Run ./build.sh build first."
+        exit 1
+    fi
+}
+
 require_valgrind_built() {
     if [ ! -x "$VALGRIND_BUILD_DIR/matching_engine_tests" ]; then
         print_error "Valgrind-compatible build not found."
@@ -156,11 +167,10 @@ parse_scenarios() {
 }
 
 # -------------------------
-# README run-modes
+# README run-modes (Server)
 # -------------------------
 
 mode_test_binary() {
-    # README "UDP + CSV output, binary client scenarios (default behavior)"
     require_built
     local port="${1:-$DEFAULT_PORT}"
     shift || true
@@ -177,17 +187,12 @@ mode_test_binary() {
         echo "  ./${BUILD_DIR}/binary_client ${port} ${s}"
     done
     echo ""
-    echo "Notes:"
-    echo "  - Server outputs CSV (human readable)."
-    echo "  - Each binary_client scenario is fire-and-forget."
-    echo ""
 
     print_status "Starting UDP server now (CSV output). Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --udp "${port}"
 }
 
 mode_test_binary_full() {
-    # README "UDP + binary output piped to decoder"
     require_built
     if [ ! -x "$BUILD_DIR/binary_decoder" ]; then
         print_error "binary_decoder not built. Run ./build.sh build first."
@@ -209,17 +214,12 @@ mode_test_binary_full() {
         echo "  ./${BUILD_DIR}/binary_client ${port} ${s}"
     done
     echo ""
-    echo "Notes:"
-    echo "  - Server outputs binary; decoder makes it readable."
-    echo "  - Each scenario is fire-and-forget."
-    echo ""
 
     print_status "Starting UDP server now (binary output -> decoder). Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --udp --binary "${port}" 2>/dev/null | "./${BUILD_DIR}/binary_decoder"
 }
 
 mode_test_tcp() {
-    # README "TCP + Binary protocol (scenario then interactive)"
     require_built
     local port="${1:-$DEFAULT_PORT}"
     shift || true
@@ -236,17 +236,12 @@ mode_test_tcp() {
         echo "  ./${BUILD_DIR}/binary_client ${port} ${s} --tcp"
     done
     echo ""
-    echo "Notes:"
-    echo "  - After a scenario, the TCP client enters interactive mode."
-    echo "  - Type 'quit' in the client to exit."
-    echo ""
 
     print_status "Starting TCP server now (CSV output). Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --tcp "${port}"
 }
 
 mode_test_tcp_csv() {
-    # README "TCP + CSV protocol (scenario then interactive)"
     require_built
     local port="${1:-$DEFAULT_PORT}"
     shift || true
@@ -263,17 +258,12 @@ mode_test_tcp_csv() {
         echo "  ./${BUILD_DIR}/binary_client ${port} ${s} --tcp --csv"
     done
     echo ""
-    echo "Notes:"
-    echo "  - Client sends CSV messages over TCP."
-    echo "  - Client enters interactive mode after scenario."
-    echo ""
 
     print_status "Starting TCP server now (CSV output). Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --tcp "${port}"
 }
 
 mode_test_dual_processor() {
-    # Test dual-processor symbol routing
     require_built
     local port="${1:-$DEFAULT_PORT}"
 
@@ -294,22 +284,13 @@ mode_test_dual_processor() {
     echo "  ./${BUILD_DIR}/tcp_client localhost ${port}"
     echo "  > buy IBM 100 50 1      # → Processor 0 (I is A-M)"
     echo "  > buy NVDA 200 25 2     # → Processor 1 (N is N-Z)"
-    echo "  > buy AAPL 150 30 3     # → Processor 0 (A is A-M)"
-    echo "  > buy TSLA 180 40 4     # → Processor 1 (T is N-Z)"
-    echo "  > flush"
-    echo "  > quit"
-    echo ""
-    echo "After Ctrl+C, check per-processor statistics:"
-    echo "  - Messages to Processor 0: Should show IBM, AAPL orders"
-    echo "  - Messages to Processor 1: Should show NVDA, TSLA orders"
     echo ""
 
-    print_status "Starting TCP server in DUAL-PROCESSOR mode. Ctrl+C to stop and see stats."
+    print_status "Starting TCP server in DUAL-PROCESSOR mode. Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --tcp "${port}" --dual-processor
 }
 
 mode_test_single_processor() {
-    # Test single-processor mode for comparison
     require_built
     local port="${1:-$DEFAULT_PORT}"
 
@@ -321,23 +302,12 @@ mode_test_single_processor() {
     echo ""
     echo "All symbols route to a single processor."
     echo ""
-    echo "Terminal 1 (this terminal):"
-    echo "  Server starts in single-processor mode"
-    echo ""
-    echo "Terminal 2 (run these commands):"
-    echo "  ./${BUILD_DIR}/tcp_client localhost ${port}"
-    echo "  > buy IBM 100 50 1"
-    echo "  > buy NVDA 200 25 2"
-    echo "  > flush"
-    echo "  > quit"
-    echo ""
 
     print_status "Starting TCP server in SINGLE-PROCESSOR mode. Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --tcp "${port}" --single-processor
 }
 
 mode_test_multicast() {
-    # Test multicast market data feed
     require_multicast_built
     local port="${1:-$DEFAULT_PORT}"
     local mcast_group="${2:-$MULTICAST_GROUP}"
@@ -349,34 +319,291 @@ mode_test_multicast() {
     echo "Multicast Market Data Feed Test"
     echo "=========================================="
     echo ""
-    echo "Real-world market data distribution pattern!"
-    echo "  - Server sends ONCE to multicast group"
-    echo "  - Network delivers to ALL subscribers"
-    echo "  - Unlimited subscribers, zero server overhead"
+    echo "Terminal 1 (this terminal): Server with multicast"
     echo ""
-    echo "Terminal 1 (this terminal):"
-    echo "  Server with multicast broadcasting"
-    echo ""
-    echo "Terminal 2 (subscriber - can run multiple instances):"
+    echo "Terminal 2 (subscriber):"
     echo "  ./${BUILD_DIR}/multicast_subscriber ${mcast_group} ${mcast_port}"
     echo ""
-    echo "Terminal 3 (send orders via TCP):"
+    echo "Terminal 3 (send orders):"
     echo "  ./${BUILD_DIR}/tcp_client localhost ${port}"
-    echo "  > buy IBM 100 50 1"
-    echo "  > sell IBM 100 30 2"
-    echo "  > flush"
-    echo ""
-    echo "Notes:"
-    echo "  - ALL subscribers receive market data simultaneously"
-    echo "  - Start multiple subscribers to see multicast in action"
-    echo "  - Works across machines if network supports multicast"
-    echo ""
-    echo "=========================================="
     echo ""
 
     print_status "Starting TCP server with MULTICAST feed. Ctrl+C to stop."
     "./${BUILD_DIR}/matching_engine" --tcp "${port}" --multicast "${mcast_group}:${mcast_port}"
 }
+
+# -------------------------
+# Client run-modes
+# -------------------------
+
+mode_client_interactive() {
+    require_client_built
+    local host="${1:-localhost}"
+    local port="${2:-$DEFAULT_PORT}"
+
+    print_status "Client Interactive Mode"
+    echo ""
+    echo "=========================================="
+    echo "Matching Engine Client - Interactive"
+    echo "=========================================="
+    echo ""
+    echo "Ensure server is running:"
+    echo "  ./${BUILD_DIR}/matching_engine --tcp ${port}"
+    echo ""
+    echo "Commands: buy, sell, cancel, flush, scenario, stats, help, quit"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine_client" "$host" "$port"
+}
+
+mode_client_scenario() {
+    require_client_built
+    local scenario="${1:-1}"
+    local host="${2:-localhost}"
+    local port="${3:-$DEFAULT_PORT}"
+
+    print_status "Client Scenario Mode"
+    echo ""
+    echo "Running scenario ${scenario} against ${host}:${port}"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" "$host" "$port"
+}
+
+mode_client_stress() {
+    require_client_built
+    local scenario="${1:-11}"
+    local host="${2:-localhost}"
+    local port="${3:-$DEFAULT_PORT}"
+
+    print_status "Client Stress Test"
+    echo ""
+    echo "Running stress scenario ${scenario} against ${host}:${port}"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" "$host" "$port"
+}
+
+mode_client_burst() {
+    require_client_built
+    local scenario="${1:-40}"
+    local host="${2:-localhost}"
+    local port="${3:-$DEFAULT_PORT}"
+
+    print_status "Client BURST Mode (DANGER!)"
+    echo ""
+    echo "!!! WARNING: No throttling - may cause server buffer overflow !!!"
+    echo ""
+    echo "Running burst scenario ${scenario} against ${host}:${port}"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --danger-burst "$host" "$port"
+}
+
+mode_client_multicast() {
+    require_client_built
+    local host="${1:-localhost}"
+    local port="${2:-$DEFAULT_PORT}"
+    local mcast_group="${3:-$MULTICAST_GROUP}"
+    local mcast_port="${4:-$MULTICAST_PORT}"
+
+    print_status "Client with Multicast Subscription"
+    echo ""
+    echo "=========================================="
+    echo "Client + Multicast Market Data"
+    echo "=========================================="
+    echo ""
+    echo "Ensure server is running with multicast:"
+    echo "  ./${BUILD_DIR}/matching_engine --tcp ${port} --multicast ${mcast_group}:${mcast_port}"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine_client" --multicast "${mcast_group}:${mcast_port}" "$host" "$port"
+}
+
+mode_client_mcast_only() {
+    require_client_built
+    local mcast_group="${1:-$MULTICAST_GROUP}"
+    local mcast_port="${2:-$MULTICAST_PORT}"
+
+    print_status "Multicast-Only Subscriber"
+    echo ""
+    echo "=========================================="
+    echo "Multicast-Only Market Data Subscriber"
+    echo "=========================================="
+    echo ""
+    echo "Ensure server is running with multicast:"
+    echo "  ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT} --multicast ${mcast_group}:${mcast_port}"
+    echo ""
+    echo "Press Ctrl+C to stop."
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine_client" --multicast-only --multicast "${mcast_group}:${mcast_port}"
+}
+
+# -------------------------
+# Client test modes
+# -------------------------
+
+mode_test_client_basic() {
+    require_client_built
+    local port="${1:-$DEFAULT_PORT}"
+
+    print_status "Client Basic Scenarios Test"
+    echo ""
+    echo "=========================================="
+    echo "Running Client Scenarios 1, 2, 3"
+    echo "=========================================="
+    echo ""
+
+    # Start server in background
+    "./${BUILD_DIR}/matching_engine" --tcp "$port" > /tmp/server_output.txt 2>&1 &
+    local server_pid=$!
+    sleep 1
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        print_error "Server failed to start"
+        cat /tmp/server_output.txt
+        exit 1
+    fi
+
+    print_status "Server started (PID: $server_pid)"
+
+    "./${BUILD_DIR}/matching_engine_client" --scenario 1 localhost "$port"
+    echo ""
+    "./${BUILD_DIR}/matching_engine_client" --scenario 2 localhost "$port"
+    echo ""
+    "./${BUILD_DIR}/matching_engine_client" --scenario 3 localhost "$port"
+
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    print_success "Client basic tests complete"
+}
+
+mode_test_client_stress() {
+    require_client_built
+    local scenario="${1:-11}"
+    local port="${2:-$DEFAULT_PORT}"
+
+    print_status "Client Stress Test (Scenario ${scenario})"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine" --tcp "$port" > /tmp/server_output.txt 2>&1 &
+    local server_pid=$!
+    sleep 1
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        print_error "Server failed to start"
+        exit 1
+    fi
+
+    print_status "Server started (PID: $server_pid)"
+
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" localhost "$port"
+
+    kill -TERM "$server_pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    echo ""
+    echo "Server output:"
+    cat /tmp/server_output.txt | grep -E "Statistics|messages|Processor" || true
+
+    print_success "Client stress test complete"
+}
+
+mode_test_client_multi_symbol() {
+    require_client_built
+    local scenario="${1:-30}"
+    local port="${2:-$DEFAULT_PORT}"
+
+    print_status "Client Multi-Symbol Test (Dual-Processor)"
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine" --tcp "$port" --dual-processor > /tmp/server_output.txt 2>&1 &
+    local server_pid=$!
+    sleep 1
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        print_error "Server failed to start"
+        exit 1
+    fi
+
+    print_status "Server started in dual-processor mode (PID: $server_pid)"
+
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" localhost "$port"
+
+    kill -TERM "$server_pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    echo ""
+    echo "Server processor distribution:"
+    cat /tmp/server_output.txt | grep -E "Processor|messages" || true
+
+    print_success "Client multi-symbol test complete"
+}
+
+mode_test_client_all() {
+    require_client_built
+    local port="${1:-$DEFAULT_PORT}"
+
+    print_status "Running All Client Tests"
+    echo ""
+    echo "=========================================="
+    echo "Client Test Suite"
+    echo "=========================================="
+    echo ""
+
+    "./${BUILD_DIR}/matching_engine" --tcp "$port" --dual-processor > /tmp/server_output.txt 2>&1 &
+    local server_pid=$!
+    sleep 1
+
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        print_error "Server failed to start"
+        exit 1
+    fi
+
+    print_status "Server started (PID: $server_pid)"
+    echo ""
+
+    echo "=== Basic Scenarios ==="
+    "./${BUILD_DIR}/matching_engine_client" --scenario 1 --quiet localhost "$port"
+    "./${BUILD_DIR}/matching_engine_client" --scenario 2 --quiet localhost "$port"
+    "./${BUILD_DIR}/matching_engine_client" --scenario 3 --quiet localhost "$port"
+    print_success "Basic scenarios passed"
+    echo ""
+
+    echo "=== Stress Test (1K orders) ==="
+    "./${BUILD_DIR}/matching_engine_client" --scenario 10 localhost "$port"
+    echo ""
+
+    echo "=== Multi-Symbol Test (10K orders) ==="
+    "./${BUILD_DIR}/matching_engine_client" --scenario 30 localhost "$port"
+    echo ""
+
+    echo "=== Matching Test (1K pairs) ==="
+    "./${BUILD_DIR}/matching_engine_client" --scenario 20 localhost "$port"
+    echo ""
+
+    kill -TERM "$server_pid" 2>/dev/null || true
+    sleep 1
+    kill -9 "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+
+    print_success "All client tests complete!"
+}
+
+list_client_scenarios() {
+    require_client_built
+    "./${BUILD_DIR}/matching_engine_client" --list-scenarios
+}
+
+# -------------------------
+# Other test modes
+# -------------------------
 
 run_unit_tests() {
     print_status "Running unit tests..."
@@ -394,12 +621,9 @@ run_valgrind() {
         exit 1
     fi
 
-    # Ensure valgrind-compatible build exists
     require_valgrind_built
 
     print_status "Running valgrind on unit tests (AVX-512-free build)..."
-    echo ""
-    echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
     echo ""
     valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
         --error-exitcode=1 \
@@ -424,9 +648,6 @@ run_valgrind_server_udp() {
 
     print_status "Running valgrind on UDP server for ${timeout_secs} seconds..."
     echo ""
-    echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
-    echo "      Server will auto-terminate after ${timeout_secs} seconds."
-    echo ""
 
     timeout --signal=SIGINT "${timeout_secs}" \
         valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
@@ -445,18 +666,13 @@ run_valgrind_server() {
         exit 1
     fi
 
-    # Ensure valgrind-compatible build exists
     require_valgrind_built
 
     local timeout_secs="${1:-5}"
     
     print_status "Running valgrind on TCP server for ${timeout_secs} seconds..."
     echo ""
-    echo "Note: Using $VALGRIND_BUILD_DIR (built without AVX-512 for Valgrind compatibility)"
-    echo "      Server will auto-terminate after ${timeout_secs} seconds."
-    echo ""
     
-    # Use timeout to auto-terminate the server
     timeout --signal=SIGINT "${timeout_secs}" \
         valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
         "./${VALGRIND_BUILD_DIR}/matching_engine" --tcp "$DEFAULT_PORT" || true
@@ -481,7 +697,7 @@ show_info() {
 show_help() {
     cat << EOF
 Usage:
-  ./build.sh [command] [port] [scenarios...]
+  ./build.sh [command] [args...]
 
 Build:
   build            Build Release
@@ -493,7 +709,7 @@ Build:
   clean-all        Remove all build dirs (including valgrind)
   valgrind-build   Build valgrind-compatible version (no AVX-512)
 
-Real Tests:
+Server Tests:
   test             Run Unity unit tests (C tests)
 
 README Run-Modes (2-terminal workflows):
@@ -501,37 +717,50 @@ README Run-Modes (2-terminal workflows):
   test-binary-full     UDP server binary output piped to decoder
   test-tcp             TCP server CSV output + binary_client --tcp
   test-tcp-csv         TCP server CSV output + binary_client --tcp --csv
-  test-dual-processor  TCP server dual-processor mode (symbol routing test)
-  test-single-processor TCP server single-processor mode (comparison)
-  test-multicast       TCP server with multicast market data feed (NEW!)
-  test-all             Prints all README run-modes (does not start anything)
+  test-dual-processor  TCP server dual-processor mode (symbol routing)
+  test-single-processor TCP server single-processor mode
+  test-multicast       TCP server with multicast market data feed
+
+Client Tests (auto-starts server):
+  test-client          Run basic client scenarios (1-3)
+  test-client-stress [N]  Run stress test (default: scenario 11)
+  test-client-multi    Run multi-symbol test (dual-processor)
+  test-client-all      Run full client test suite
+
+Client Commands:
+  client [host] [port]     Interactive client mode
+  client-scenario N [host] [port]  Run specific scenario
+  client-stress [N] [host] [port]  Run stress scenario (default: 11)
+  client-burst [N] [host] [port]   Run burst scenario (DANGER! default: 40)
+  client-multicast [host] [port]   Client with multicast subscription
+  client-mcast-only [group] [port] Multicast-only subscriber (no orders)
+  client-scenarios         List available scenarios
 
 Memory Checking:
-  valgrind             Run unit tests under valgrind (auto-exits)
-  valgrind-server [s]  Run TCP server under valgrind for [s] seconds (default: 5)
+  valgrind             Run unit tests under valgrind
+  valgrind-server [s]  Run TCP server under valgrind for [s] seconds
+  valgrind-server-udp  Run UDP server under valgrind
 
-Scenario examples:
-  ./build.sh test-binary 1234 all
-  ./build.sh test-binary-full 1234 1 2 3
-  ./build.sh test-tcp 1234 2
-  ./build.sh test-tcp-csv 1234 2
-  ./build.sh test-dual-processor 1234
-  ./build.sh test-multicast 1234 239.255.0.1 5000
+Run Server:
+  run [args]           Run server directly
+  run-tcp              Run TCP server on ${DEFAULT_PORT}
+  run-udp              Run UDP server on ${DEFAULT_PORT}
+  run-dual             Run TCP server in dual-processor mode
+  run-single           Run TCP server in single-processor mode
+  run-multicast        Run TCP server with multicast feed
+  run-multicast-binary Run TCP with binary multicast
+  run-tcp-binary       Run TCP with binary output
 
-Run:
-  run [args]       Run server directly (same as README)
-  run-tcp          Run TCP server on 1234 (dual-processor, default)
-  run-tcp-binary   Run TCP server on 1234 with binary output
-  run-udp          Run UDP server on 1234
-  run-dual         Run TCP server in dual-processor mode (default)
-  run-single       Run TCP server in single-processor mode
-  run-multicast    Run TCP server with multicast feed (239.255.0.1:5000)
-  run-multicast-binary Run TCP server with binary multicast feed
-
-Multicast Info:
-  Multicast provides zero-overhead broadcast to unlimited subscribers.
-  Perfect for market data distribution (CME, NASDAQ, ICE use this).
-  Default group: ${MULTICAST_GROUP}:${MULTICAST_PORT} (local subnet)
+Examples:
+  ./build.sh build
+  ./build.sh test-client
+  ./build.sh test-client-stress 12      # 100K order stress test
+  ./build.sh client-scenario 2          # Run scenario 2
+  ./build.sh client-burst 41            # 1M orders, no throttling (DANGER!)
+  
+  # Two terminal workflow:
+  # Terminal 1: ./build.sh run-multicast
+  # Terminal 2: ./build.sh client-multicast
 
 EOF
 }
@@ -623,47 +852,71 @@ main() {
             mode_test_multicast "$@"
             ;;
         test-all)
-            # Print recipes only; don't start servers
             print_status "README run-modes quick reference:"
             echo ""
             echo "1) UDP + Binary (decoded):"
             echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --udp --binary ${DEFAULT_PORT} 2>/dev/null | ./${BUILD_DIR}/binary_decoder"
             echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 1"
-            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2"
-            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 3"
             echo ""
-            echo "2) UDP + CSV:"
-            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --udp ${DEFAULT_PORT}"
-            echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 1 --csv"
-            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --csv"
-            echo "               ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 3 --csv"
-            echo ""
-            echo "3) TCP + Binary scenario then interactive:"
+            echo "2) TCP + Binary scenario then interactive:"
             echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
             echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --tcp"
             echo ""
-            echo "4) TCP + CSV scenario then interactive:"
-            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
-            echo "   Terminal 2: ./${BUILD_DIR}/binary_client ${DEFAULT_PORT} 2 --tcp --csv"
-            echo ""
-            echo "5) Dual-Processor Mode (default):"
-            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT}"
-            echo "   Terminal 2: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
-            echo "               > buy IBM 100 50 1      # → Processor 0 (A-M)"
-            echo "               > buy NVDA 200 25 2     # → Processor 1 (N-Z)"
-            echo ""
-            echo "6) Single-Processor Mode:"
-            echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT} --single-processor"
-            echo "   Terminal 2: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
-            echo ""
-            echo "7) Multicast Market Data Feed (NEW!):"
+            echo "3) Multicast Market Data:"
             echo "   Terminal 1: ./${BUILD_DIR}/matching_engine --tcp ${DEFAULT_PORT} --multicast ${MULTICAST_GROUP}:${MULTICAST_PORT}"
             echo "   Terminal 2: ./${BUILD_DIR}/multicast_subscriber ${MULTICAST_GROUP} ${MULTICAST_PORT}"
-            echo "   Terminal 3: ./${BUILD_DIR}/tcp_client localhost ${DEFAULT_PORT}"
-            echo "               > buy IBM 100 50 1"
-            echo "               > sell IBM 100 30 2"
+            echo "   Terminal 3: ./${BUILD_DIR}/matching_engine_client localhost ${DEFAULT_PORT}"
             echo ""
             ;;
+
+        # Client commands
+        client|run-client)
+            shift
+            mode_client_interactive "$@"
+            ;;
+        client-scenario)
+            shift
+            mode_client_scenario "$@"
+            ;;
+        client-stress)
+            shift
+            mode_client_stress "$@"
+            ;;
+        client-burst)
+            shift
+            mode_client_burst "$@"
+            ;;
+        client-multicast)
+            shift
+            mode_client_multicast "$@"
+            ;;
+        client-mcast-only)
+            shift
+            mode_client_mcast_only "$@"
+            ;;
+        
+        # Client tests
+        test-client|test-client-basic)
+            shift
+            mode_test_client_basic "$@"
+            ;;
+        test-client-stress)
+            shift
+            mode_test_client_stress "$@"
+            ;;
+        test-client-multi|test-client-multi-symbol)
+            shift
+            mode_test_client_multi_symbol "$@"
+            ;;
+        test-client-all)
+            shift
+            mode_test_client_all "$@"
+            ;;
+        client-scenarios|list-scenarios)
+            list_client_scenarios
+            ;;
+
+        # Valgrind
         valgrind)
             run_valgrind
             ;;
@@ -675,6 +928,8 @@ main() {
             shift
             run_valgrind_server_udp "$@"
             ;;
+
+        # Run server
         run)
             run_server "$@"
             ;;
@@ -699,6 +954,8 @@ main() {
         run-tcp-binary)
             run_server run --tcp "$DEFAULT_PORT" --binary
             ;;
+
+        # Info
         info)
             show_info
             ;;
