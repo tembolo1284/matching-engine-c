@@ -13,15 +13,13 @@
  *   - Multiple instances can run simultaneously
  * 
  * Usage:
- *   ./multicast_subscriber <multicast_group> <port>
+ *   ./multicast_subscriber <multicast_group> <port> [interface_ip]
  * 
  * Example:
  *   Terminal 1: ./matching_engine --tcp --multicast 239.255.0.1:5000
  *   Terminal 2: ./multicast_subscriber 239.255.0.1 5000
- *   Terminal 3: ./multicast_subscriber 239.255.0.1 5000  # Another subscriber!
- *   Terminal 4: ./multicast_subscriber 239.255.0.1 5000  # Yet another!
+ *   Terminal 3: ./multicast_subscriber 239.255.0.1 5000 192.168.0.159  # Specify interface
  */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,6 +32,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <time.h>
+#include <ifaddrs.h>
+#include <net/if.h>
 
 #define MAX_PACKET_SIZE 65507
 #define BINARY_MAGIC 0x4D
@@ -173,8 +173,61 @@ static void handle_csv_message(const char* data, size_t len) {
     }
 }
 
+/**
+ * Find first non-loopback IPv4 interface address
+ * Returns true if found, stores address in out_addr
+ */
+static bool find_default_interface(struct in_addr* out_addr) {
+    struct ifaddrs* ifaddr;
+    struct ifaddrs* ifa;
+    bool found = false;
+    
+    if (getifaddrs(&ifaddr) == -1) {
+        return false;
+    }
+    
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) {
+            continue;
+        }
+        
+        // Skip non-IPv4
+        if (ifa->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        
+        // Skip loopback
+        if (ifa->ifa_flags & IFF_LOOPBACK) {
+            continue;
+        }
+        
+        // Skip interfaces that aren't up
+        if (!(ifa->ifa_flags & IFF_UP)) {
+            continue;
+        }
+        
+        struct sockaddr_in* sa = (struct sockaddr_in*)ifa->ifa_addr;
+        
+        // Skip Docker bridge and similar virtual interfaces (172.x.x.x)
+        uint32_t addr_host = ntohl(sa->sin_addr.s_addr);
+        if ((addr_host & 0xFF000000) == 0xAC000000) {  // 172.x.x.x
+            continue;
+        }
+        
+        *out_addr = sa->sin_addr;
+        char addr_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, out_addr, addr_str, sizeof(addr_str));
+        fprintf(stderr, "✓ Auto-detected interface: %s (%s)\n", ifa->ifa_name, addr_str);
+        found = true;
+        break;
+    }
+    
+    freeifaddrs(ifaddr);
+    return found;
+}
+
 // Join multicast group and start receiving
-static int run_subscriber(const char* mcast_group, uint16_t port) {
+static int run_subscriber(const char* mcast_group, uint16_t port, const char* interface_ip) {
     int sockfd;
     struct sockaddr_in local_addr;
     struct ip_mreq mreq;
@@ -199,6 +252,12 @@ static int run_subscriber(const char* mcast_group, uint16_t port) {
         fprintf(stderr, "WARNING: Failed to set SO_REUSEADDR: %s\n", strerror(errno));
     }
     
+#ifdef SO_REUSEPORT
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &reuse, sizeof(reuse)) < 0) {
+        // Not fatal
+    }
+#endif
+    
     // Bind to the multicast port (INADDR_ANY to receive multicast)
     memset(&local_addr, 0, sizeof(local_addr));
     local_addr.sin_family = AF_INET;
@@ -220,7 +279,25 @@ static int run_subscriber(const char* mcast_group, uint16_t port) {
         close(sockfd);
         return 1;
     }
-    mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+    
+    // Determine which interface to join on
+    if (interface_ip != NULL) {
+        // User specified interface
+        if (inet_pton(AF_INET, interface_ip, &mreq.imr_interface) <= 0) {
+            fprintf(stderr, "ERROR: Invalid interface IP: %s\n", interface_ip);
+            close(sockfd);
+            return 1;
+        }
+        fprintf(stderr, "✓ Using specified interface: %s\n", interface_ip);
+    } else {
+        // Try to auto-detect a good interface
+        if (!find_default_interface(&mreq.imr_interface)) {
+            // Fall back to INADDR_ANY
+            mreq.imr_interface.s_addr = htonl(INADDR_ANY);
+            fprintf(stderr, "⚠ Using INADDR_ANY (may not work with multiple interfaces)\n");
+            fprintf(stderr, "  Hint: Specify interface IP as third argument if no packets received\n");
+        }
+    }
     
     if (setsockopt(sockfd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) < 0) {
         fprintf(stderr, "ERROR: Failed to join multicast group: %s\n", strerror(errno));
@@ -318,20 +395,24 @@ static int run_subscriber(const char* mcast_group, uint16_t port) {
 }
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s <multicast_group> <port>\n", argv[0]);
+    if (argc < 3 || argc > 4) {
+        fprintf(stderr, "Usage: %s <multicast_group> <port> [interface_ip]\n", argv[0]);
         fprintf(stderr, "\nExample:\n");
-        fprintf(stderr, "  %s 239.255.0.1 5000\n\n", argv[0]);
+        fprintf(stderr, "  %s 239.255.0.1 5000\n", argv[0]);
+        fprintf(stderr, "  %s 239.255.0.1 5000 192.168.0.159  # Specify interface\n\n", argv[0]);
         fprintf(stderr, "Standard multicast addresses:\n");
         fprintf(stderr, "  239.255.0.1   - Local subnet\n");
         fprintf(stderr, "  224.0.0.1     - All systems on subnet\n");
         fprintf(stderr, "  239.0.0.0/8   - Organization-local scope\n");
+        fprintf(stderr, "\nIf no packets are received, try specifying the interface IP.\n");
+        fprintf(stderr, "Run 'hostname -I' to see available interfaces.\n");
         fprintf(stderr, "\nMultiple subscribers can run simultaneously!\n");
         return 1;
     }
     
     const char* mcast_group = argv[1];
     uint16_t port = (uint16_t)atoi(argv[2]);
+    const char* interface_ip = (argc == 4) ? argv[3] : NULL;
     
     if (port == 0) {
         fprintf(stderr, "ERROR: Invalid port: %s\n", argv[2]);
@@ -356,5 +437,5 @@ int main(int argc, char** argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     
-    return run_subscriber(mcast_group, port);
+    return run_subscriber(mcast_group, port, interface_ip);
 }

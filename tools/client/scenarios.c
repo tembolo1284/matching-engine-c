@@ -334,20 +334,20 @@ bool scenario_matching_trade(engine_client_t* client, scenario_result_t* result)
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
 
     /* Matching sell order */
     printf("\nSending: SELL IBM 50@100 (should match!)\n");
     oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_SELL, 0);
     if (oid > 0 && result) result->orders_sent++;
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
     
     /* Extra polling to catch all messages */
     for (int i = 0; i < 3; i++) {
-        sleep_ms(100);
-        engine_client_recv_all(client, 100);
+        sleep_ms(200);
+        engine_client_recv_all(client, 200);
     }
 
     finalize_result(result, client);
@@ -367,19 +367,19 @@ bool scenario_cancel_order(engine_client_t* client, scenario_result_t* result) {
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
 
     /* Cancel */
     printf("\nSending: CANCEL order %u\n", oid);
     engine_client_send_cancel(client, oid);
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
     
     /* Extra polling to catch TOB eliminated message */
     for (int i = 0; i < 3; i++) {
-        sleep_ms(100);
-        engine_client_recv_all(client, 100);
+        sleep_ms(200);
+        engine_client_recv_all(client, 200);
     }
 
     finalize_result(result, client);
@@ -420,7 +420,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
         delay_ms = 0;
     } else if (count >= 10000000) {
         batch_size = 50000;
-        delay_ms = 60;
+        delay_ms = 75;
     } else if (count >= 1000000) {
         batch_size = 50000;
         delay_ms = 50;
@@ -511,8 +511,8 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 
     /* Flush first */
     engine_client_send_flush(client);
-    sleep_ms(100);
-    engine_client_recv_all(client, 50);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
 
     /* Progress tracking */
     uint32_t progress_interval = pairs / 10;
@@ -538,7 +538,7 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 
     /* Wait for responses */
     sleep_ms(500);
-    engine_client_recv_all(client, 100);
+    engine_client_recv_all(client, 200);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -563,8 +563,8 @@ bool scenario_multi_symbol_stress(engine_client_t* client, uint32_t count,
 
     /* Flush first */
     engine_client_send_flush(client);
-    sleep_ms(100);
-    engine_client_recv_all(client, 50);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
 
     /* Progress tracking */
     uint32_t progress_interval = count / 10;
@@ -612,7 +612,7 @@ bool scenario_multi_symbol_stress(engine_client_t* client, uint32_t count,
     printf("\nSending FLUSH to clear all books...\n");
     engine_client_send_flush(client);
     sleep_ms(200);
-    engine_client_recv_all(client, 100);
+    engine_client_recv_all(client, 200);
 
     finalize_result(result, client);
     scenario_print_result(result);
