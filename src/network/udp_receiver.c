@@ -2,7 +2,6 @@
 #include "protocol/binary/binary_protocol.h"
 #include "protocol/binary/binary_message_parser.h"
 #include "protocol/symbol_router.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -243,6 +242,107 @@ bool udp_receiver_setup_socket(udp_receiver_t* receiver) {
 }
 
 /**
+ * Get binary message size by type
+ * Returns 0 if unknown type
+ */
+static size_t get_binary_message_size(uint8_t msg_type) {
+    switch (msg_type) {
+        case BINARY_MSG_NEW_ORDER:
+            return sizeof(binary_new_order_t);
+        case BINARY_MSG_CANCEL:
+            return sizeof(binary_cancel_t);
+        case BINARY_MSG_FLUSH:
+            return sizeof(binary_flush_t);
+        default:
+            return 0;
+    }
+}
+
+/**
+ * Parse and route a single message (binary or CSV)
+ * Returns number of bytes consumed, or 0 on error
+ */
+static size_t parse_and_route_message(udp_receiver_t* receiver,
+                                      const char* data,
+                                      size_t remaining) {
+    input_msg_t msg;
+    size_t consumed = 0;
+    
+    /* Check if this is a binary message */
+    if (remaining >= 2 && (uint8_t)data[0] == BINARY_MAGIC) {
+        uint8_t msg_type = (uint8_t)data[1];
+        size_t msg_size = get_binary_message_size(msg_type);
+        
+        if (msg_size == 0) {
+            fprintf(stderr, "Unknown binary message type: 0x%02X\n", msg_type);
+            return 1;  /* Skip unknown byte */
+        }
+        
+        if (remaining < msg_size) {
+            fprintf(stderr, "Incomplete binary message: have %zu, need %zu\n", 
+                    remaining, msg_size);
+            return 0;  /* Can't process - shouldn't happen with UDP */
+        }
+        
+        if (binary_message_parser_parse(&receiver->binary_parser, data, msg_size, &msg)) {
+            uint64_t seq = atomic_fetch_add(&receiver->sequence, 1);
+            input_msg_envelope_t envelope = create_input_envelope(&msg, 0, seq);
+            
+            if (route_message(receiver, &envelope, &msg)) {
+                atomic_fetch_add_explicit(&receiver->messages_parsed, 1, 
+                                          memory_order_relaxed);
+            } else {
+                fprintf(stderr, "WARNING: Input queue full, dropping message!\n");
+                atomic_fetch_add(&receiver->messages_dropped, 1);
+            }
+        }
+        
+        return msg_size;
+    }
+    
+    /* CSV protocol - find end of line */
+    const char* line_end = data;
+    while (line_end < data + remaining && *line_end != '\n' && *line_end != '\r') {
+        line_end++;
+    }
+    
+    size_t line_len = line_end - data;
+    
+    if (line_len > 0) {
+        char line_buffer[MAX_INPUT_LINE_LENGTH];
+        if (line_len < MAX_INPUT_LINE_LENGTH) {
+            memcpy(line_buffer, data, line_len);
+            line_buffer[line_len] = '\0';
+            
+            if (message_parser_parse(&receiver->csv_parser, line_buffer, &msg)) {
+                uint64_t seq = atomic_fetch_add(&receiver->sequence, 1);
+                input_msg_envelope_t envelope = create_input_envelope(&msg, 0, seq);
+                
+                if (route_message(receiver, &envelope, &msg)) {
+                    atomic_fetch_add_explicit(&receiver->messages_parsed, 1, 
+                                              memory_order_relaxed);
+                } else {
+                    fprintf(stderr, "WARNING: Input queue full, dropping message!\n");
+                    atomic_fetch_add(&receiver->messages_dropped, 1);
+                }
+            }
+        } else {
+            fprintf(stderr, "ERROR: CSV line too long (%zu bytes)\n", line_len);
+        }
+        consumed = line_len;
+    }
+    
+    /* Skip any trailing newline characters */
+    const char* skip = data + consumed;
+    while (skip < data + remaining && (*skip == '\n' || *skip == '\r')) {
+        skip++;
+        consumed++;
+    }
+    
+    return consumed > 0 ? consumed : 1;  /* Always advance at least 1 byte */
+}
+
+/**
  * Thread entry point for UDP receiver
  */
 void* udp_receiver_thread_func(void* arg) {
@@ -278,79 +378,22 @@ void* udp_receiver_thread_func(void* arg) {
             continue;
         }
         
-        // Null-terminate for CSV parsing
+        // Null-terminate for CSV parsing safety
         buffer[bytes_received] = '\0';
         
         atomic_fetch_add_explicit(&receiver->packets_received, 1, memory_order_relaxed);
         
-        // Split buffer by newlines for multi-line packets
-        char* line_start = buffer;
-        char* line_end;
+        /* Parse all messages in the packet */
+        const char* ptr = buffer;
+        size_t remaining = (size_t)bytes_received;
         
-        while (line_start < buffer + bytes_received) {
-            // Find end of line
-            line_end = line_start;
-            while (line_end < buffer + bytes_received && 
-                   *line_end != '\n' && *line_end != '\r') {
-                line_end++;
+        while (remaining > 0) {
+            size_t consumed = parse_and_route_message(receiver, ptr, remaining);
+            if (consumed == 0) {
+                break;  /* Incomplete message - shouldn't happen with UDP */
             }
-            
-            // Calculate line length
-            size_t line_len = line_end - line_start;
-            
-            if (line_len > 0) {
-                input_msg_t msg;
-                bool parse_success = false;
-                
-                /* Auto-detect message format */
-                if (is_binary_message(line_start, line_len)) {
-                    /* Binary protocol */
-                    parse_success = binary_message_parser_parse(
-                        &receiver->binary_parser,
-                        line_start,
-                        line_len,
-                        &msg
-                    );
-                } else {
-                    /* CSV protocol - need to null-terminate this line */
-                    char line_buffer[MAX_INPUT_LINE_LENGTH];
-                    if (line_len < MAX_INPUT_LINE_LENGTH) {
-                        memcpy(line_buffer, line_start, line_len);
-                        line_buffer[line_len] = '\0';
-                        parse_success = message_parser_parse(
-                            &receiver->csv_parser,
-                            line_buffer,
-                            &msg
-                        );
-                    } else {
-                        fprintf(stderr, "ERROR: CSV line too long (%zu bytes)\n", line_len);
-                    }
-                }
-                
-                if (parse_success) {
-                    // Create envelope with client_id = 0 (UDP mode)
-                    uint64_t seq = atomic_fetch_add(&receiver->sequence, 1);
-                    input_msg_envelope_t envelope = create_input_envelope(&msg, 0, seq);
-                    
-                    // Route message to appropriate queue(s)
-                    if (route_message(receiver, &envelope, &msg)) {
-                        atomic_fetch_add_explicit(&receiver->messages_parsed, 1, 
-                                                  memory_order_relaxed);
-                    } else {
-                        fprintf(stderr, "WARNING: Input queue full, dropping message!\n");
-                        atomic_fetch_add(&receiver->messages_dropped, 1);
-                    }
-                }
-            }
-            
-            // Move to next line
-            line_start = line_end;
-            
-            // Skip newline characters
-            while (line_start < buffer + bytes_received &&
-                   (*line_start == '\n' || *line_start == '\r')) {
-                line_start++;
-            }
+            ptr += consumed;
+            remaining -= consumed;
         }
     }
     

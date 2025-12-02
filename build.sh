@@ -921,7 +921,7 @@ main() {
             require_built
             require_decoder_built
             print_status "Starting matching engine (UDP binary -> decoder)..."
-            "./${BUILD_DIR}/matching_engine" --udp "$DEFAULT_PORT" --binary 2>&1 | "./${BUILD_DIR}/binary_decoder"
+            "./${BUILD_DIR}/matching_engine" --udp "$DEFAULT_PORT" --binary | "./${BUILD_DIR}/binary_decoder"
             ;;
         run-udp-binary-raw)
             run_server run --udp "$DEFAULT_PORT" --binary
