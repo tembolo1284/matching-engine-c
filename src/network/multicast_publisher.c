@@ -46,8 +46,8 @@ bool multicast_publisher_setup_socket(multicast_publisher_context_t* ctx) {
                 strerror(errno));
     }
 
-    // Disable multicast loopback (don't receive our own packets)
-    unsigned char loop = 0;
+    // Enable multicast loopback (receive our own packets)
+    unsigned char loop = 1;
     if (setsockopt(ctx->sockfd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop)) < 0) {
         fprintf(stderr, "[Multicast Publisher] WARNING: Failed to disable loopback: %s\n",
                 strerror(errno));
