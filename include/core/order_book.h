@@ -15,7 +15,7 @@ extern "C" {
 
 /**
  * OrderBook - Single symbol order book with price-time priority
- * 
+ *
  * Design principles (Power of Ten + Roman Bansal's rules):
  * - No dynamic allocation after init (Rule 3)
  * - All loops have fixed upper bounds (Rule 2)
@@ -35,9 +35,12 @@ extern "C" {
 #define TYPICAL_ORDERS_PER_LEVEL 20
 
 /* Maximum output messages from a single operation */
-#define MAX_OUTPUT_MESSAGES 1024
+#define MAX_OUTPUT_MESSAGES 8192
 
-/* 
+/* Number of orders to process per flush iteration (for batched flush) */
+#define FLUSH_BATCH_SIZE 4096
+
+/*
  * Hash table size - MUST be power of 2 for fast masking
  * Load factor target: ~50% for good probe performance
  */
@@ -136,6 +139,24 @@ typedef struct {
 } memory_pools_t;
 
 /* ============================================================================
+ * Flush State for Iterative Flushing
+ * ============================================================================ */
+
+/**
+ * Flush state - tracks progress through iterative flush
+ * Allows flushing large books in batches without buffer overflow
+ */
+typedef struct {
+    bool in_progress;           /* True if flush is ongoing */
+    int current_bid_level;      /* Current bid level being processed */
+    int current_ask_level;      /* Current ask level being processed */
+    order_t* current_order;     /* Current order within level (NULL = start of level) */
+    bool processing_bids;       /* True = processing bids, False = processing asks */
+    bool bids_done;             /* True if all bids have been processed */
+    bool asks_done;             /* True if all asks have been processed */
+} flush_state_t;
+
+/* ============================================================================
  * Order Book Structure
  * ============================================================================ */
 
@@ -163,6 +184,9 @@ typedef struct {
     /* Track if sides ever had orders */
     bool bid_side_ever_active;
     bool ask_side_ever_active;
+
+    /* Flush state for iterative flushing */
+    flush_state_t flush_state;
 
     /* Memory pools */
     memory_pools_t* pools;
@@ -198,7 +222,7 @@ typedef struct {
     size_t total_memory_bytes;
 } memory_pool_stats_t;
 
-void memory_pools_get_stats(const memory_pools_t* pools, 
+void memory_pools_get_stats(const memory_pools_t* pools,
                             const order_book_t* book,
                             memory_pool_stats_t* stats);
 
@@ -209,17 +233,40 @@ void memory_pools_get_stats(const memory_pools_t* pools,
 void order_book_init(order_book_t* book, const char* symbol, memory_pools_t* pools);
 void order_book_destroy(order_book_t* book);
 
-void order_book_add_order(order_book_t* book, 
+void order_book_add_order(order_book_t* book,
                           const new_order_msg_t* msg,
                           uint32_t client_id,
                           output_buffer_t* output);
 
-void order_book_cancel_order(order_book_t* book, 
+void order_book_cancel_order(order_book_t* book,
                               uint32_t user_id,
-                              uint32_t user_order_id, 
+                              uint32_t user_order_id,
                               output_buffer_t* output);
 
-void order_book_flush(order_book_t* book, output_buffer_t* output);
+/**
+ * Flush order book - iterative version
+ * 
+ * Processes up to FLUSH_BATCH_SIZE orders per call.
+ * Returns true when flush is complete, false if more iterations needed.
+ * 
+ * Usage:
+ *   while (!order_book_flush(book, output)) {
+ *       // drain output buffer
+ *   }
+ */
+bool order_book_flush(order_book_t* book, output_buffer_t* output);
+
+/**
+ * Check if flush is in progress
+ */
+static inline bool order_book_flush_in_progress(const order_book_t* book) {
+    return book->flush_state.in_progress;
+}
+
+/**
+ * Reset flush state (cancel an in-progress flush)
+ */
+void order_book_flush_reset(order_book_t* book);
 
 size_t order_book_cancel_client_orders(order_book_t* book,
                                        uint32_t client_id,
@@ -238,10 +285,14 @@ static inline void output_buffer_init(output_buffer_t* buf) {
     buf->count = 0;
 }
 
+static inline bool output_buffer_has_space(const output_buffer_t* buf, int needed) {
+    return (buf->count + needed) <= MAX_OUTPUT_MESSAGES;
+}
+
 static inline void output_buffer_add(output_buffer_t* buf, const output_msg_t* msg) {
     assert(buf != NULL && "NULL buffer in output_buffer_add");
     assert(msg != NULL && "NULL message in output_buffer_add");
-    
+
     if (buf->count < MAX_OUTPUT_MESSAGES) {
         buf->messages[buf->count++] = *msg;
     } else {
@@ -268,12 +319,12 @@ static inline uint64_t make_order_key(uint32_t user_id, uint32_t user_order_id) 
 static inline uint32_t hash_order_key(uint64_t key) {
     /* Golden ratio constant for 64-bit */
     const uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ULL;
-    
+
     /* Multiply and take high bits - mixes all input bits */
     key ^= key >> 33;
     key *= GOLDEN_RATIO;
     key ^= key >> 29;
-    
+
     /* Mask to table size (power of 2) */
     return (uint32_t)(key & ORDER_MAP_MASK);
 }

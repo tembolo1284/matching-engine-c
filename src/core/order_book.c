@@ -5,7 +5,7 @@
 #include <assert.h>
 
 /* ============================================================================
- * Memory Pool Implementation (Rule 3 - No malloc after init)
+ * Memory Pool Implementation
  * ============================================================================ */
 
 /**
@@ -14,14 +14,14 @@
  */
 static void order_pool_init(order_pool_t* pool) {
     assert(pool != NULL && "NULL pool in order_pool_init");
-    
+
     pool->free_count = MAX_ORDERS_IN_POOL;
-    
+
     /* Initialize free list (all indices available) */
     for (int i = 0; i < MAX_ORDERS_IN_POOL; i++) {
         pool->free_list[i] = (uint32_t)i;
     }
-    
+
     /* Zero out statistics */
     pool->total_allocations = 0;
     pool->peak_usage = 0;
@@ -39,16 +39,16 @@ void memory_pools_init(memory_pools_t* pools) {
 /**
  * Get memory pool statistics (PUBLIC API)
  */
-void memory_pools_get_stats(const memory_pools_t* pools, 
+void memory_pools_get_stats(const memory_pools_t* pools,
                             const order_book_t* book,
                             memory_pool_stats_t* stats) {
     assert(pools != NULL && "NULL pools in memory_pools_get_stats");
     assert(stats != NULL && "NULL stats in memory_pools_get_stats");
-    
+
     stats->order_allocations = pools->order_pool.total_allocations;
     stats->order_peak_usage = pools->order_pool.peak_usage;
     stats->order_failures = pools->order_pool.allocation_failures;
-    
+
     /* Hash table stats from order book */
     if (book != NULL) {
         stats->hash_count = book->order_map.count;
@@ -57,8 +57,8 @@ void memory_pools_get_stats(const memory_pools_t* pools,
         stats->hash_count = 0;
         stats->hash_tombstones = 0;
     }
-    
-    stats->total_memory_bytes = 
+
+    stats->total_memory_bytes =
         (MAX_ORDERS_IN_POOL * sizeof(order_t)) +
         (ORDER_MAP_SIZE * sizeof(order_map_slot_t));
 }
@@ -69,7 +69,7 @@ void memory_pools_get_stats(const memory_pools_t* pools,
  */
 static inline order_t* order_pool_alloc(order_pool_t* pool) {
     assert(pool != NULL && "NULL pool in order_pool_alloc");
-    
+
     if (pool->free_count == 0) {
         /* Pool exhausted - critical error */
         pool->allocation_failures++;
@@ -78,21 +78,21 @@ static inline order_t* order_pool_alloc(order_pool_t* pool) {
         #endif
         return NULL;
     }
-    
+
     /* Pop from free list */
     pool->free_count--;
     uint32_t index = pool->free_list[pool->free_count];
-    
+
     /* Rule 5: Bounds check assertion */
     assert(index < MAX_ORDERS_IN_POOL && "Invalid pool index");
-    
+
     /* Update statistics */
     pool->total_allocations++;
     uint32_t current_usage = MAX_ORDERS_IN_POOL - (uint32_t)pool->free_count;
     if (current_usage > pool->peak_usage) {
         pool->peak_usage = current_usage;
     }
-    
+
     /* Return pointer to pre-allocated order */
     return &pool->orders[index];
 }
@@ -104,17 +104,17 @@ static inline order_t* order_pool_alloc(order_pool_t* pool) {
 static inline void order_pool_free(order_pool_t* pool, order_t* order) {
     assert(pool != NULL && "NULL pool in order_pool_free");
     assert(order != NULL && "NULL order in order_pool_free");
-    
+
     /* Validate that order is actually from our pool */
     assert(order >= pool->orders && "Order pointer below pool");
     assert(order < pool->orders + MAX_ORDERS_IN_POOL && "Order pointer above pool");
-    
+
     /* Calculate index from pointer arithmetic */
     uint32_t index = (uint32_t)(order - pool->orders);
-    
+
     /* Rule 5: Check for double-free */
     assert(pool->free_count < MAX_ORDERS_IN_POOL && "Pool overflow - possible double-free");
-    
+
     /* Push to free list */
     pool->free_list[pool->free_count] = index;
     pool->free_count++;
@@ -136,7 +136,7 @@ static inline void order_pool_free(order_pool_t* pool, order_t* order) {
  */
 static void order_map_init(order_map_t* map) {
     assert(map != NULL && "NULL map in order_map_init");
-    
+
     memset(map->slots, 0, sizeof(map->slots));
     map->count = 0;
     map->tombstone_count = 0;
@@ -146,20 +146,20 @@ static void order_map_init(order_map_t* map) {
  * Insert into order map using linear probing
  * Returns true on success, false if table is full
  */
-static bool order_map_insert(order_map_t* map, uint64_t key, 
+static bool order_map_insert(order_map_t* map, uint64_t key,
                              const order_location_t* location) {
     assert(map != NULL && "NULL map in order_map_insert");
     assert(location != NULL && "NULL location in order_map_insert");
     assert(key != HASH_SLOT_EMPTY && "Cannot insert empty key");
     assert(key != HASH_SLOT_TOMBSTONE && "Cannot insert tombstone key");
-    
+
     uint32_t hash = hash_order_key(key);
-    
+
     /* Rule 2: Bounded probe sequence */
     for (int i = 0; i < MAX_PROBE_LENGTH; i++) {
         uint32_t idx = (hash + (uint32_t)i) & ORDER_MAP_MASK;
         order_map_slot_t* slot = &map->slots[idx];
-        
+
         /* Found empty or tombstone slot - insert here */
         if (slot->key == HASH_SLOT_EMPTY || slot->key == HASH_SLOT_TOMBSTONE) {
             if (slot->key == HASH_SLOT_TOMBSTONE) {
@@ -170,14 +170,14 @@ static bool order_map_insert(order_map_t* map, uint64_t key,
             map->count++;
             return true;
         }
-        
+
         /* Key already exists - update (shouldn't happen for orders) */
         if (slot->key == key) {
             slot->location = *location;
             return true;
         }
     }
-    
+
     /* Table is full or too many collisions */
     #ifdef DEBUG
     fprintf(stderr, "ERROR: Hash table probe limit exceeded (count=%u)\n", map->count);
@@ -191,31 +191,31 @@ static bool order_map_insert(order_map_t* map, uint64_t key,
  */
 static order_map_slot_t* order_map_find(order_map_t* map, uint64_t key) {
     assert(map != NULL && "NULL map in order_map_find");
-    
+
     if (key == HASH_SLOT_EMPTY || key == HASH_SLOT_TOMBSTONE) {
         return NULL;
     }
-    
+
     uint32_t hash = hash_order_key(key);
-    
+
     /* Rule 2: Bounded probe sequence */
     for (int i = 0; i < MAX_PROBE_LENGTH; i++) {
         uint32_t idx = (hash + (uint32_t)i) & ORDER_MAP_MASK;
         order_map_slot_t* slot = &map->slots[idx];
-        
+
         /* Found it */
         if (slot->key == key) {
             return slot;
         }
-        
+
         /* Hit empty slot - key doesn't exist */
         if (slot->key == HASH_SLOT_EMPTY) {
             return NULL;
         }
-        
+
         /* Tombstone - keep probing */
     }
-    
+
     return NULL;
 }
 
@@ -225,16 +225,16 @@ static order_map_slot_t* order_map_find(order_map_t* map, uint64_t key) {
  */
 static bool order_map_remove(order_map_t* map, uint64_t key) {
     assert(map != NULL && "NULL map in order_map_remove");
-    
+
     order_map_slot_t* slot = order_map_find(map, key);
-    
+
     if (slot != NULL) {
         slot->key = HASH_SLOT_TOMBSTONE;
         map->count--;
         map->tombstone_count++;
         return true;
     }
-    
+
     return false;
 }
 
@@ -243,7 +243,7 @@ static bool order_map_remove(order_map_t* map, uint64_t key) {
  */
 static void order_map_clear(order_map_t* map) {
     assert(map != NULL && "NULL map in order_map_clear");
-    
+
     memset(map->slots, 0, sizeof(map->slots));
     map->count = 0;
     map->tombstone_count = 0;
@@ -260,7 +260,7 @@ static void list_append(order_t** head, order_t** tail, order_t* order) {
     assert(head != NULL && "NULL head in list_append");
     assert(tail != NULL && "NULL tail in list_append");
     assert(order != NULL && "NULL order in list_append");
-    
+
     order->next = NULL;
     order->prev = *tail;
 
@@ -282,7 +282,7 @@ static void list_remove(order_t** head, order_t** tail, order_t* order) {
     assert(head != NULL && "NULL head in list_remove");
     assert(tail != NULL && "NULL tail in list_remove");
     assert(order != NULL && "NULL order in list_remove");
-    
+
     if (order->prev != NULL) {
         order->prev->next = order->next;
     } else {
@@ -304,19 +304,19 @@ static void list_remove(order_t** head, order_t** tail, order_t* order) {
  */
 static void list_free_all(order_t* head, order_pool_t* pool) {
     assert(pool != NULL && "NULL pool in list_free_all");
-    
+
     order_t* current = head;
-    
+
     /* Rule 2: Bounded loop */
     int count = 0;
-    
+
     while (current != NULL && count < MAX_ORDERS_IN_POOL) {
         order_t* next = current->next;
         order_pool_free(pool, current);
         current = next;
         count++;
     }
-    
+
     /* Rule 5: Assertion to catch infinite loop */
     assert(count < MAX_ORDERS_IN_POOL && "list_free_all hit iteration limit");
 }
@@ -329,11 +329,11 @@ static void list_free_all(order_t* head, order_pool_t* pool) {
  * Find price level in sorted array (binary search)
  * Returns index if found, -1 if not found
  */
-static int find_price_level(const price_level_t* levels, int num_levels, 
+static int find_price_level(const price_level_t* levels, int num_levels,
                              uint32_t price, bool descending) {
     assert(levels != NULL && "NULL levels in find_price_level");
     assert(num_levels >= 0 && "Negative num_levels");
-    
+
     int left = 0;
     int right = num_levels - 1;
 
@@ -366,12 +366,12 @@ static int find_price_level(const price_level_t* levels, int num_levels,
 /**
  * Insert price level into sorted array
  */
-static int insert_price_level(price_level_t* levels, int* num_levels, 
+static int insert_price_level(price_level_t* levels, int* num_levels,
                                uint32_t price, bool descending) {
     assert(levels != NULL && "NULL levels in insert_price_level");
     assert(num_levels != NULL && "NULL num_levels in insert_price_level");
     assert(*num_levels < MAX_PRICE_LEVELS && "Price levels at capacity");
-    
+
     /* Rule 2: Bounded by MAX_PRICE_LEVELS */
     int insert_pos = *num_levels;
 
@@ -411,12 +411,12 @@ static int insert_price_level(price_level_t* levels, int* num_levels,
 /**
  * Remove price level from sorted array
  */
-static void remove_price_level(price_level_t* levels, int* num_levels, 
+static void remove_price_level(price_level_t* levels, int* num_levels,
                                 int index, order_pool_t* pool) {
     assert(levels != NULL && "NULL levels in remove_price_level");
     assert(num_levels != NULL && "NULL num_levels in remove_price_level");
     assert(pool != NULL && "NULL pool in remove_price_level");
-    
+
     if (index < 0 || index >= *num_levels) {
         return;
     }
@@ -454,7 +454,7 @@ static inline bool execute_trade(
     assert(passive != NULL && "NULL passive in execute_trade");
     assert(level != NULL && "NULL level in execute_trade");
     assert(output != NULL && "NULL output in execute_trade");
-    
+
     /* Calculate trade quantity */
     uint32_t trade_qty = (aggressor->remaining_qty < passive->remaining_qty) ?
                          aggressor->remaining_qty : passive->remaining_qty;
@@ -465,7 +465,7 @@ static inline bool execute_trade(
     /* Determine buy/sell sides based on aggressor */
     uint32_t buy_user_id, buy_order_id, buy_client_id;
     uint32_t sell_user_id, sell_order_id, sell_client_id;
-    
+
     if (aggressor->side == SIDE_BUY) {
         buy_user_id = aggressor->user_id;
         buy_order_id = aggressor->user_order_id;
@@ -492,10 +492,10 @@ static inline bool execute_trade(
         trade_price,
         trade_qty
     );
-    
+
     trade_msg.data.trade.buy_client_id = buy_client_id;
     trade_msg.data.trade.sell_client_id = sell_client_id;
-    
+
     output_buffer_add(output, &trade_msg);
 
     /* Update quantities */
@@ -505,7 +505,7 @@ static inline bool execute_trade(
 
     /* Check if passive order is fully filled */
     bool passive_filled = order_is_filled(passive);
-    
+
     if (passive_filled) {
         uint64_t key = make_order_key(passive->user_id, passive->user_order_id);
         order_map_remove(&book->order_map, key);
@@ -533,17 +533,17 @@ static inline void match_buy_order(
     assert(order != NULL && "NULL order in match_buy_order");
     assert(order->side == SIDE_BUY && "Non-buy order in match_buy_order");
     assert(output != NULL && "NULL output in match_buy_order");
-    
+
     /* Rule 2: Fixed upper bound on iterations */
     int iteration_count = 0;
 
     /* Match against asks (best ask = lowest price = index 0) */
-    while (order->remaining_qty > 0 && 
+    while (order->remaining_qty > 0 &&
            book->num_ask_levels > 0 &&
            iteration_count < MAX_MATCH_ITERATIONS) {
-        
+
         iteration_count++;
-        
+
         price_level_t* best_ask_level = &book->asks[0];
 
         /* Check if we can match at this price */
@@ -556,14 +556,14 @@ static inline void match_buy_order(
 
         /* Match with orders at this price level (FIFO) */
         order_t* passive_order = best_ask_level->orders_head;
-        
+
         /* Rule 2: Bound the inner loop */
         int inner_iteration = 0;
-        
-        while (order->remaining_qty > 0 && 
+
+        while (order->remaining_qty > 0 &&
                passive_order != NULL &&
                inner_iteration < MAX_ORDERS_AT_PRICE_LEVEL) {
-            
+
             inner_iteration++;
             order_t* next_order = passive_order->next;
 
@@ -576,7 +576,7 @@ static inline void match_buy_order(
 
         /* Remove price level if empty */
         if (best_ask_level->orders_head == NULL) {
-            remove_price_level(book->asks, &book->num_ask_levels, 0, 
+            remove_price_level(book->asks, &book->num_ask_levels, 0,
                              &book->pools->order_pool);
         }
     }
@@ -602,17 +602,17 @@ static inline void match_sell_order(
     assert(order != NULL && "NULL order in match_sell_order");
     assert(order->side == SIDE_SELL && "Non-sell order in match_sell_order");
     assert(output != NULL && "NULL output in match_sell_order");
-    
+
     /* Rule 2: Fixed upper bound on iterations */
     int iteration_count = 0;
 
     /* Match against bids (best bid = highest price = index 0) */
-    while (order->remaining_qty > 0 && 
+    while (order->remaining_qty > 0 &&
            book->num_bid_levels > 0 &&
            iteration_count < MAX_MATCH_ITERATIONS) {
-        
+
         iteration_count++;
-        
+
         price_level_t* best_bid_level = &book->bids[0];
 
         /* Check if we can match at this price */
@@ -625,14 +625,14 @@ static inline void match_sell_order(
 
         /* Match with orders at this price level (FIFO) */
         order_t* passive_order = best_bid_level->orders_head;
-        
+
         /* Rule 2: Bound the inner loop */
         int inner_iteration = 0;
-        
-        while (order->remaining_qty > 0 && 
+
+        while (order->remaining_qty > 0 &&
                passive_order != NULL &&
                inner_iteration < MAX_ORDERS_AT_PRICE_LEVEL) {
-            
+
             inner_iteration++;
             order_t* next_order = passive_order->next;
 
@@ -685,7 +685,7 @@ static void add_order_to_level(order_book_t* book, price_level_t* level, order_t
     assert(book != NULL && "NULL book in add_order_to_level");
     assert(level != NULL && "NULL level in add_order_to_level");
     assert(order != NULL && "NULL order in add_order_to_level");
-    
+
     /* Add to list */
     list_append(&level->orders_head, &level->orders_tail, order);
 
@@ -698,7 +698,7 @@ static void add_order_to_level(order_book_t* book, price_level_t* level, order_t
     location.side = order->side;
     location.price = order->price;
     location.order_ptr = order;
-    
+
     bool inserted = order_map_insert(&book->order_map, key, &location);
     assert(inserted && "Failed to insert into order map");
     (void)inserted;  /* Suppress unused warning in release */
@@ -712,7 +712,7 @@ static void add_to_book(order_book_t* book, order_t* order) {
     assert(order != NULL && "NULL order in add_to_book");
     assert(order->type == ORDER_TYPE_LIMIT && "Adding non-limit order to book");
     assert(order->price > 0 && "Limit order with zero price");
-    
+
     if (order->side == SIDE_BUY) {
         int idx = find_price_level(book->bids, book->num_bid_levels, order->price, true);
 
@@ -757,7 +757,7 @@ static void check_tob_changes(order_book_t* book, output_buffer_t* output) {
             output_msg_t msg = make_top_of_book_eliminated_msg(book->symbol, SIDE_BUY);
             output_buffer_add(output, &msg);
         } else if (current_best_bid_price > 0) {
-            output_msg_t msg = make_top_of_book_msg(book->symbol, SIDE_BUY, 
+            output_msg_t msg = make_top_of_book_msg(book->symbol, SIDE_BUY,
                                                      current_best_bid_price, current_best_bid_qty);
             output_buffer_add(output, &msg);
         }
@@ -816,6 +816,9 @@ void order_book_init(order_book_t* book, const char* symbol, memory_pools_t* poo
     book->bid_side_ever_active = false;
     book->ask_side_ever_active = false;
 
+    /* Initialize flush state */
+    memset(&book->flush_state, 0, sizeof(book->flush_state));
+
     /* Store reference to memory pools */
     book->pools = pools;
 }
@@ -843,7 +846,7 @@ void order_book_destroy(order_book_t* book) {
 /**
  * Process new order
  */
-void order_book_add_order(order_book_t* book, 
+void order_book_add_order(order_book_t* book,
                           const new_order_msg_t* msg,
                           uint32_t client_id,
                           output_buffer_t* output) {
@@ -853,7 +856,7 @@ void order_book_add_order(order_book_t* book,
 
     /* Allocate from pool instead of malloc */
     order_t* order = order_pool_alloc(&book->pools->order_pool);
-    
+
     if (order == NULL) {
         /* Pool exhausted - log and return */
         #ifdef DEBUG
@@ -861,8 +864,8 @@ void order_book_add_order(order_book_t* book,
                 book->symbol, msg->user_id, msg->user_order_id);
         #endif
         return;
-    }   
- 
+    }
+
     /* Initialize order */
     uint64_t timestamp = order_get_current_timestamp();
     order_init(order, msg, timestamp);
@@ -963,109 +966,195 @@ size_t order_book_cancel_client_orders(order_book_t* book,
                                        output_buffer_t* output) {
     assert(book != NULL && "NULL book in order_book_cancel_client_orders");
     assert(output != NULL && "NULL output in order_book_cancel_client_orders");
-    
+
     size_t cancelled_count = 0;
-    
+
     /* Rule 2: Bounded loops */
     for (int i = 0; i < book->num_bid_levels && i < MAX_PRICE_LEVELS; i++) {
         order_t* order = book->bids[i].orders_head;
         int order_count = 0;
-        
+
         while (order != NULL && order_count < MAX_ORDERS_AT_PRICE_LEVEL) {
             order_t* next_order = order->next;
-            
+
             if (order->client_id == client_id) {
                 order_book_cancel_order(book, order->user_id, order->user_order_id, output);
                 cancelled_count++;
             }
-            
+
             order = next_order;
             order_count++;
         }
     }
-    
+
     for (int i = 0; i < book->num_ask_levels && i < MAX_PRICE_LEVELS; i++) {
         order_t* order = book->asks[i].orders_head;
         int order_count = 0;
-        
+
         while (order != NULL && order_count < MAX_ORDERS_AT_PRICE_LEVEL) {
             order_t* next_order = order->next;
-            
+
             if (order->client_id == client_id) {
                 order_book_cancel_order(book, order->user_id, order->user_order_id, output);
                 cancelled_count++;
             }
-            
+
             order = next_order;
             order_count++;
         }
     }
-    
+
     return cancelled_count;
 }
 
 /**
- * Flush/clear the entire order book
+ * Reset flush state
  */
-void order_book_flush(order_book_t* book, output_buffer_t* output) {
+void order_book_flush_reset(order_book_t* book) {
+    assert(book != NULL && "NULL book in order_book_flush_reset");
+    memset(&book->flush_state, 0, sizeof(book->flush_state));
+}
+
+/**
+ * Flush/clear the entire order book - ITERATIVE VERSION
+ *
+ * Processes up to FLUSH_BATCH_SIZE orders per call.
+ * Returns true when flush is complete, false if more iterations needed.
+ */
+bool order_book_flush(order_book_t* book, output_buffer_t* output) {
     assert(book != NULL && "NULL book in order_book_flush");
     assert(output != NULL && "NULL output in order_book_flush");
 
-    /* Generate cancel acks for all bid orders */
-    for (int i = 0; i < book->num_bid_levels; i++) {
-        order_t* order = book->bids[i].orders_head;
-        int count = 0;
-        while (order != NULL && count < MAX_ORDERS_AT_PRICE_LEVEL) {
+    flush_state_t* state = &book->flush_state;
+
+    /* Initialize flush state on first call */
+    if (!state->in_progress) {
+        state->in_progress = true;
+        state->current_bid_level = 0;
+        state->current_ask_level = 0;
+        state->current_order = NULL;
+        state->processing_bids = true;
+        state->bids_done = false;
+        state->asks_done = false;
+    }
+
+    int orders_processed = 0;
+
+    /* Process bids first */
+    while (!state->bids_done && orders_processed < FLUSH_BATCH_SIZE) {
+        /* Check if we've processed all bid levels */
+        if (state->current_bid_level >= book->num_bid_levels) {
+            state->bids_done = true;
+            break;
+        }
+
+        price_level_t* level = &book->bids[state->current_bid_level];
+
+        /* Get current order (or start of level) */
+        if (state->current_order == NULL) {
+            state->current_order = level->orders_head;
+        }
+
+        /* Process orders at this level */
+        while (state->current_order != NULL && orders_processed < FLUSH_BATCH_SIZE) {
+            order_t* order = state->current_order;
+            state->current_order = order->next;
+
+            /* Generate cancel ack */
             output_msg_t msg = make_cancel_ack_msg(book->symbol, order->user_id, order->user_order_id);
             output_buffer_add(output, &msg);
-            order = order->next;
-            count++;
+            orders_processed++;
+        }
+
+        /* Move to next level if this one is done */
+        if (state->current_order == NULL) {
+            state->current_bid_level++;
         }
     }
 
-    /* Generate cancel acks for all ask orders */
-    for (int i = 0; i < book->num_ask_levels; i++) {
-        order_t* order = book->asks[i].orders_head;
-        int count = 0;
-        while (order != NULL && count < MAX_ORDERS_AT_PRICE_LEVEL) {
+    /* Process asks */
+    while (!state->asks_done && orders_processed < FLUSH_BATCH_SIZE) {
+        /* Check if we've processed all ask levels */
+        if (state->current_ask_level >= book->num_ask_levels) {
+            state->asks_done = true;
+            break;
+        }
+
+        price_level_t* level = &book->asks[state->current_ask_level];
+
+        /* Get current order (or start of level) */
+        if (state->current_order == NULL) {
+            state->current_order = level->orders_head;
+        }
+
+        /* Process orders at this level */
+        while (state->current_order != NULL && orders_processed < FLUSH_BATCH_SIZE) {
+            order_t* order = state->current_order;
+            state->current_order = order->next;
+
+            /* Generate cancel ack */
             output_msg_t msg = make_cancel_ack_msg(book->symbol, order->user_id, order->user_order_id);
             output_buffer_add(output, &msg);
-            order = order->next;
-            count++;
+            orders_processed++;
+        }
+
+        /* Move to next level if this one is done */
+        if (state->current_order == NULL) {
+            state->current_ask_level++;
         }
     }
 
-    /* Free all bid levels */
-    for (int i = 0; i < book->num_bid_levels; i++) {
-        list_free_all(book->bids[i].orders_head, &book->pools->order_pool);
-        book->bids[i].orders_head = NULL;
-        book->bids[i].orders_tail = NULL;
-        book->bids[i].total_quantity = 0;
+    /* Check if flush is complete */
+    if (state->bids_done && state->asks_done) {
+        /* Free all bid levels */
+        for (int i = 0; i < book->num_bid_levels; i++) {
+            list_free_all(book->bids[i].orders_head, &book->pools->order_pool);
+            book->bids[i].orders_head = NULL;
+            book->bids[i].orders_tail = NULL;
+            book->bids[i].total_quantity = 0;
+        }
+        book->num_bid_levels = 0;
+
+        /* Free all ask levels */
+        for (int i = 0; i < book->num_ask_levels; i++) {
+            list_free_all(book->asks[i].orders_head, &book->pools->order_pool);
+            book->asks[i].orders_head = NULL;
+            book->asks[i].orders_tail = NULL;
+            book->asks[i].total_quantity = 0;
+        }
+        book->num_ask_levels = 0;
+
+        /* Clear order map */
+        order_map_clear(&book->order_map);
+
+        /* Force TOB "eliminated" messages */
+        if (book->bid_side_ever_active) {
+            book->prev_best_bid_price = 1;  /* Force change detection */
+            book->prev_best_bid_qty = 1;
+        }
+        if (book->ask_side_ever_active) {
+            book->prev_best_ask_price = 1;  /* Force change detection */
+            book->prev_best_ask_qty = 1;
+        }
+
+        /* Emit TOB eliminated messages */
+        check_tob_changes(book, output);
+
+        /* Reset tracking state */
+        book->prev_best_bid_price = 0;
+        book->prev_best_bid_qty = 0;
+        book->prev_best_ask_price = 0;
+        book->prev_best_ask_qty = 0;
+        book->bid_side_ever_active = false;
+        book->ask_side_ever_active = false;
+
+        /* Reset flush state */
+        memset(state, 0, sizeof(*state));
+
+        return true;  /* Flush complete */
     }
-    book->num_bid_levels = 0;
 
-    /* Free all ask levels */
-    for (int i = 0; i < book->num_ask_levels; i++) {
-        list_free_all(book->asks[i].orders_head, &book->pools->order_pool);
-        book->asks[i].orders_head = NULL;
-        book->asks[i].orders_tail = NULL;
-        book->asks[i].total_quantity = 0;
-    }
-    book->num_ask_levels = 0;
-
-    /* Clear order map */
-    order_map_clear(&book->order_map);
-
-    /* Check for TOB changes */
-    check_tob_changes(book, output);
-
-    /* Reset TOB tracking */
-    book->prev_best_bid_price = 0;
-    book->prev_best_bid_qty = 0;
-    book->prev_best_ask_price = 0;
-    book->prev_best_ask_qty = 0;
-
-    check_tob_changes(book, output);
+    return false;  /* More iterations needed */
 }
 
 /**

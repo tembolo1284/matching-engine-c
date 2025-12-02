@@ -457,13 +457,13 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     
     printf("\nSending FLUSH to clear book...\n");
     (void)engine_client_send_flush(client);
-    int flush_wait_ms = 750;
+    int flush_wait_ms = 1000;
     if (count >= 100000) {
-        flush_wait_ms = 3000;
+        flush_wait_ms = 5000;
     } else if (count >= 10000) {
-        flush_wait_ms = 1500;
+        flush_wait_ms = 3000;
     } else if (count >= 1000) {
-        flush_wait_ms = 1000;
+        flush_wait_ms = 2000;
     }
     sleep_ms(flush_wait_ms);
     (void)engine_client_recv_all(client, 100);    

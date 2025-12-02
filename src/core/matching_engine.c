@@ -13,7 +13,7 @@
  */
 static void symbol_map_init(symbol_map_t* map) {
     assert(map != NULL && "NULL map in symbol_map_init");
-    
+
     /* Clear all slots - symbol[0] == '\0' means empty */
     memset(map->slots, 0, sizeof(map->slots));
     map->count = 0;
@@ -33,25 +33,25 @@ static inline bool symbol_slot_is_empty(const symbol_map_slot_t* slot) {
 static symbol_map_slot_t* symbol_map_find(symbol_map_t* map, const char* symbol) {
     assert(map != NULL && "NULL map in symbol_map_find");
     assert(symbol != NULL && "NULL symbol in symbol_map_find");
-    
+
     uint32_t hash = me_hash_symbol(symbol);
-    
+
     /* Rule 2: Bounded probe sequence */
     for (int i = 0; i < MAX_SYMBOL_PROBE_LENGTH; i++) {
         uint32_t idx = (hash + (uint32_t)i) & SYMBOL_MAP_MASK;
         symbol_map_slot_t* slot = &map->slots[idx];
-        
+
         /* Found matching symbol */
         if (strncmp(slot->symbol, symbol, MAX_SYMBOL_LENGTH) == 0) {
             return slot;
         }
-        
+
         /* Hit empty slot - symbol not found */
         if (symbol_slot_is_empty(slot)) {
             return NULL;
         }
     }
-    
+
     return NULL;
 }
 
@@ -59,20 +59,20 @@ static symbol_map_slot_t* symbol_map_find(symbol_map_t* map, const char* symbol)
  * Insert symbol into map
  * Returns pointer to slot on success, NULL on failure
  */
-static symbol_map_slot_t* symbol_map_insert(symbol_map_t* map, 
-                                            const char* symbol, 
+static symbol_map_slot_t* symbol_map_insert(symbol_map_t* map,
+                                            const char* symbol,
                                             int book_index) {
     assert(map != NULL && "NULL map in symbol_map_insert");
     assert(symbol != NULL && "NULL symbol in symbol_map_insert");
     assert(symbol[0] != '\0' && "Empty symbol in symbol_map_insert");
-    
+
     uint32_t hash = me_hash_symbol(symbol);
-    
+
     /* Rule 2: Bounded probe sequence */
     for (int i = 0; i < MAX_SYMBOL_PROBE_LENGTH; i++) {
         uint32_t idx = (hash + (uint32_t)i) & SYMBOL_MAP_MASK;
         symbol_map_slot_t* slot = &map->slots[idx];
-        
+
         /* Found empty slot - insert here */
         if (symbol_slot_is_empty(slot)) {
             strncpy(slot->symbol, symbol, MAX_SYMBOL_LENGTH - 1);
@@ -81,14 +81,14 @@ static symbol_map_slot_t* symbol_map_insert(symbol_map_t* map,
             map->count++;
             return slot;
         }
-        
+
         /* Symbol already exists - update (shouldn't happen normally) */
         if (strncmp(slot->symbol, symbol, MAX_SYMBOL_LENGTH) == 0) {
             slot->book_index = book_index;
             return slot;
         }
     }
-    
+
     /* Table full or too many collisions */
     #ifdef DEBUG
     fprintf(stderr, "ERROR: Symbol map probe limit exceeded (count=%u)\n", map->count);
@@ -105,7 +105,7 @@ static symbol_map_slot_t* symbol_map_insert(symbol_map_t* map,
  */
 static void order_symbol_map_init(order_symbol_map_t* map) {
     assert(map != NULL && "NULL map in order_symbol_map_init");
-    
+
     memset(map->slots, 0, sizeof(map->slots));
     map->count = 0;
     map->tombstone_count = 0;
@@ -114,29 +114,29 @@ static void order_symbol_map_init(order_symbol_map_t* map) {
 /**
  * Insert into order-symbol map
  */
-static bool order_symbol_map_insert(order_symbol_map_t* map, 
-                                    uint64_t order_key, 
+static bool order_symbol_map_insert(order_symbol_map_t* map,
+                                    uint64_t order_key,
                                     const char* symbol) {
     assert(map != NULL && "NULL map in order_symbol_map_insert");
     assert(symbol != NULL && "NULL symbol in order_symbol_map_insert");
     assert(order_key != ORDER_KEY_EMPTY && "Cannot insert empty key");
     assert(order_key != ORDER_KEY_TOMBSTONE && "Cannot insert tombstone key");
-    
+
     uint32_t hash = me_hash_order_key(order_key);
-    
+
     /* Rule 2: Bounded probe sequence */
     for (int i = 0; i < MAX_ORDER_SYMBOL_PROBE_LENGTH; i++) {
         uint32_t idx = (hash + (uint32_t)i) & ORDER_SYMBOL_MAP_MASK;
         order_symbol_slot_t* slot = &map->slots[idx];
-        
+
         /* Found empty or tombstone slot - insert here */
-        if (slot->order_key == ORDER_KEY_EMPTY || 
+        if (slot->order_key == ORDER_KEY_EMPTY ||
             slot->order_key == ORDER_KEY_TOMBSTONE) {
-            
+
             if (slot->order_key == ORDER_KEY_TOMBSTONE) {
                 map->tombstone_count--;
             }
-            
+
             slot->order_key = order_key;
             size_t len = strlen(symbol);
             if (len >= MAX_SYMBOL_LENGTH - 1) len = MAX_SYMBOL_LENGTH - 2;
@@ -145,7 +145,7 @@ static bool order_symbol_map_insert(order_symbol_map_t* map,
             map->count++;
             return true;
         }
-        
+
         /* Key already exists - update symbol (shouldn't happen) */
         if (slot->order_key == order_key) {
             size_t len = strlen(symbol);
@@ -155,7 +155,7 @@ static bool order_symbol_map_insert(order_symbol_map_t* map,
             return true;
         }
     }
-    
+
     #ifdef DEBUG
     fprintf(stderr, "ERROR: Order-symbol map probe limit exceeded (count=%u)\n", map->count);
     #endif
@@ -165,34 +165,34 @@ static bool order_symbol_map_insert(order_symbol_map_t* map,
 /**
  * Find in order-symbol map
  */
-static order_symbol_slot_t* order_symbol_map_find(order_symbol_map_t* map, 
+static order_symbol_slot_t* order_symbol_map_find(order_symbol_map_t* map,
                                                    uint64_t order_key) {
     assert(map != NULL && "NULL map in order_symbol_map_find");
-    
+
     if (order_key == ORDER_KEY_EMPTY || order_key == ORDER_KEY_TOMBSTONE) {
         return NULL;
     }
-    
+
     uint32_t hash = me_hash_order_key(order_key);
-    
+
     /* Rule 2: Bounded probe sequence */
     for (int i = 0; i < MAX_ORDER_SYMBOL_PROBE_LENGTH; i++) {
         uint32_t idx = (hash + (uint32_t)i) & ORDER_SYMBOL_MAP_MASK;
         order_symbol_slot_t* slot = &map->slots[idx];
-        
+
         /* Found it */
         if (slot->order_key == order_key) {
             return slot;
         }
-        
+
         /* Hit empty slot - key doesn't exist */
         if (slot->order_key == ORDER_KEY_EMPTY) {
             return NULL;
         }
-        
+
         /* Tombstone - keep probing */
     }
-    
+
     return NULL;
 }
 
@@ -201,16 +201,16 @@ static order_symbol_slot_t* order_symbol_map_find(order_symbol_map_t* map,
  */
 static bool order_symbol_map_remove(order_symbol_map_t* map, uint64_t order_key) {
     assert(map != NULL && "NULL map in order_symbol_map_remove");
-    
+
     order_symbol_slot_t* slot = order_symbol_map_find(map, order_key);
-    
+
     if (slot != NULL) {
         slot->order_key = ORDER_KEY_TOMBSTONE;
         map->count--;
         map->tombstone_count++;
         return true;
     }
-    
+
     return false;
 }
 
@@ -219,7 +219,7 @@ static bool order_symbol_map_remove(order_symbol_map_t* map, uint64_t order_key)
  */
 static void order_symbol_map_clear(order_symbol_map_t* map) {
     assert(map != NULL && "NULL map in order_symbol_map_clear");
-    
+
     memset(map->slots, 0, sizeof(map->slots));
     map->count = 0;
     map->tombstone_count = 0;
@@ -245,7 +245,7 @@ void matching_engine_init(matching_engine_t* engine, memory_pools_t* pools) {
     /* Initialize order books array */
     memset(engine->books, 0, sizeof(engine->books));
     engine->num_books = 0;
-    
+
     /* Store reference to shared pools */
     engine->pools = pools;
 }
@@ -260,7 +260,7 @@ void matching_engine_destroy(matching_engine_t* engine) {
     for (int i = 0; i < engine->num_books && i < MAX_SYMBOLS; i++) {
         order_book_destroy(&engine->books[i]);
     }
-    
+
     /* No memory to free - open-addressing uses inline arrays */
     engine->pools = NULL;
 }
@@ -268,7 +268,7 @@ void matching_engine_destroy(matching_engine_t* engine) {
 /**
  * Get or create order book for symbol
  */
-order_book_t* matching_engine_get_order_book(matching_engine_t* engine, 
+order_book_t* matching_engine_get_order_book(matching_engine_t* engine,
                                               const char* symbol) {
     assert(engine != NULL && "NULL engine in matching_engine_get_order_book");
     assert(symbol != NULL && "NULL symbol in matching_engine_get_order_book");
@@ -306,7 +306,7 @@ order_book_t* matching_engine_get_order_book(matching_engine_t* engine,
 /**
  * Process new order
  */
-void matching_engine_process_new_order(matching_engine_t* engine, 
+void matching_engine_process_new_order(matching_engine_t* engine,
                                        const new_order_msg_t* msg,
                                        uint32_t client_id,
                                        output_buffer_t* output) {
@@ -335,7 +335,7 @@ void matching_engine_process_new_order(matching_engine_t* engine,
 /**
  * Process cancel order
  */
-void matching_engine_process_cancel_order(matching_engine_t* engine, 
+void matching_engine_process_cancel_order(matching_engine_t* engine,
                                           const cancel_msg_t* msg,
                                           output_buffer_t* output) {
     assert(engine != NULL && "NULL engine in matching_engine_process_cancel_order");
@@ -366,7 +366,7 @@ void matching_engine_process_cancel_order(matching_engine_t* engine,
 
     /* Cancel the order */
     assert(book_slot->book_index >= 0 && book_slot->book_index < engine->num_books);
-    order_book_cancel_order(&engine->books[book_slot->book_index], 
+    order_book_cancel_order(&engine->books[book_slot->book_index],
                            msg->user_id, msg->user_order_id, output);
 
     /* Remove from tracking map */
@@ -374,19 +374,94 @@ void matching_engine_process_cancel_order(matching_engine_t* engine,
 }
 
 /**
+ * Process flush - clears all order books (ITERATIVE)
+ * 
+ * This function must be called repeatedly until it returns true.
+ * Each call processes a batch of orders and drains to output.
+ */
+static bool matching_engine_process_flush_iteration(matching_engine_t* engine,
+                                                    output_buffer_t* output) {
+    assert(engine != NULL && "NULL engine in matching_engine_process_flush_iteration");
+    assert(output != NULL && "NULL output in matching_engine_process_flush_iteration");
+
+    bool all_done = true;
+
+    /* Flush all order books - each flush call processes one batch */
+    for (int i = 0; i < engine->num_books && i < MAX_SYMBOLS; i++) {
+        /* Check if this book has a flush in progress or needs to start one */
+        if (order_book_flush_in_progress(&engine->books[i])) {
+            /* Continue flushing this book */
+            bool book_done = order_book_flush(&engine->books[i], output);
+            if (!book_done) {
+                all_done = false;
+            }
+        }
+    }
+
+    return all_done;
+}
+
+/**
+ * Start flush on all books
+ */
+static void matching_engine_start_flush(matching_engine_t* engine, output_buffer_t* output) {
+    assert(engine != NULL && "NULL engine in matching_engine_start_flush");
+    assert(output != NULL && "NULL output in matching_engine_start_flush");
+
+    /* Start flush on each order book */
+    for (int i = 0; i < engine->num_books && i < MAX_SYMBOLS; i++) {
+        /* This starts the flush - first call initializes state */
+        (void)order_book_flush(&engine->books[i], output);
+    }
+}
+
+/**
+ * Check if any flush is in progress
+ */
+static bool matching_engine_flush_in_progress(matching_engine_t* engine) {
+    for (int i = 0; i < engine->num_books && i < MAX_SYMBOLS; i++) {
+        if (order_book_flush_in_progress(&engine->books[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
  * Process flush - clears all order books
+ * 
+ * NOTE: For the external API, this runs the flush to completion.
+ * The processor will handle draining the output buffer between iterations.
  */
 void matching_engine_process_flush(matching_engine_t* engine, output_buffer_t* output) {
     assert(engine != NULL && "NULL engine in matching_engine_process_flush");
     assert(output != NULL && "NULL output in matching_engine_process_flush");
 
-    /* Flush all order books */
-    for (int i = 0; i < engine->num_books && i < MAX_SYMBOLS; i++) {
-        order_book_flush(&engine->books[i], output);
-    }
+    /* Start flush on all books */
+    matching_engine_start_flush(engine, output);
 
-    /* Clear order->symbol map */
+    /* Clear order->symbol map when flush is complete */
+    /* Note: We do this immediately since the orders are being removed */
     order_symbol_map_clear(&engine->order_to_symbol);
+}
+
+/**
+ * Continue an in-progress flush (called by processor between output drains)
+ * Returns true when flush is complete
+ */
+bool matching_engine_continue_flush(matching_engine_t* engine, output_buffer_t* output) {
+    assert(engine != NULL && "NULL engine in matching_engine_continue_flush");
+    assert(output != NULL && "NULL output in matching_engine_continue_flush");
+
+    return matching_engine_process_flush_iteration(engine, output);
+}
+
+/**
+ * Check if engine has a flush in progress
+ */
+bool matching_engine_has_flush_in_progress(matching_engine_t* engine) {
+    assert(engine != NULL && "NULL engine in matching_engine_has_flush_in_progress");
+    return matching_engine_flush_in_progress(engine);
 }
 
 /**
@@ -399,25 +474,25 @@ size_t matching_engine_cancel_client_orders(matching_engine_t* engine,
     assert(output != NULL && "NULL output in matching_engine_cancel_client_orders");
 
     size_t total_cancelled = 0;
-    
+
     /* Walk through all order books and cancel orders for this client */
     for (int i = 0; i < engine->num_books && i < MAX_SYMBOLS; i++) {
-        size_t cancelled = order_book_cancel_client_orders(&engine->books[i], 
-                                                           client_id, 
+        size_t cancelled = order_book_cancel_client_orders(&engine->books[i],
+                                                           client_id,
                                                            output);
         total_cancelled += cancelled;
     }
-    
-    fprintf(stderr, "[Matching Engine] Cancelled %zu orders for client %u\n", 
+
+    fprintf(stderr, "[Matching Engine] Cancelled %zu orders for client %u\n",
             total_cancelled, client_id);
-    
+
     return total_cancelled;
 }
 
 /**
  * Process input message
  */
-void matching_engine_process_message(matching_engine_t* engine, 
+void matching_engine_process_message(matching_engine_t* engine,
                                      const input_msg_t* msg,
                                      uint32_t client_id,
                                      output_buffer_t* output) {

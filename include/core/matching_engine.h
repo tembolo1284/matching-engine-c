@@ -15,12 +15,6 @@ extern "C" {
 /**
  * MatchingEngine - Multi-symbol order book orchestrator
  *
- * Power of Ten Compliant:
- * - Rule 2: All loops bounded
- * - Rule 3: No malloc after init (open-addressing hash tables, no pools needed)
- * - Rule 5: Assertions for invariant checking
- * - Rule 7: Parameter validation
- *
  * Updated for cache optimization:
  * - Open-addressing hash tables (no pointer chasing)
  * - Power-of-2 table sizes for fast masking
@@ -37,7 +31,7 @@ extern "C" {
 
 #define MAX_SYMBOLS 256
 
-/* 
+/*
  * Hash table sizes - MUST be power of 2 for fast masking
  * Symbol map: 512 slots for up to ~256 symbols at 50% load
  * Order-symbol map: 16384 slots for up to ~8192 orders at 50% load
@@ -107,17 +101,17 @@ typedef struct {
 typedef struct {
     /* Symbol → OrderBook mapping (open-addressing) */
     symbol_map_t symbol_map;
-    
+
     /* Order → Symbol mapping for cancellations (open-addressing) */
     order_symbol_map_t order_to_symbol;
-    
+
     /* Pre-allocated order books */
     order_book_t books[MAX_SYMBOLS];
     int num_books;
-    
+
     /* Memory pools - shared reference (for order books) */
     memory_pools_t* pools;
-    
+
 } matching_engine_t;
 
 /* ============================================================================
@@ -126,7 +120,7 @@ typedef struct {
 
 /**
  * Initialize matching engine with memory pools
- * 
+ *
  * @param engine Matching engine to initialize
  * @param pools Pre-initialized memory pools (must outlive engine)
  */
@@ -139,7 +133,7 @@ void matching_engine_destroy(matching_engine_t* engine);
 
 /**
  * Process input message, returns output messages
- * 
+ *
  * @param engine Matching engine
  * @param msg Input message
  * @param client_id Client ID (0 for UDP mode, >0 for TCP client)
@@ -167,13 +161,38 @@ void matching_engine_process_cancel_order(matching_engine_t* engine,
 
 /**
  * Process flush - clears all order books
+ * 
+ * Note: This starts an iterative flush. For large order books,
+ * call matching_engine_continue_flush() in a loop until it returns true,
+ * draining the output buffer between iterations.
  */
 void matching_engine_process_flush(matching_engine_t* engine,
                                    output_buffer_t* output);
 
 /**
- * Cancel all orders for a specific client (TCP mode)
+ * Continue an in-progress flush operation
  * 
+ * Call this repeatedly, draining the output buffer between calls,
+ * until it returns true (flush complete).
+ *
+ * @param engine Matching engine
+ * @param output Output buffer for generated messages
+ * @return true if flush is complete, false if more iterations needed
+ */
+bool matching_engine_continue_flush(matching_engine_t* engine,
+                                    output_buffer_t* output);
+
+/**
+ * Check if any flush operation is in progress
+ *
+ * @param engine Matching engine
+ * @return true if a flush is in progress
+ */
+bool matching_engine_has_flush_in_progress(matching_engine_t* engine);
+
+/**
+ * Cancel all orders for a specific client (TCP mode)
+ *
  * @param engine Matching engine
  * @param client_id Client ID to cancel orders for
  * @param output Output buffer for cancel acknowledgements
@@ -199,12 +218,12 @@ order_book_t* matching_engine_get_order_book(matching_engine_t* engine,
  */
 static inline uint32_t me_hash_symbol(const char* symbol) {
     uint32_t hash = 2166136261u;  /* FNV offset basis */
-    
+
     for (int i = 0; i < MAX_SYMBOL_LENGTH && symbol[i] != '\0'; i++) {
         hash ^= (uint8_t)symbol[i];
         hash *= 16777619u;  /* FNV prime */
     }
-    
+
     return hash & SYMBOL_MAP_MASK;
 }
 
