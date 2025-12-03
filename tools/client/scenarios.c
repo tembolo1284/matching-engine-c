@@ -288,8 +288,8 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     } else {
         if (result) result->orders_sent++;
     }
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
 
     /* Sell order at different price (no match) */
     printf("\nSending: SELL IBM 50@105\n");
@@ -299,8 +299,8 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     } else {
         if (result) result->orders_sent++;
     }
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    sleep_ms(200);
+    engine_client_recv_all(client, 200);
 
     /* Flush - need to wait longer for cancel acks + TOB eliminated messages */
     printf("\nSending: FLUSH\n");
@@ -308,13 +308,13 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     if (result) result->orders_sent++;  /* Count flush as order */
     
     /* Wait longer and keep polling for all responses */
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
+    sleep_ms(250);
+    engine_client_recv_all(client, 250);
     
     /* Poll a few more times to catch any remaining messages */
     for (int i = 0; i < 5; i++) {
-        sleep_ms(100);
-        engine_client_recv_all(client, 100);
+        sleep_ms(200);
+        engine_client_recv_all(client, 200);
     }
 
     finalize_result(result, client);
