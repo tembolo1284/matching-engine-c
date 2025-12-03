@@ -420,16 +420,16 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
         delay_ms = 0;
     } else if (count >= 10000000) {
         batch_size = 50000;
-        delay_ms = 50;
+        delay_ms = 60;
     } else if (count >= 1000000) {
         batch_size = 50000;
-        delay_ms = 20;
+        delay_ms = 50;
     } else if (count >= 100000) {
         batch_size = 10000;
-        delay_ms = 10;
+        delay_ms = 35;
     } else if (count >= 10000) {
         batch_size = 1000;
-        delay_ms = 5;
+        delay_ms = 10;
     } else {
         batch_size = count;
         delay_ms = 0;
