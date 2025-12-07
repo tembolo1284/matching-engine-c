@@ -1,6 +1,4 @@
-Got it! Keep the small non-matching tests (1K, 10K, 100K) but remove the large ones (1M+) that just fill the pool. Here are the complete files:
-1. Complete tools/client/scenarios.c:
-c/**
+/**
  * scenarios.c - Test scenarios implementation
  *
  * Focused on matching throughput - the real strength of a matching engine.
@@ -383,7 +381,9 @@ bool scenario_cancel_order(engine_client_t* client, scenario_result_t* result) {
  * ============================================================ */
 
 bool scenario_stress_test(engine_client_t* client, uint32_t count,
-                          scenario_result_t* result) {
+                          bool danger_burst, scenario_result_t* result) {
+    (void)danger_burst;  /* Not used for small stress tests */
+
     printf("=== Stress Test: %u Orders (non-matching) ===\n\n", count);
 
     init_result(result);
@@ -712,9 +712,9 @@ bool scenario_run(engine_client_t* client,
         case 3:  return scenario_cancel_order(client, result);
 
         /* Small stress (non-matching, up to 100K) */
-        case 10: return scenario_stress_test(client, 1000, result);
-        case 11: return scenario_stress_test(client, 10000, result);
-        case 12: return scenario_stress_test(client, 100000, result);
+        case 10: return scenario_stress_test(client, 1000, danger_burst, result);
+        case 11: return scenario_stress_test(client, 10000, danger_burst, result);
+        case 12: return scenario_stress_test(client, 100000, danger_burst, result);
 
         /* Matching - single symbol */
         case 20: return scenario_matching_stress(client, 1000, result);
