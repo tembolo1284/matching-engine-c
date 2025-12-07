@@ -10,11 +10,11 @@
 
 /**
  * Output Publisher Thread (UDP Mode Only)
- * 
+ *
  * In UDP mode, this thread consumes output envelopes and writes formatted
  * messages to stdout. In TCP mode, the output_router handles distribution
  * to individual clients instead.
- * 
+ *
  * Flow (UDP):
  *   Processor → Output Queue (envelopes) → Output Publisher → stdout
  */
@@ -23,7 +23,8 @@
  * Output publisher configuration
  */
 typedef struct {
-    bool use_binary_output;             // Binary vs CSV output format
+    bool use_binary_output;     // Binary vs CSV output format
+    bool quiet_mode;            // Suppress stdout output (benchmark mode)
 } output_publisher_config_t;
 
 /**
@@ -32,16 +33,19 @@ typedef struct {
 typedef struct {
     // Configuration
     output_publisher_config_t config;
-    
+
     // Input queue (from processor)
     output_envelope_queue_t* input_queue;
-    
+
     // Shutdown coordination
     atomic_bool* shutdown_flag;
-    
+
     // Statistics
     uint64_t messages_published;
-    
+    uint64_t acks_published;
+    uint64_t trades_published;
+    uint64_t cancels_published;
+    uint64_t tob_updates_published;
 } output_publisher_context_t;
 
 /**

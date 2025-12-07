@@ -39,13 +39,51 @@ typedef struct {
     output_envelope_queue_t* queue_0;
     output_envelope_queue_t* queue_1;
     bool use_binary_output;
+    bool quiet_mode;
     atomic_bool* shutdown_flag;
+    /* Statistics */
+    uint64_t messages_published;
+    uint64_t acks_published;
+    uint64_t trades_published;
+    uint64_t cancels_published;
+    uint64_t tob_updates_published;
 } dual_output_publisher_ctx_t;
+
+static void dual_output_publisher_print_stats(const dual_output_publisher_ctx_t* ctx) {
+    fprintf(stderr, "\n=== Dual Output Publisher Statistics ===\n");
+    fprintf(stderr, "Messages published:    %llu\n", (unsigned long long)ctx->messages_published);
+    fprintf(stderr, "  Acks:                %llu\n", (unsigned long long)ctx->acks_published);
+    fprintf(stderr, "  Trades:              %llu\n", (unsigned long long)ctx->trades_published);
+    fprintf(stderr, "  Cancel Acks:         %llu\n", (unsigned long long)ctx->cancels_published);
+    fprintf(stderr, "  TOB Updates:         %llu\n", (unsigned long long)ctx->tob_updates_published);
+}
+
+static inline void track_message_type(dual_output_publisher_ctx_t* ctx, output_msg_t* msg) {
+    switch (msg->type) {
+        case OUTPUT_MSG_ACK:
+            ctx->acks_published++;
+            break;
+        case OUTPUT_MSG_TRADE:
+            ctx->trades_published++;
+            break;
+        case OUTPUT_MSG_CANCEL_ACK:
+            ctx->cancels_published++;
+            break;
+        case OUTPUT_MSG_TOP_OF_BOOK:
+            ctx->tob_updates_published++;
+            break;
+        default:
+            break;
+    }
+    ctx->messages_published++;
+}
 
 static void* dual_output_publisher_thread(void* arg) {
     dual_output_publisher_ctx_t* ctx = (dual_output_publisher_ctx_t*)arg;
 
-    fprintf(stderr, "[Dual Output Publisher] Starting (round-robin from both processors)\n");
+    fprintf(stderr, "[Dual Output Publisher] Starting (format: %s, quiet: %s)\n",
+            ctx->use_binary_output ? "Binary" : "CSV",
+            ctx->quiet_mode ? "yes" : "no");
 
     output_msg_envelope_t envelope;
 
@@ -60,50 +98,58 @@ static void* dual_output_publisher_thread(void* arg) {
 
         /* Round-robin: Try queue 0, then queue 1 */
         if (output_envelope_queue_dequeue(ctx->queue_0, &envelope)) {
-            if (ctx->use_binary_output) {
-                size_t len = 0;
-                const void* data = binary_message_formatter_format(
-                    &bin_formatter,
-                    &envelope.msg,
-                    &len
-                );
-                if (data && len > 0) {
-                    fwrite(data, 1, len, stdout);
-                    fflush(stdout);
-                }
-            } else {
-                const char* line = message_formatter_format(
-                    &csv_formatter,
-                    &envelope.msg
-                );
-                if (line) {
-                    fputs(line, stdout);
-                    fflush(stdout);
+            track_message_type(ctx, &envelope.msg);
+
+            if (!ctx->quiet_mode) {
+                if (ctx->use_binary_output) {
+                    size_t len = 0;
+                    const void* data = binary_message_formatter_format(
+                        &bin_formatter,
+                        &envelope.msg,
+                        &len
+                    );
+                    if (data && len > 0) {
+                        fwrite(data, 1, len, stdout);
+                        fflush(stdout);
+                    }
+                } else {
+                    const char* line = message_formatter_format(
+                        &csv_formatter,
+                        &envelope.msg
+                    );
+                    if (line) {
+                        fputs(line, stdout);
+                        fflush(stdout);
+                    }
                 }
             }
             got_message = true;
         }
 
         if (output_envelope_queue_dequeue(ctx->queue_1, &envelope)) {
-            if (ctx->use_binary_output) {
-                size_t len = 0;
-                const void* data = binary_message_formatter_format(
-                    &bin_formatter,
-                    &envelope.msg,
-                    &len
-                );
-                if (data && len > 0) {
-                    fwrite(data, 1, len, stdout);
-                    fflush(stdout);
-                }
-            } else {
-                const char* line = message_formatter_format(
-                    &csv_formatter,
-                    &envelope.msg
-                );
-                if (line) {
-                    fputs(line, stdout);
-                    fflush(stdout);
+            track_message_type(ctx, &envelope.msg);
+
+            if (!ctx->quiet_mode) {
+                if (ctx->use_binary_output) {
+                    size_t len = 0;
+                    const void* data = binary_message_formatter_format(
+                        &bin_formatter,
+                        &envelope.msg,
+                        &len
+                    );
+                    if (data && len > 0) {
+                        fwrite(data, 1, len, stdout);
+                        fflush(stdout);
+                    }
+                } else {
+                    const char* line = message_formatter_format(
+                        &csv_formatter,
+                        &envelope.msg
+                    );
+                    if (line) {
+                        fputs(line, stdout);
+                        fflush(stdout);
+                    }
                 }
             }
             got_message = true;
@@ -117,6 +163,7 @@ static void* dual_output_publisher_thread(void* arg) {
     }
 
     fprintf(stderr, "[Dual Output Publisher] Shutting down\n");
+    dual_output_publisher_print_stats(ctx);
     return NULL;
 }
 
@@ -129,6 +176,7 @@ int run_udp_dual_processor(const app_config_t* config) {
     fprintf(stderr, "========================================\n");
     fprintf(stderr, "Port:           %u\n", config->port);
     fprintf(stderr, "Output format:  %s\n", config->binary_output ? "Binary" : "CSV");
+    fprintf(stderr, "Quiet mode:     %s\n", config->quiet_mode ? "Yes (benchmark)" : "No");
     fprintf(stderr, "Processors:     2 (A-M, N-Z)\n");
     fprintf(stderr, "Output:         Both processors (round-robin)\n");
     fprintf(stderr, "========================================\n");
@@ -225,9 +273,11 @@ int run_udp_dual_processor(const app_config_t* config) {
     }
 
     /* Configure dual output publisher (reads from BOTH queues!) */
+    memset(&dual_publisher_ctx, 0, sizeof(dual_publisher_ctx));
     dual_publisher_ctx.queue_0 = output_queue_0;
     dual_publisher_ctx.queue_1 = output_queue_1;
     dual_publisher_ctx.use_binary_output = config->binary_output;
+    dual_publisher_ctx.quiet_mode = config->quiet_mode;
     dual_publisher_ctx.shutdown_flag = &g_shutdown;
 
     /* Create threads */
@@ -330,6 +380,7 @@ int run_udp_single_processor(const app_config_t* config) {
     fprintf(stderr, "========================================\n");
     fprintf(stderr, "Port:           %u\n", config->port);
     fprintf(stderr, "Output format:  %s\n", config->binary_output ? "Binary" : "CSV");
+    fprintf(stderr, "Quiet mode:     %s\n", config->quiet_mode ? "Yes (benchmark)" : "No");
     fprintf(stderr, "========================================\n");
 
     /* Initialize memory pools */
@@ -392,7 +443,8 @@ int run_udp_single_processor(const app_config_t* config) {
 
     /* Configure output publisher */
     output_publisher_config_t publisher_config = {
-        .use_binary_output = config->binary_output
+        .use_binary_output = config->binary_output,
+        .quiet_mode = config->quiet_mode
     };
 
     if (!output_publisher_init(&publisher_ctx, &publisher_config, output_queue, &g_shutdown)) {

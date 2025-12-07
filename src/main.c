@@ -24,6 +24,7 @@ static void print_usage(const char* program_name) {
     fprintf(stderr, "  --tcp [port]             Use TCP mode (default port: 1234)\n");
     fprintf(stderr, "  --udp [port]             Use UDP mode (default port: 1234)\n");
     fprintf(stderr, "  --binary                 Use binary protocol for output\n");
+    fprintf(stderr, "  --quiet, --benchmark     Suppress per-message output (stats only)\n");
     fprintf(stderr, "  --dual-processor         Use dual-processor mode (A-M / N-Z) [DEFAULT]\n");
     fprintf(stderr, "  --single-processor       Use single-processor mode\n");
     fprintf(stderr, "  --multicast <group:port> Broadcast market data to multicast group\n");
@@ -35,7 +36,11 @@ static void print_usage(const char* program_name) {
     fprintf(stderr, "  %s --tcp --binary                  # TCP with binary output\n", program_name);
     fprintf(stderr, "  %s --tcp --multicast 239.255.0.1:5000  # TCP + multicast feed\n", program_name);
     fprintf(stderr, "  %s --udp                           # UDP, dual-processor\n", program_name);
+    fprintf(stderr, "  %s --udp --quiet                   # UDP benchmark mode (no output)\n", program_name);
     fprintf(stderr, "  %s --udp --single-processor        # UDP, single-processor (legacy)\n", program_name);
+    fprintf(stderr, "\nBenchmark Mode (--quiet):\n");
+    fprintf(stderr, "  Suppresses per-message stdout output for throughput testing\n");
+    fprintf(stderr, "  Statistics still printed to stderr on shutdown (Ctrl+C)\n");
     fprintf(stderr, "\nDual-Processor Mode:\n");
     fprintf(stderr, "  Symbols A-M → Processor 0 (e.g., AAPL, IBM, GOOGL, META)\n");
     fprintf(stderr, "  Symbols N-Z → Processor 1 (e.g., NVDA, TSLA, UBER, ZM)\n");
@@ -64,8 +69,7 @@ static bool parse_multicast_address(const char* addr_str,
 
     *colon = '\0';
 
-    // Safe bounded copy of group part into caller buffer without triggering
-    // format-truncation or stringop-truncation warnings
+    // Safe bounded copy of group part into caller buffer
     if (group_size == 0) {
         fprintf(stderr, "ERROR: multicast group buffer too small\n");
         return false;
@@ -90,6 +94,7 @@ static bool parse_args(int argc, char** argv, app_config_t* config) {
     config->port = 1234;
     config->binary_output = false;
     config->dual_processor = true;  // Default to dual-processor
+    config->quiet_mode = false;     // Default to verbose output
     config->enable_multicast = false;
     config->multicast_group[0] = '\0';
     config->multicast_port = 0;
@@ -109,6 +114,8 @@ static bool parse_args(int argc, char** argv, app_config_t* config) {
             }
         } else if (strcmp(argv[i], "--binary") == 0) {
             config->binary_output = true;
+        } else if (strcmp(argv[i], "--quiet") == 0 || strcmp(argv[i], "--benchmark") == 0) {
+            config->quiet_mode = true;
         } else if (strcmp(argv[i], "--dual-processor") == 0) {
             config->dual_processor = true;
         } else if (strcmp(argv[i], "--single-processor") == 0) {
@@ -178,4 +185,3 @@ int main(int argc, char** argv) {
 
     return result;
 }
-
