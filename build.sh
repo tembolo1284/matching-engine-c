@@ -161,6 +161,24 @@ mode_benchmark_tcp() {
     "./${BUILD_DIR}/matching_engine" --tcp "${port}" --quiet
 }
 
+mode_benchmark_udp_binary() {
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+
+    print_status "UDP Binary Benchmark Mode (quiet - stats only)"
+    echo ""
+    "./${BUILD_DIR}/matching_engine" --udp "${port}" --quiet --binary
+}
+
+mode_benchmark_tcp_binary() {
+    require_built
+    local port="${1:-$DEFAULT_PORT}"
+
+    print_status "TCP Binary Benchmark Mode (quiet - stats only)"
+    echo ""
+    "./${BUILD_DIR}/matching_engine" --tcp "${port}" --quiet --binary
+}
+
 mode_benchmark_matching() {
     require_client_built
     local scenario="${1:-24}"
@@ -494,6 +512,14 @@ main() {
         benchmark-tcp)
             shift
             mode_benchmark_tcp "$@"
+            ;;
+        benchmark-udp-binary)
+            shift
+            mode_benchmark_udp_binary "$@"
+            ;;
+        benchmark-tcp-binary)
+            shift
+            mode_benchmark_tcp_binary "$@"
             ;;
         benchmark-match|benchmark-matching)
             shift
