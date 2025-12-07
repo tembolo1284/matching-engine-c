@@ -498,7 +498,7 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
         /* Progress indicator */
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
-            uint32_t pct = (i * 100) / pairs;
+            uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
             uint64_t elapsed_ns = engine_client_now_ns() - start_time;
             uint64_t elapsed_ms = elapsed_ns / 1000000;
             uint64_t orders_sent = (uint64_t)i * 2;
@@ -617,7 +617,7 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
         /* Progress indicator */
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
-            uint32_t pct = (i * 100) / pairs;
+            uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
             uint64_t elapsed_ns = engine_client_now_ns() - start_time;
             uint64_t elapsed_ms = elapsed_ns / 1000000;
             uint64_t elapsed_sec = elapsed_ms / 1000;

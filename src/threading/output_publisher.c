@@ -9,7 +9,7 @@
 
 #define BATCH_SIZE 32
 #define SLEEP_TIME_US 100
-#define PROGRESS_INTERVAL_NS (10ULL * 1000000000ULL)  /* 10 seconds */
+#define PROGRESS_INTERVAL_NS (30ULL * 1000000000ULL)  /* 10 seconds */
 
 static const struct timespec ts = {
     .tv_sec = 0,

@@ -96,7 +96,7 @@ static void* dual_output_publisher_thread(void* arg) {
     /* Progress tracking for quiet mode */
     uint64_t last_progress_time = 0;
     uint64_t last_progress_msgs = 0;
-    const uint64_t PROGRESS_INTERVAL_NS = 10ULL * 1000000000ULL;  /* 10 seconds */
+    const uint64_t PROGRESS_INTERVAL_NS = 30ULL * 1000000000ULL;  /* 10 seconds */
     
     /* Get start time */
     struct timespec ts_start;
