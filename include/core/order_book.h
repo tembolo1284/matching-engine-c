@@ -44,7 +44,7 @@ extern "C" {
  * Hash table size - MUST be power of 2 for fast masking
  * Load factor target: ~50% for good probe performance
  */
-#define ORDER_MAP_SIZE 262144
+#define ORDER_MAP_SIZE 524288
 #define ORDER_MAP_MASK (ORDER_MAP_SIZE - 1)
 
 /* Maximum probe length for open-addressing (Rule 2 compliance) */
@@ -55,7 +55,7 @@ extern "C" {
 #define MAX_ORDERS_AT_PRICE_LEVEL (TYPICAL_ORDERS_PER_LEVEL * 10)
 
 /* Memory pool sizes */
-#define MAX_ORDERS_IN_POOL 131072
+#define MAX_ORDERS_IN_POOL 262144
 
 /* Sentinel values for open-addressing hash table */
 #define HASH_SLOT_EMPTY     0ULL

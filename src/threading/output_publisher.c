@@ -9,6 +9,7 @@
 
 #define BATCH_SIZE 32
 #define SLEEP_TIME_US 100
+#define PROGRESS_INTERVAL_NS (10ULL * 1000000000ULL)  /* 10 seconds */
 
 static const struct timespec ts = {
     .tv_sec = 0,
@@ -57,6 +58,13 @@ void* output_publisher_thread(void* arg) {
     output_msg_envelope_t batch[BATCH_SIZE];
     char output_buffer[4096];
 
+    /* Progress tracking for quiet mode */
+    struct timespec ts_start;
+    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    uint64_t start_time_ns = (uint64_t)ts_start.tv_sec * 1000000000ULL + ts_start.tv_nsec;
+    uint64_t last_progress_time = start_time_ns;
+    uint64_t last_progress_msgs = 0;
+
     while (!atomic_load(ctx->shutdown_flag)) {
         // Dequeue batch of output envelopes
         size_t count = 0;
@@ -70,6 +78,32 @@ void* output_publisher_thread(void* arg) {
 
         if (count == 0) {
             nanosleep(&ts, NULL);
+            
+            /* Check for progress update even when idle */
+            if (ctx->config.quiet_mode) {
+                struct timespec ts_now;
+                clock_gettime(CLOCK_MONOTONIC, &ts_now);
+                uint64_t now_ns = (uint64_t)ts_now.tv_sec * 1000000000ULL + ts_now.tv_nsec;
+                
+                if (now_ns - last_progress_time >= PROGRESS_INTERVAL_NS) {
+                    uint64_t elapsed_ns = now_ns - start_time_ns;
+                    double elapsed_sec = (double)elapsed_ns / 1e9;
+                    uint64_t msgs_since_last = ctx->messages_published - last_progress_msgs;
+                    double interval_sec = (double)(now_ns - last_progress_time) / 1e9;
+                    double current_rate = (interval_sec > 0) ? (msgs_since_last / interval_sec) : 0;
+                    double avg_rate = (elapsed_sec > 0) ? (ctx->messages_published / elapsed_sec) : 0;
+                    
+                    fprintf(stderr, "[PROGRESS] %6.1fs | %12llu msgs | %10llu trades | %8.2fK msg/s (avg: %.2fK)\n",
+                            elapsed_sec,
+                            (unsigned long long)ctx->messages_published,
+                            (unsigned long long)ctx->trades_published,
+                            current_rate / 1000.0,
+                            avg_rate / 1000.0);
+                    
+                    last_progress_time = now_ns;
+                    last_progress_msgs = ctx->messages_published;
+                }
+            }
             continue;
         }
 
@@ -141,6 +175,32 @@ void* output_publisher_thread(void* arg) {
                 ctx->messages_published++;
             }
         }
+
+        /* Periodic progress update in quiet mode */
+        if (ctx->config.quiet_mode) {
+            struct timespec ts_now;
+            clock_gettime(CLOCK_MONOTONIC, &ts_now);
+            uint64_t now_ns = (uint64_t)ts_now.tv_sec * 1000000000ULL + ts_now.tv_nsec;
+            
+            if (now_ns - last_progress_time >= PROGRESS_INTERVAL_NS) {
+                uint64_t elapsed_ns = now_ns - start_time_ns;
+                double elapsed_sec = (double)elapsed_ns / 1e9;
+                uint64_t msgs_since_last = ctx->messages_published - last_progress_msgs;
+                double interval_sec = (double)(now_ns - last_progress_time) / 1e9;
+                double current_rate = (interval_sec > 0) ? (msgs_since_last / interval_sec) : 0;
+                double avg_rate = (elapsed_sec > 0) ? (ctx->messages_published / elapsed_sec) : 0;
+                
+                fprintf(stderr, "[PROGRESS] %6.1fs | %12llu msgs | %10llu trades | %8.2fK msg/s (avg: %.2fK)\n",
+                        elapsed_sec,
+                        (unsigned long long)ctx->messages_published,
+                        (unsigned long long)ctx->trades_published,
+                        current_rate / 1000.0,
+                        avg_rate / 1000.0);
+                
+                last_progress_time = now_ns;
+                last_progress_msgs = ctx->messages_published;
+            }
+        }
     }
 
     fprintf(stderr, "[Output Publisher] Shutting down\n");
@@ -156,3 +216,4 @@ void output_publisher_print_stats(const output_publisher_context_t* ctx) {
     fprintf(stderr, "  Cancel Acks:         %llu\n", (unsigned long long)ctx->cancels_published);
     fprintf(stderr, "  TOB Updates:         %llu\n", (unsigned long long)ctx->tob_updates_published);
 }
+

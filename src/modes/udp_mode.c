@@ -93,6 +93,17 @@ static void* dual_output_publisher_thread(void* arg) {
     memset(&bin_formatter, 0, sizeof(bin_formatter));
     memset(&csv_formatter, 0, sizeof(csv_formatter));
 
+    /* Progress tracking for quiet mode */
+    uint64_t last_progress_time = 0;
+    uint64_t last_progress_msgs = 0;
+    const uint64_t PROGRESS_INTERVAL_NS = 10ULL * 1000000000ULL;  /* 10 seconds */
+    
+    /* Get start time */
+    struct timespec ts_start;
+    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    uint64_t start_time_ns = (uint64_t)ts_start.tv_sec * 1000000000ULL + ts_start.tv_nsec;
+    last_progress_time = start_time_ns;
+
     while (!atomic_load(ctx->shutdown_flag)) {
         bool got_message = false;
 
@@ -159,6 +170,32 @@ static void* dual_output_publisher_thread(void* arg) {
             /* Both queues empty, brief sleep */
             struct timespec ts = {0, 1000};  /* 1μs */
             nanosleep(&ts, NULL);
+        }
+
+        /* Periodic progress update in quiet mode */
+        if (ctx->quiet_mode) {
+            struct timespec ts_now;
+            clock_gettime(CLOCK_MONOTONIC, &ts_now);
+            uint64_t now_ns = (uint64_t)ts_now.tv_sec * 1000000000ULL + ts_now.tv_nsec;
+            
+            if (now_ns - last_progress_time >= PROGRESS_INTERVAL_NS) {
+                uint64_t elapsed_ns = now_ns - start_time_ns;
+                double elapsed_sec = (double)elapsed_ns / 1e9;
+                uint64_t msgs_since_last = ctx->messages_published - last_progress_msgs;
+                double interval_sec = (double)(now_ns - last_progress_time) / 1e9;
+                double current_rate = (interval_sec > 0) ? (msgs_since_last / interval_sec) : 0;
+                double avg_rate = (elapsed_sec > 0) ? (ctx->messages_published / elapsed_sec) : 0;
+                
+                fprintf(stderr, "[PROGRESS] %6.1fs | %12llu msgs | %10llu trades | %8.2fK msg/s (avg: %.2fK)\n",
+                        elapsed_sec,
+                        (unsigned long long)ctx->messages_published,
+                        (unsigned long long)ctx->trades_published,
+                        current_rate / 1000.0,
+                        avg_rate / 1000.0);
+                
+                last_progress_time = now_ns;
+                last_progress_msgs = ctx->messages_published;
+            }
         }
     }
 
