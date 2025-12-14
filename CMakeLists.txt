@@ -22,8 +22,13 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wpedantic -Werror -pthread")
 set(CMAKE_C_FLAGS_RELEASE "-O3")
 set(CMAKE_C_FLAGS_DEBUG "-g -O0 -DDEBUG")
 
-# Add after the existing CMAKE_C_FLAGS line
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcmodel=medium")
+# mcmodel=medium is only supported on x86_64 Linux (not macOS, not ARM)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -mcmodel=medium")
+    set(MCMODEL_SUPPORTED TRUE)
+else()
+    set(MCMODEL_SUPPORTED FALSE)
+endif()
 
 # Valgrind-compatible build option (disables AVX-512)
 option(VALGRIND_BUILD "Build without AVX-512 for Valgrind compatibility" OFF)
@@ -40,6 +45,8 @@ if(UNIX AND NOT APPLE)
     endif()
 elseif(APPLE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
+    # Apple Silicon uses ARM64 - no special arch flags needed
+    # For Intel Macs, you could add -march=native but it's generally not needed
 endif()
 
 # Include directories
@@ -164,8 +171,14 @@ target_include_directories(matching_engine_tests PRIVATE
     include
     tests
 )
-target_compile_options(matching_engine_tests PRIVATE -g -O0 -mcmodel=medium)
-target_link_options(matching_engine_tests PRIVATE -mcmodel=medium)
+
+# Test-specific compile options (platform-aware)
+if(MCMODEL_SUPPORTED)
+    target_compile_options(matching_engine_tests PRIVATE -g -O0 -mcmodel=medium)
+    target_link_options(matching_engine_tests PRIVATE -mcmodel=medium)
+else()
+    target_compile_options(matching_engine_tests PRIVATE -g -O0)
+endif()
 
 # Enable testing
 enable_testing()
@@ -463,6 +476,7 @@ add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "Build type:     ${CMAKE_BUILD_TYPE}"
     COMMAND ${CMAKE_COMMAND} -E echo "C Flags:        ${CMAKE_C_FLAGS}"
     COMMAND ${CMAKE_COMMAND} -E echo "Build dir:      ${CMAKE_BINARY_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E echo "mcmodel:        ${MCMODEL_SUPPORTED}"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Processor Modes:"
@@ -534,6 +548,7 @@ message(STATUS "Platform:      ${PLATFORM}")
 message(STATUS "Compiler:      ${CMAKE_C_COMPILER}")
 message(STATUS "Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Standard:    C${CMAKE_C_STANDARD}")
+message(STATUS "mcmodel:       ${MCMODEL_SUPPORTED}")
 message(STATUS "Processors:    Dual (A-M/N-Z) by default")
 message(STATUS "Multicast:     Enabled (optional)")
 message(STATUS "Client:        matching_engine_client")
