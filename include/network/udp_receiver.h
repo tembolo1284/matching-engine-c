@@ -62,12 +62,12 @@ _Static_assert((UDP_CLIENT_HASH_SIZE & (UDP_CLIENT_HASH_SIZE - 1)) == 0,
  * UDP Client Entry - tracks connected clients
  */
 typedef struct {
-    udp_client_addr_t addr;     /* Client address */
-    uint32_t client_id;         /* Assigned client ID */
-    int64_t last_seen;          /* Timestamp for LRU eviction */
-    client_protocol_t protocol; /* Detected protocol (binary/CSV) */
-    bool active;                /* Slot in use */
-    uint8_t _pad[2];            /* Alignment */
+    int64_t last_seen;          /* 8 bytes - Timestamp for LRU eviction */
+    udp_client_addr_t addr;     /* 8 butes - Client address */
+    uint32_t client_id;         /* 4 bytes - Assigned client ID */
+    client_protocol_t protocol; /* 1 byte - Detected protocol (binary/CSV) */
+    bool active;                /* 1 byte - Slot in use */
+    uint8_t _pad[2];            /* 2 bytes - Padding alignment */
 } udp_client_entry_t;
 
 _Static_assert(sizeof(udp_client_entry_t) == 24, "udp_client_entry_t should be 24 bytes");
