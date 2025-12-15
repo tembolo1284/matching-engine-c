@@ -247,14 +247,14 @@ void scenario_print_result(const scenario_result_t* result) {
 
     if (result->proc0_orders > 0 || result->proc1_orders > 0) {
         printf("Processor Distribution:\n");
-        printf("  Processor 0 (A-M): %u orders (%.1f%%)\n", 
+        printf("  Processor 0 (A-M): %u orders (%.1f%%)\n",
                result->proc0_orders,
-               (result->proc0_orders + result->proc1_orders) > 0 
+               (result->proc0_orders + result->proc1_orders) > 0
                    ? (100.0 * result->proc0_orders / (result->proc0_orders + result->proc1_orders))
                    : 0.0);
-        printf("  Processor 1 (N-Z): %u orders (%.1f%%)\n", 
+        printf("  Processor 1 (N-Z): %u orders (%.1f%%)\n",
                result->proc1_orders,
-               (result->proc0_orders + result->proc1_orders) > 0 
+               (result->proc0_orders + result->proc1_orders) > 0
                    ? (100.0 * result->proc1_orders / (result->proc0_orders + result->proc1_orders))
                    : 0.0);
         printf("\n");
@@ -282,8 +282,10 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     } else {
         if (result) result->orders_sent++;
     }
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
+
+    /* Wait for ACK + TOB */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     /* Sell order at different price (no match) */
     printf("\nSending: SELL IBM 50@105\n");
@@ -293,21 +295,23 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     } else {
         if (result) result->orders_sent++;
     }
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
+
+    /* Wait for ACK + TOB */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     /* Flush */
     printf("\nSending: FLUSH\n");
     engine_client_send_flush(client);
     if (result) result->orders_sent++;
 
-    sleep_ms(250);
-    engine_client_recv_all(client, 250);
+    /* Wait for Cancel ACKs + TOBs */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
-    for (int i = 0; i < 5; i++) {
-        sleep_ms(200);
-        engine_client_recv_all(client, 200);
-    }
+    /* Final drain */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     finalize_result(result, client);
     return true;
@@ -326,20 +330,23 @@ bool scenario_matching_trade(engine_client_t* client, scenario_result_t* result)
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
+
+    /* Wait for ACK + TOB */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     /* Matching sell order */
     printf("\nSending: SELL IBM 50@100 (should match!)\n");
     oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_SELL, 0);
     if (oid > 0 && result) result->orders_sent++;
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
 
-    for (int i = 0; i < 3; i++) {
-        sleep_ms(200);
-        engine_client_recv_all(client, 200);
-    }
+    /* Wait for ACK + Trade + TOBs */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
+
+    /* Final drain */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     finalize_result(result, client);
     return true;
@@ -358,19 +365,22 @@ bool scenario_cancel_order(engine_client_t* client, scenario_result_t* result) {
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
+
+    /* Wait for ACK + TOB */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     /* Cancel */
     printf("\nSending: CANCEL order %u\n", oid);
     engine_client_send_cancel(client, oid);
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
 
-    for (int i = 0; i < 3; i++) {
-        sleep_ms(200);
-        engine_client_recv_all(client, 200);
-    }
+    /* Wait for Cancel ACK + TOB */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
+
+    /* Final drain */
+    sleep_ms(100);
+    engine_client_recv_all(client, 100);
 
     finalize_result(result, client);
     return true;
@@ -402,6 +412,19 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
 
+    /* Batch configuration */
+    uint32_t batch_size = 100;
+    int delay_ms = 10;
+
+    if (count >= 10000) {
+        batch_size = 500;
+        delay_ms = 20;
+    }
+    if (count >= 100000) {
+        batch_size = 1000;
+        delay_ms = 30;
+    }
+
     uint64_t start_time = engine_client_now_ns();
 
     /* Send orders */
@@ -425,6 +448,12 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
             uint64_t rate = (elapsed_ms > 0) ? ((uint64_t)i * 1000 / elapsed_ms) : 0;
             printf("  %u%% (%u orders, %lu ms, %lu orders/sec)\n",
                    pct, i, (unsigned long)elapsed_ms, (unsigned long)rate);
+        }
+
+        /* Batch delay and drain */
+        if (i > 0 && (i % batch_size) == 0) {
+            sleep_ms(delay_ms);
+            engine_client_recv_all(client, 10);
         }
     }
 
@@ -471,9 +500,16 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
         batch_size = 50000;
         delay_ms = 25;
         printf("Batched mode: %u pairs/batch, %d ms delay\n\n", batch_size, delay_ms);
+    } else if (pairs >= 100000) {
+        batch_size = 10000;
+        delay_ms = 20;
+        printf("Batched mode: %u pairs/batch, %d ms delay\n\n", batch_size, delay_ms);
+    } else if (pairs >= 10000) {
+        batch_size = 1000;
+        delay_ms = 10;
     } else {
-        batch_size = pairs;
-        delay_ms = 0;
+        batch_size = 100;
+        delay_ms = 5;
     }
 
     /* Progress tracking - 5% increments */
@@ -507,9 +543,10 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
                    pct, i, (unsigned long)elapsed_ms, (unsigned long)rate);
         }
 
-        /* Batch delay for large tests */
-        if (delay_ms > 0 && i > 0 && (i % batch_size) == 0) {
+        /* Batch delay and interleaved receive */
+        if (i > 0 && (i % batch_size) == 0) {
             sleep_ms(delay_ms);
+            engine_client_recv_all(client, 10);
         }
     }
 
@@ -519,10 +556,18 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
         wait_ms = 5000;
     } else if (pairs >= 1000000) {
         wait_ms = 2000;
+    } else if (pairs >= 100000) {
+        wait_ms = 1000;
     }
     printf("\nWaiting %d ms for server to finish processing...\n", wait_ms);
     sleep_ms(wait_ms);
     engine_client_recv_all(client, 200);
+
+    /* Additional drain passes */
+    for (int drain = 0; drain < 5; drain++) {
+        sleep_ms(100);
+        engine_client_recv_all(client, 100);
+    }
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -573,8 +618,8 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
         batch_size = 50000;
         delay_ms = 25;
     } else {
-        batch_size = pairs;
-        delay_ms = 0;
+        batch_size = 10000;
+        delay_ms = 20;
     }
 
     printf("Batched mode: %u pairs/batch, %d ms delay\n", batch_size, delay_ms);
@@ -623,7 +668,7 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             uint64_t elapsed_sec = elapsed_ms / 1000;
             uint64_t orders_sent = (uint64_t)i * 2;
             uint64_t rate = (elapsed_ms > 0) ? (orders_sent * 1000 / elapsed_ms) : 0;
-            
+
             if (elapsed_sec >= 60) {
                 uint64_t mins = elapsed_sec / 60;
                 uint64_t secs = elapsed_sec % 60;
@@ -635,9 +680,10 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             }
         }
 
-        /* Batch delay */
-        if (delay_ms > 0 && i > 0 && (i % batch_size) == 0) {
+        /* Batch delay and interleaved receive */
+        if (i > 0 && (i % batch_size) == 0) {
             sleep_ms(delay_ms);
+            engine_client_recv_all(client, 10);
         }
     }
 
@@ -650,14 +696,14 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     /* Final timing */
     uint64_t send_elapsed_ns = engine_client_now_ns() - start_time;
     double send_elapsed_sec = (double)send_elapsed_ns / 1e9;
-    
+
     printf("\n");
     printf("============================================================\n");
     printf("  SEND COMPLETE\n");
     printf("============================================================\n");
     printf("Orders sent:     %u\n", result ? result->orders_sent : 0);
     printf("Send time:       %.2f sec\n", send_elapsed_sec);
-    printf("Send rate:       %.2fM orders/sec\n", 
+    printf("Send rate:       %.2fM orders/sec\n",
            (result ? result->orders_sent : 0) / send_elapsed_sec / 1e6);
     printf("============================================================\n\n");
 
@@ -671,6 +717,12 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     printf("Waiting %d ms for server to finish processing...\n", wait_ms);
     sleep_ms(wait_ms);
     engine_client_recv_all(client, 200);
+
+    /* Additional drain passes */
+    for (int drain = 0; drain < 10; drain++) {
+        sleep_ms(100);
+        engine_client_recv_all(client, 100);
+    }
 
     finalize_result(result, client);
     scenario_print_result(result);
