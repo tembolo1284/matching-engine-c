@@ -93,6 +93,27 @@ static void sleep_ms(int ms) {
 }
 
 /**
+ * Aggressively drain all pending responses.
+ * Keeps trying until no messages received for several attempts.
+ */
+static void drain_responses(engine_client_t* client, int initial_delay_ms) {
+    /* Initial delay to let server process */
+    sleep_ms(initial_delay_ms);
+
+    /* Keep draining until we get several empty attempts in a row */
+    int empty_count = 0;
+    for (int attempt = 0; attempt < 20 && empty_count < 3; attempt++) {
+        int count = engine_client_recv_all(client, 50);
+        if (count == 0) {
+            empty_count++;
+            sleep_ms(25);
+        } else {
+            empty_count = 0;
+        }
+    }
+}
+
+/**
  * Response callback that counts trades
  */
 typedef struct {
@@ -284,8 +305,7 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     }
 
     /* Wait for ACK + TOB */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 150);
 
     /* Sell order at different price (no match) */
     printf("\nSending: SELL IBM 50@105\n");
@@ -297,21 +317,15 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     }
 
     /* Wait for ACK + TOB */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 150);
 
     /* Flush */
     printf("\nSending: FLUSH\n");
     engine_client_send_flush(client);
     if (result) result->orders_sent++;
 
-    /* Wait for Cancel ACKs + TOBs */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
-
-    /* Final drain */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    /* Wait for Cancel ACKs + TOBs (flush generates multiple responses) */
+    drain_responses(client, 250);
 
     finalize_result(result, client);
     return true;
@@ -332,8 +346,7 @@ bool scenario_matching_trade(engine_client_t* client, scenario_result_t* result)
     if (oid > 0 && result) result->orders_sent++;
 
     /* Wait for ACK + TOB */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 150);
 
     /* Matching sell order */
     printf("\nSending: SELL IBM 50@100 (should match!)\n");
@@ -341,12 +354,7 @@ bool scenario_matching_trade(engine_client_t* client, scenario_result_t* result)
     if (oid > 0 && result) result->orders_sent++;
 
     /* Wait for ACK + Trade + TOBs */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
-
-    /* Final drain */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 200);
 
     finalize_result(result, client);
     return true;
@@ -367,20 +375,14 @@ bool scenario_cancel_order(engine_client_t* client, scenario_result_t* result) {
     if (oid > 0 && result) result->orders_sent++;
 
     /* Wait for ACK + TOB */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 150);
 
     /* Cancel */
     printf("\nSending: CANCEL order %u\n", oid);
     engine_client_send_cancel(client, oid);
 
     /* Wait for Cancel ACK + TOB */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
-
-    /* Final drain */
-    sleep_ms(100);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 150);
 
     finalize_result(result, client);
     return true;
@@ -404,8 +406,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 
     /* Flush first */
     engine_client_send_flush(client);
-    sleep_ms(100);
-    engine_client_recv_all(client, 50);
+    drain_responses(client, 100);
 
     /* Progress tracking */
     uint32_t progress_interval = count / 20;
@@ -459,8 +460,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 
     printf("\nSending FLUSH to clear book...\n");
     engine_client_send_flush(client);
-    sleep_ms(2000);
-    engine_client_recv_all(client, 100);
+    drain_responses(client, 2000);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -485,8 +485,7 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 
     /* Flush first */
     engine_client_send_flush(client);
-    sleep_ms(200);
-    engine_client_recv_all(client, 200);
+    drain_responses(client, 200);
 
     /* Determine batch size and delay for large tests */
     uint32_t batch_size;
@@ -560,11 +559,10 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
         wait_ms = 1000;
     }
     printf("\nWaiting %d ms for server to finish processing...\n", wait_ms);
-    sleep_ms(wait_ms);
-    engine_client_recv_all(client, 200);
+    drain_responses(client, wait_ms);
 
     /* Additional drain passes */
-    for (int drain = 0; drain < 5; drain++) {
+    for (int drain_pass = 0; drain_pass < 5; drain_pass++) {
         sleep_ms(100);
         engine_client_recv_all(client, 100);
     }
@@ -601,8 +599,7 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     /* Flush first */
     printf("Flushing existing orders...\n");
     engine_client_send_flush(client);
-    sleep_ms(500);
-    engine_client_recv_all(client, 200);
+    drain_responses(client, 500);
 
     /* Batch configuration for extreme scale */
     uint32_t batch_size;
@@ -715,11 +712,10 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
         wait_ms = 10000;
     }
     printf("Waiting %d ms for server to finish processing...\n", wait_ms);
-    sleep_ms(wait_ms);
-    engine_client_recv_all(client, 200);
+    drain_responses(client, wait_ms);
 
     /* Additional drain passes */
-    for (int drain = 0; drain < 10; drain++) {
+    for (int drain_pass = 0; drain_pass < 10; drain_pass++) {
         sleep_ms(100);
         engine_client_recv_all(client, 100);
     }

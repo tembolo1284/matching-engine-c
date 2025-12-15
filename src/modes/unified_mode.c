@@ -344,7 +344,7 @@ static bool init_multicast_socket(unified_server_t* server) {
  * ============================================================================ */
 
 static void cleanup_server(unified_server_t* server) {
-    /* Close sockets */
+    /* Close sockets (may already be closed during shutdown) */
     if (server->tcp_listen_fd >= 0) close(server->tcp_listen_fd);
     if (server->udp_fd >= 0) close(server->udp_fd);
     if (server->multicast_fd >= 0) close(server->multicast_fd);
@@ -539,6 +539,18 @@ int run_unified_server(const unified_config_t* config) {
 cleanup_threads:
     atomic_store(&g_shutdown, true);
     
+    /* Close sockets FIRST to unblock accept()/recvfrom() in listener threads */
+    if (server->tcp_listen_fd >= 0) {
+        shutdown(server->tcp_listen_fd, SHUT_RDWR);
+        close(server->tcp_listen_fd);
+        server->tcp_listen_fd = -1;
+    }
+    if (server->udp_fd >= 0) {
+        close(server->udp_fd);
+        server->udp_fd = -1;
+    }
+    
+    /* Now threads can exit and be joined */
     if (router_started) pthread_join(router_tid, NULL);
     if (proc1_started) pthread_join(proc1_tid, NULL);
     if (proc0_started) pthread_join(proc0_tid, NULL);

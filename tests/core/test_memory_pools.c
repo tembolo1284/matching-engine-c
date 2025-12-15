@@ -3,6 +3,10 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#ifndef MAP_POPULATE
+#define MAP_POPULATE 0
+#endif
+
 
 /* ============================================================================
  * Memory Pool Unit Tests

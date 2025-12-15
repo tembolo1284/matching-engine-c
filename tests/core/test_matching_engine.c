@@ -3,6 +3,9 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#ifndef MAP_POPULATE
+#define MAP_POPULATE 0
+#endif
 
 /* Test fixture - use mmap for large allocations to avoid overcommit issues */
 static matching_engine_t* engine;
