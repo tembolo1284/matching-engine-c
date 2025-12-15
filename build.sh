@@ -6,9 +6,12 @@ BUILD_DIR="build"
 VALGRIND_BUILD_DIR="build-valgrind"
 BUILD_TYPE="Release"
 GENERATOR="Ninja"
-DEFAULT_PORT=1234
+
+# Fixed ports (unified server)
+TCP_PORT=1234
+UDP_PORT=1235
+MULTICAST_PORT=1236
 MULTICAST_GROUP="239.255.0.1"
-MULTICAST_PORT=5000
 
 # Detect platform
 if [[ "$OSTYPE" == "darwin"* ]]; then
@@ -99,10 +102,7 @@ require_built() {
 }
 
 require_client_built() {
-    if [ ! -x "$BUILD_DIR/matching_engine" ]; then
-        print_error "matching_engine not built. Run ./build.sh build first."
-        exit 1
-    fi
+    require_built
     if [ ! -x "$BUILD_DIR/matching_engine_client" ]; then
         print_error "matching_engine_client not built. Run ./build.sh build first."
         exit 1
@@ -129,60 +129,49 @@ build_for_valgrind() {
 # Server Run Modes
 # -------------------------
 
-mode_benchmark_udp() {
+run_server() {
     require_built
-    local port="${1:-$DEFAULT_PORT}"
-
-    print_status "UDP Benchmark Mode (quiet - stats only)"
+    print_status "Starting Unified Server"
     echo ""
     echo "=========================================="
-    echo "UDP Benchmark Mode"
+    echo "  Matching Engine - Unified Server"
+    echo "=========================================="
+    echo "  TCP:       port $TCP_PORT"
+    echo "  UDP:       port $UDP_PORT"
+    echo "  Multicast: $MULTICAST_GROUP:$MULTICAST_PORT"
     echo "=========================================="
     echo ""
-    echo "Server suppresses per-message output for maximum throughput."
-    echo "Progress printed every 10 seconds. Stats on shutdown (Ctrl+C)."
-    echo ""
-    echo "Terminal 1 (this terminal): Server in benchmark mode"
-    echo ""
-    echo "Terminal 2 (send orders):"
-    echo "  ./build/matching_engine_client --scenario 23 --udp localhost ${port}"
-    echo ""
-    print_status "Starting UDP server in BENCHMARK mode. Ctrl+C for stats."
-
-    "./${BUILD_DIR}/matching_engine" --udp "${port}" --quiet
+    "./${BUILD_DIR}/matching_engine" "$@"
 }
 
-mode_benchmark_tcp() {
+run_quiet() {
     require_built
-    local port="${1:-$DEFAULT_PORT}"
-
-    print_status "TCP Benchmark Mode (quiet - stats only)"
+    print_status "Starting Unified Server (Quiet/Benchmark Mode)"
     echo ""
-    "./${BUILD_DIR}/matching_engine" --tcp "${port}" --quiet
+    "./${BUILD_DIR}/matching_engine" --quiet "$@"
 }
 
-mode_benchmark_udp_binary() {
+run_binary() {
     require_built
-    local port="${1:-$DEFAULT_PORT}"
-
-    print_status "UDP Binary Benchmark Mode (quiet - stats only)"
+    print_status "Starting Unified Server (Binary Format)"
     echo ""
-    "./${BUILD_DIR}/matching_engine" --udp "${port}" --quiet --binary
+    "./${BUILD_DIR}/matching_engine" --binary "$@"
 }
 
-mode_benchmark_tcp_binary() {
+run_benchmark() {
     require_built
-    local port="${1:-$DEFAULT_PORT}"
-
-    print_status "TCP Binary Benchmark Mode (quiet - stats only)"
+    print_status "Starting Unified Server (Binary + Quiet)"
     echo ""
-    "./${BUILD_DIR}/matching_engine" --tcp "${port}" --quiet --binary
+    "./${BUILD_DIR}/matching_engine" --binary --quiet "$@"
 }
 
-mode_benchmark_matching() {
+# -------------------------
+# Benchmark Modes
+# -------------------------
+
+benchmark_matching() {
     require_client_built
     local scenario="${1:-24}"
-    local port="${2:-$DEFAULT_PORT}"
 
     print_status "Matching Benchmark Test (Scenario ${scenario})"
     echo ""
@@ -199,7 +188,7 @@ mode_benchmark_matching() {
     echo "  25 - 50M pairs  (100M orders)  ~4 min"
     echo ""
 
-    "./${BUILD_DIR}/matching_engine" --udp "$port" --quiet 2>&1 &
+    "./${BUILD_DIR}/matching_engine" --quiet 2>&1 &
     local server_pid=$!
     sleep 1
 
@@ -208,10 +197,10 @@ mode_benchmark_matching() {
         exit 1
     fi
 
-    print_status "Server started in benchmark mode (PID: $server_pid)"
+    print_status "Server started (PID: $server_pid)"
     echo ""
 
-    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --udp localhost "$port"
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --udp localhost "$UDP_PORT"
 
     sleep 2
 
@@ -222,10 +211,9 @@ mode_benchmark_matching() {
     print_success "Matching benchmark complete"
 }
 
-mode_benchmark_dual_processor() {
+benchmark_dual() {
     require_client_built
     local scenario="${1:-26}"
-    local port="${2:-$DEFAULT_PORT}"
 
     print_status "DUAL-PROCESSOR Matching Benchmark (Scenario ${scenario})"
     echo ""
@@ -241,7 +229,7 @@ mode_benchmark_dual_processor() {
     echo "  27 - 500M pairs (1B orders)    ~30-40 min"
     echo ""
 
-    "./${BUILD_DIR}/matching_engine" --udp "$port" --quiet 2>&1 &
+    "./${BUILD_DIR}/matching_engine" --quiet 2>&1 &
     local server_pid=$!
     sleep 1
 
@@ -250,10 +238,10 @@ mode_benchmark_dual_processor() {
         exit 1
     fi
 
-    print_status "Server started in benchmark mode (PID: $server_pid)"
+    print_status "Server started (PID: $server_pid)"
     echo ""
 
-    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --udp localhost "$port"
+    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --udp localhost "$UDP_PORT"
 
     sleep 5
 
@@ -268,57 +256,50 @@ mode_benchmark_dual_processor() {
 # Client Run Modes
 # -------------------------
 
-mode_client_interactive() {
+client_interactive() {
     require_client_built
-    local host="${1:-localhost}"
-    local port="${2:-$DEFAULT_PORT}"
+    local transport="${1:-tcp}"
+    local host="localhost"
+    local port="$TCP_PORT"
 
-    print_status "Client Interactive Mode"
+    if [ "$transport" = "udp" ]; then
+        port="$UDP_PORT"
+    fi
+
+    print_status "Client Interactive Mode ($transport)"
     echo ""
-    echo "Ensure server is running:"
-    echo "  ./${BUILD_DIR}/matching_engine --tcp ${port}"
+    echo "Ensure server is running: ./build.sh run"
     echo ""
 
-    "./${BUILD_DIR}/matching_engine_client" "$host" "$port"
+    if [ "$transport" = "udp" ]; then
+        "./${BUILD_DIR}/matching_engine_client" --udp "$host" "$port"
+    else
+        "./${BUILD_DIR}/matching_engine_client" "$host" "$port"
+    fi
 }
 
-mode_client_scenario() {
-    require_client_built
-    local scenario="${1:-1}"
-    local host="${2:-localhost}"
-    local port="${3:-$DEFAULT_PORT}"
-
-    print_status "Client Scenario Mode"
-    echo ""
-    echo "Running scenario ${scenario} against ${host}:${port}"
-    echo ""
-
-    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" "$host" "$port"
-}
-
-mode_client_udp() {
+client_scenario() {
     require_client_built
     local scenario="${1:-1}"
-    local host="${2:-localhost}"
-    local port="${3:-$DEFAULT_PORT}"
+    local transport="${2:-tcp}"
+    local host="localhost"
+    local port="$TCP_PORT"
 
-    print_status "Client UDP Mode"
+    if [ "$transport" = "udp" ]; then
+        port="$UDP_PORT"
+    fi
+
+    print_status "Client Scenario Mode (scenario $scenario, $transport)"
     echo ""
-    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --udp "$host" "$port"
+
+    if [ "$transport" = "udp" ]; then
+        "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --udp "$host" "$port"
+    else
+        "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" "$host" "$port"
+    fi
 }
 
-mode_client_tcp() {
-    require_client_built
-    local scenario="${1:-1}"
-    local host="${2:-localhost}"
-    local port="${3:-$DEFAULT_PORT}"
-
-    print_status "Client TCP Mode"
-    echo ""
-    "./${BUILD_DIR}/matching_engine_client" --scenario "$scenario" --tcp "$host" "$port"
-}
-
-list_client_scenarios() {
+list_scenarios() {
     require_client_built
     "./${BUILD_DIR}/matching_engine_client" --list-scenarios
 }
@@ -367,19 +348,9 @@ run_valgrind_server() {
 
     timeout --signal=SIGINT "${timeout_secs}" \
         valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-        "./${VALGRIND_BUILD_DIR}/matching_engine" --udp "$DEFAULT_PORT" || true
+        "./${VALGRIND_BUILD_DIR}/matching_engine" || true
 
     print_success "Valgrind server check complete"
-}
-
-# -------------------------
-# Direct Server Run
-# -------------------------
-
-run_server() {
-    require_built
-    shift || true
-    "./${BUILD_DIR}/matching_engine" "$@"
 }
 
 # -------------------------
@@ -388,64 +359,65 @@ run_server() {
 
 show_help() {
     cat << EOF
-Usage:
-  ./build.sh [command] [args...]
+Matching Engine - Build Script
+==============================
 
-Build Commands:
+Usage: ./build.sh [command] [args...]
+
+BUILD COMMANDS
   build              Build Release
   debug              Build Debug
   rebuild            Clean + rebuild
   clean              Remove build directory
   clean-all          Remove all build directories
 
-Test Commands:
+TEST COMMANDS
   test               Run unit tests
   valgrind           Run unit tests under valgrind
   valgrind-server    Run server under valgrind
 
-Benchmark Modes (the real throughput tests):
-  benchmark-udp      Start UDP server in quiet mode (manual client)
-  benchmark-tcp      Start TCP server in quiet mode (manual client)
-  benchmark-match N  Single-symbol matching (23=1M, 24=10M, 25=50M pairs)
-  benchmark-dual N   Dual-processor matching (26=250M, 27=500M pairs)
+SERVER COMMANDS (Unified - all transports always active)
+  run                Start server (CSV, dual processor)
+  run-binary         Start server (binary format)
+  run-quiet          Start server (quiet/benchmark mode)
+  run-benchmark      Start server (binary + quiet)
 
-Client Commands:
-  client [host] [port]           Interactive client
-  client-scenario N [host] [port] Run scenario N
-  client-udp N [host] [port]     Run scenario via UDP
-  client-tcp N [host] [port]     Run scenario via TCP
-  scenarios                       List available scenarios
+  Server always listens on:
+    TCP:       $TCP_PORT
+    UDP:       $UDP_PORT
+    Multicast: $MULTICAST_GROUP:$MULTICAST_PORT
 
-Server Commands:
-  run-udp            Start UDP server
-  run-tcp            Start TCP server
-  run-quiet          Start UDP server in quiet mode
+CLIENT COMMANDS
+  client [tcp|udp]           Interactive client
+  client-scenario N [tcp|udp] Run scenario N
+  scenarios                   List available scenarios
 
-Available Scenarios:
+BENCHMARK COMMANDS
+  benchmark-match N   Matching benchmark (23=1M, 24=10M, 25=50M pairs)
+  benchmark-dual N    Dual-processor benchmark (26=250M, 27=500M pairs)
+
+SCENARIOS
   Basic (1-3):       Correctness testing
-  Stress (10-12):    1K, 10K, 100K orders (non-matching, quick validation)
+  Stress (10-12):    1K, 10K, 100K orders
   Matching (20-25):  1K to 50M pairs (sustainable throughput)
-  Dual-Proc (26-27): 250M, 500M pairs (ultimate test, both processors)
+  Dual-Proc (26-27): 250M, 500M pairs (ultimate test)
 
-Examples:
-  ./build.sh build
-  ./build.sh test
+EXAMPLES
+  ./build.sh build                  # Build everything
+  ./build.sh test                   # Run unit tests
 
-  # Quick matching test (1M pairs = 2M orders):
-  ./build.sh benchmark-match 23
+  ./build.sh run                    # Start server (CSV)
+  ./build.sh run-binary             # Start server (binary)
+  ./build.sh run-quiet              # Start server (benchmark mode)
 
-  # Big matching test (50M pairs = 100M orders):
-  ./build.sh benchmark-match 25
+  ./build.sh client                 # Interactive TCP client
+  ./build.sh client udp             # Interactive UDP client
+  ./build.sh client-scenario 1      # Run scenario 1 via TCP
+  ./build.sh client-scenario 23 udp # Run scenario 23 via UDP
 
-  # Ultimate test (250M pairs = 500M orders, dual processor):
-  ./build.sh benchmark-dual 26
-
-  # 1 BILLION orders (500M pairs):
-  ./build.sh benchmark-dual 27
-
-  # Manual two-terminal workflow:
-  # Terminal 1: ./build.sh benchmark-udp
-  # Terminal 2: ./build.sh client-udp 23
+  ./build.sh benchmark-match 23     # Quick test: 1M pairs
+  ./build.sh benchmark-match 25     # Big test: 50M pairs
+  ./build.sh benchmark-dual 26      # Ultimate: 250M pairs
 EOF
 }
 
@@ -504,65 +476,45 @@ main() {
             run_valgrind_server "$@"
             ;;
 
+        # Server
+        run)
+            shift
+            run_server "$@"
+            ;;
+        run-binary)
+            shift
+            run_binary "$@"
+            ;;
+        run-quiet)
+            shift
+            run_quiet "$@"
+            ;;
+        run-benchmark)
+            shift
+            run_benchmark "$@"
+            ;;
+
         # Benchmarks
-        benchmark-udp)
-            shift
-            mode_benchmark_udp "$@"
-            ;;
-        benchmark-tcp)
-            shift
-            mode_benchmark_tcp "$@"
-            ;;
-        benchmark-udp-binary)
-            shift
-            mode_benchmark_udp_binary "$@"
-            ;;
-        benchmark-tcp-binary)
-            shift
-            mode_benchmark_tcp_binary "$@"
-            ;;
         benchmark-match|benchmark-matching)
             shift
-            mode_benchmark_matching "$@"
+            benchmark_matching "$@"
             ;;
         benchmark-dual)
             shift
-            mode_benchmark_dual_processor "$@"
+            benchmark_dual "$@"
             ;;
 
         # Client
         client)
             shift
-            mode_client_interactive "$@"
+            client_interactive "$@"
             ;;
         client-scenario)
             shift
-            mode_client_scenario "$@"
-            ;;
-        client-udp)
-            shift
-            mode_client_udp "$@"
-            ;;
-        client-tcp)
-            shift
-            mode_client_tcp "$@"
+            client_scenario "$@"
             ;;
         scenarios|list-scenarios)
-            list_client_scenarios
-            ;;
-
-        # Server
-        run-udp)
-            run_server --udp "$DEFAULT_PORT"
-            ;;
-        run-tcp)
-            run_server --tcp "$DEFAULT_PORT"
-            ;;
-        run-quiet)
-            run_server --udp "$DEFAULT_PORT" --quiet
-            ;;
-        run)
-            run_server "$@"
+            list_scenarios
             ;;
 
         # Help
@@ -583,4 +535,3 @@ if ! command_exists cmake; then
 fi
 
 main "$@"
-

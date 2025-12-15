@@ -46,7 +46,6 @@ if(UNIX AND NOT APPLE)
 elseif(APPLE)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
     # Apple Silicon uses ARM64 - no special arch flags needed
-    # For Intel Macs, you could add -march=native but it's generally not needed
 endif()
 
 # Include directories
@@ -70,10 +69,15 @@ set(LIB_SOURCES
     src/threading/processor.c
     src/threading/output_publisher.c
     src/threading/output_router.c
+    src/threading/client_registry.c
     src/modes/tcp_mode.c
     src/modes/udp_mode.c
     src/modes/multicast_helpers.c
     src/modes/helpers.c
+    src/modes/unified_mode.c
+    src/modes/unified_tcp.c
+    src/modes/unified_udp.c
+    src/modes/unified_router.c
 )
 
 # Create static library from core sources
@@ -114,11 +118,11 @@ set(CLIENT_LIB_SOURCES
 
 # Create client library
 add_library(matching_engine_client_lib STATIC ${CLIENT_LIB_SOURCES})
-target_include_directories(matching_engine_client_lib PRIVATE 
-    include 
+target_include_directories(matching_engine_client_lib PRIVATE
+    include
     tools
 )
-target_link_libraries(matching_engine_client_lib PRIVATE 
+target_link_libraries(matching_engine_client_lib PRIVATE
     matching_engine_lib
     pthread
     m
@@ -126,11 +130,11 @@ target_link_libraries(matching_engine_client_lib PRIVATE
 
 # Main client executable
 add_executable(matching_engine_client tools/matching_engine_client.c)
-target_include_directories(matching_engine_client PRIVATE 
-    include 
+target_include_directories(matching_engine_client PRIVATE
+    include
     tools
 )
-target_link_libraries(matching_engine_client PRIVATE 
+target_link_libraries(matching_engine_client PRIVATE
     matching_engine_client_lib
     matching_engine_lib
     pthread
@@ -194,244 +198,43 @@ add_custom_target(test-unit
     COMMENT "Running Unity unit tests"
 )
 
-# UDP/Binary protocol test
-add_custom_target(test-binary
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Binary Protocol Test - UDP Mode"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Starting server - UDP mode, CSV output..."
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --udp 1234 > /tmp/binary_test_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Sending binary test messages...' ; \"${CMAKE_BINARY_DIR}/binary_client\" 1234 1 ; sleep 1 ; echo '' ; echo 'Server output:' ; kill $$SERVER_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; cat /tmp/binary_test_output.txt ; rm -f /tmp/binary_test_output.txt ; echo '' ; echo 'Binary protocol test complete'"
-    DEPENDS matching_engine binary_client
-    COMMENT "Running binary protocol test"
-)
-
-add_custom_target(test-tcp
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "TCP Multi-Client Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Starting server - TCP mode, port 1234..."
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Connecting test clients...' ; \"${CMAKE_BINARY_DIR}/tcp_client\" localhost 1234 & CLIENT_PID=$$! ; sleep 2 ; echo 'Stopping server...' ; kill $$SERVER_PID 2>/dev/null || true ; kill $$CLIENT_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; wait $$CLIENT_PID 2>/dev/null || true ; echo '' ; echo 'TCP test complete'"
-    DEPENDS matching_engine tcp_client
-    COMMENT "Running TCP multi-client test"
-)
-
-# Dual-processor symbol routing test
-add_custom_target(test-dual-processor
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Dual-Processor Symbol Routing Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Testing symbol partitioning: A-M -> P0, N-Z -> P1"
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 --dual-processor > /tmp/dual_proc_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Sending orders to Processor 0 (A-M symbols)...' ; echo -e 'N,1,IBM,100,50,B,1\\nN,1,AAPL,150,30,B,2\\nN,1,GOOGL,200,20,B,3\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'N,1,IBM,100,50,B,1\\nN,1,AAPL,150,30,B,2\\nN,1,GOOGL,200,20,B,3\\n' | nc localhost 1234 ; sleep 0.5 ; echo 'Sending orders to Processor 1 (N-Z symbols)...' ; echo -e 'N,1,NVDA,300,40,B,4\\nN,1,TSLA,180,25,B,5\\nN,1,ZM,50,100,B,6\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'N,1,NVDA,300,40,B,4\\nN,1,TSLA,180,25,B,5\\nN,1,ZM,50,100,B,6\\n' | nc localhost 1234 ; sleep 0.5 ; echo 'Sending flush to both processors...' ; echo -e 'F\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'F\\n' | nc localhost 1234 ; sleep 1 ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 1 ; kill -9 $$SERVER_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; echo '' ; echo '==========================================' ; echo 'Server Output (check per-processor stats):' ; echo '==========================================' ; cat /tmp/dual_proc_output.txt ; rm -f /tmp/dual_proc_output.txt ; echo '' ; echo 'Expected: ~3 messages to each processor' ; echo 'Dual-processor test complete'"
-    DEPENDS matching_engine
-    COMMENT "Running dual-processor symbol routing test"
-)
-
-# Single-processor comparison test
-add_custom_target(test-single-processor
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Single-Processor Mode Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "All symbols route to single processor"
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 --single-processor > /tmp/single_proc_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; echo 'Sending mixed orders (all to single processor)...' ; echo -e 'N,1,IBM,100,50,B,1\\nN,1,NVDA,200,30,B,2\\nF\\n' | nc -q1 localhost 1234 2>/dev/null || echo -e 'N,1,IBM,100,50,B,1\\nN,1,NVDA,200,30,B,2\\nF\\n' | nc localhost 1234 ; sleep 1 ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 1 ; kill -9 $$SERVER_PID 2>/dev/null || true ; wait $$SERVER_PID 2>/dev/null || true ; echo '' ; echo 'Server Output:' ; cat /tmp/single_proc_output.txt ; rm -f /tmp/single_proc_output.txt ; echo '' ; echo 'Single-processor test complete'"
-    DEPENDS matching_engine
-    COMMENT "Running single-processor mode test"
-)
-
-# Multicast market data feed test
-add_custom_target(test-multicast
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Multicast Market Data Feed Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 1 (this terminal):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Server starts with multicast on 239.255.0.1:5000"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 2 (run this command):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  ${CMAKE_BINARY_DIR}/multicast_subscriber 239.255.0.1 5000"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 3 (send orders):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  ${CMAKE_BINARY_DIR}/tcp_client localhost 1234"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "All subscribers will receive the same market data!"
-    COMMAND ${CMAKE_COMMAND} -E echo "Press Ctrl+C to stop"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp 1234 --multicast 239.255.0.1:5000
-    DEPENDS matching_engine multicast_subscriber
-    COMMENT "Running multicast market data feed test"
-)
-
-add_custom_target(test-all
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Running Complete Test Suite"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 1/5: Unit Tests"
-    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-unit
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 2/5: Binary Protocol Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-binary
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 3/5: TCP Integration Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-tcp
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 4/5: Dual-Processor Test"
-    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
-    COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target test-dual-processor
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Step 5/5: Multicast Test (manual - see instructions)"
-    COMMAND ${CMAKE_COMMAND} -E echo "------------------------------------------"
-    COMMAND ${CMAKE_COMMAND} -E echo "Run './build.sh test-multicast' in separate terminals"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "All automated tests finished"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    DEPENDS matching_engine_tests matching_engine binary_client tcp_client multicast_subscriber
-    COMMENT "Running all tests"
-)
-
 # ============================================================================
-# Client Test Targets
+# Run Targets (Unified Server)
 # ============================================================================
 
-add_custom_target(test-client-basic
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Client Test - Basic Scenarios"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 > /tmp/server_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; \"${CMAKE_BINARY_DIR}/matching_engine_client\" --scenario 1 localhost 1234 ; \"${CMAKE_BINARY_DIR}/matching_engine_client\" --scenario 2 localhost 1234 ; \"${CMAKE_BINARY_DIR}/matching_engine_client\" --scenario 3 localhost 1234 ; kill $$SERVER_PID 2>/dev/null ; wait $$SERVER_PID 2>/dev/null || true ; echo 'Test complete'"
-    DEPENDS matching_engine matching_engine_client
-    COMMENT "Running client basic scenario tests"
-)
-
-add_custom_target(test-client-stress
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Client Test - Stress Test (10K orders)"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 > /tmp/server_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; \"${CMAKE_BINARY_DIR}/matching_engine_client\" --scenario 11 localhost 1234 ; kill $$SERVER_PID 2>/dev/null ; wait $$SERVER_PID 2>/dev/null || true ; echo 'Test complete'"
-    DEPENDS matching_engine matching_engine_client
-    COMMENT "Running client stress test"
-)
-
-add_custom_target(test-client-multi
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Client Test - Multi-Symbol (Dual Processor)"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 1234 --dual-processor > /tmp/server_output.txt 2>&1 & SERVER_PID=$$! ; sleep 1 ; \"${CMAKE_BINARY_DIR}/matching_engine_client\" --scenario 30 localhost 1234 ; kill $$SERVER_PID 2>/dev/null ; wait $$SERVER_PID 2>/dev/null || true ; cat /tmp/server_output.txt | grep -E 'Processor|messages' ; echo 'Test complete'"
-    DEPENDS matching_engine matching_engine_client
-    COMMENT "Running client multi-symbol test"
-)
-
-add_custom_target(test-client-multicast
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo "Client Test - With Multicast"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 1 (this terminal):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Server starts with multicast on 239.255.0.1:5000"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 2 (run this command):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  ${CMAKE_BINARY_DIR}/matching_engine_client --multicast 239.255.0.1:5000 localhost 1234"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Terminal 3 (multicast-only subscriber):"
-    COMMAND ${CMAKE_COMMAND} -E echo "  ${CMAKE_BINARY_DIR}/matching_engine_client --multicast-only --multicast 239.255.0.1:5000"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Press Ctrl+C to stop"
-    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp 1234 --multicast 239.255.0.1:5000
-    DEPENDS matching_engine matching_engine_client
-    COMMENT "Running client multicast test"
-)
-
-add_custom_target(client-scenarios
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine_client --list-scenarios
-    DEPENDS matching_engine_client
-    COMMENT "Listing available client scenarios"
-)
-
-# ============================================================================
-# Memory Analysis Targets
-# ============================================================================
-
-if(UNIX AND NOT APPLE)
-    add_custom_target(valgrind
-        COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test - auto-stop after 5 seconds..."
-        COMMAND pkill -9 matching_engine 2>/dev/null || true
-        COMMAND sleep 1
-        COMMAND bash -c "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 2>&1 & VALGRIND_PID=$$! ; sleep 5 ; echo '' ; echo 'Stopping server...' ; pkill -SIGTERM matching_engine 2>/dev/null || true ; wait $$VALGRIND_PID 2>/dev/null || true ; echo '' ; echo 'Valgrind test complete'"
-        DEPENDS matching_engine
-        COMMENT "Running valgrind memory leak detection"
-    )
-elseif(APPLE)
-    add_custom_target(valgrind
-        COMMAND ${CMAKE_COMMAND} -E echo "Starting memory leak test with macOS leaks tool..."
-        COMMAND pkill -9 matching_engine 2>/dev/null || true
-        COMMAND sleep 1
-        COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp 2>&1 & SERVER_PID=$$! ; sleep 3 ; echo '' ; echo 'Running leaks...' ; leaks $$SERVER_PID 2>&1 | grep -A 20 -E 'Process|leaked bytes' || true ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 2 ; kill -9 $$SERVER_PID 2>/dev/null || true ; echo 'Leaks test complete'"
-        DEPENDS matching_engine
-        COMMENT "Running leaks memory leak detection"
-    )
-endif()
-
-# ============================================================================
-# Run Targets
-# ============================================================================
-
+# Default run - all transports, CSV format, dual processor
 add_custom_target(run
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode (dual-processor)"
+    COMMENT "Running unified server (TCP:1234, UDP:1235, Multicast:1236)"
 )
 
-add_custom_target(run-tcp
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp
-    DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode (dual-processor)"
-)
-
-add_custom_target(run-udp
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --udp
-    DEPENDS matching_engine
-    COMMENT "Running matching engine in UDP mode"
-)
-
-add_custom_target(run-dual
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --dual-processor
-    DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP dual-processor mode"
-)
-
-add_custom_target(run-single
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --single-processor
-    DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP single-processor mode"
-)
-
+# Binary format
 add_custom_target(run-binary
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --binary
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --binary
     DEPENDS matching_engine
-    COMMENT "Running matching engine in TCP mode with binary output"
+    COMMENT "Running unified server with binary format"
 )
 
-add_custom_target(run-binary-decoded
-    COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" --tcp --binary 2>/dev/null | \"${CMAKE_BINARY_DIR}/binary_decoder\""
-    DEPENDS matching_engine binary_decoder
-    COMMENT "Running matching engine with binary output (decoded)"
+# Quiet mode (benchmark)
+add_custom_target(run-quiet
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --quiet
+    DEPENDS matching_engine
+    COMMENT "Running unified server in quiet/benchmark mode"
 )
 
-add_custom_target(run-multicast
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --multicast 239.255.0.1:5000
+# Binary + quiet (benchmark)
+add_custom_target(run-benchmark
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --binary --quiet
     DEPENDS matching_engine
-    COMMENT "Running matching engine with multicast market data feed"
+    COMMENT "Running unified server in binary benchmark mode"
 )
 
-add_custom_target(run-multicast-binary
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --tcp --binary --multicast 239.255.0.1:5000
+# Single processor mode
+add_custom_target(run-single
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine --single-processor
     DEPENDS matching_engine
-    COMMENT "Running matching engine with binary multicast market data feed"
+    COMMENT "Running unified server with single processor"
 )
 
 # ============================================================================
@@ -450,17 +253,35 @@ add_custom_target(run-client-verbose
     COMMENT "Running matching engine client (verbose)"
 )
 
-add_custom_target(run-client-multicast
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine_client --multicast 239.255.0.1:5000 localhost 1234
+add_custom_target(client-scenarios
+    COMMAND ${CMAKE_BINARY_DIR}/matching_engine_client --list-scenarios
     DEPENDS matching_engine_client
-    COMMENT "Running matching engine client with multicast"
+    COMMENT "Listing available client scenarios"
 )
 
-add_custom_target(run-client-mcast-only
-    COMMAND ${CMAKE_BINARY_DIR}/matching_engine_client --multicast-only --multicast 239.255.0.1:5000
-    DEPENDS matching_engine_client
-    COMMENT "Running multicast-only subscriber"
-)
+# ============================================================================
+# Memory Analysis Targets
+# ============================================================================
+
+if(UNIX AND NOT APPLE)
+    add_custom_target(valgrind
+        COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test - auto-stop after 5 seconds..."
+        COMMAND pkill -9 matching_engine 2>/dev/null || true
+        COMMAND sleep 1
+        COMMAND bash -c "valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \"${CMAKE_BINARY_DIR}/matching_engine\" 2>&1 & VALGRIND_PID=$$! ; sleep 5 ; echo '' ; echo 'Stopping server...' ; pkill -SIGTERM matching_engine 2>/dev/null || true ; wait $$VALGRIND_PID 2>/dev/null || true ; echo '' ; echo 'Valgrind test complete'"
+        DEPENDS matching_engine
+        COMMENT "Running valgrind memory leak detection"
+    )
+elseif(APPLE)
+    add_custom_target(valgrind
+        COMMAND ${CMAKE_COMMAND} -E echo "Starting memory leak test with macOS leaks tool..."
+        COMMAND pkill -9 matching_engine 2>/dev/null || true
+        COMMAND sleep 1
+        COMMAND bash -c "\"${CMAKE_BINARY_DIR}/matching_engine\" 2>&1 & SERVER_PID=$$! ; sleep 3 ; echo '' ; echo 'Running leaks...' ; leaks $$SERVER_PID 2>&1 | grep -A 20 -E 'Process|leaked bytes' || true ; echo '' ; echo 'Stopping server...' ; kill -TERM $$SERVER_PID 2>/dev/null || true ; sleep 2 ; kill -9 $$SERVER_PID 2>/dev/null || true ; echo 'Leaks test complete'"
+        DEPENDS matching_engine
+        COMMENT "Running leaks memory leak detection"
+    )
+endif()
 
 # ============================================================================
 # Information Targets
@@ -479,13 +300,15 @@ add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "mcmodel:        ${MCMODEL_SUPPORTED}"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Processor Modes:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  --dual-processor   Symbols A-M -> P0, N-Z -> P1 (default)"
-    COMMAND ${CMAKE_COMMAND} -E echo "  --single-processor All symbols -> single processor"
+    COMMAND ${CMAKE_COMMAND} -E echo "Unified Server (always starts all transports):"
+    COMMAND ${CMAKE_COMMAND} -E echo "  TCP Port:       1234"
+    COMMAND ${CMAKE_COMMAND} -E echo "  UDP Port:       1235"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Multicast:      239.255.0.1:1236"
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Multicast Support:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  --multicast <group>:<port>  Broadcast market data to multicast group"
-    COMMAND ${CMAKE_COMMAND} -E echo "  Example: --multicast 239.255.0.1:5000"
+    COMMAND ${CMAKE_COMMAND} -E echo "Server Options:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  --binary            Binary format (default: CSV)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  --quiet             Benchmark mode (stats only)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  --single-processor  Single processor (default: dual)"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMENT "Displaying build configuration"
 )
@@ -497,36 +320,21 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  all                    - Build everything (default)"
     COMMAND ${CMAKE_COMMAND} -E echo "  matching_engine        - Build server executable"
     COMMAND ${CMAKE_COMMAND} -E echo "  matching_engine_client - Build client executable"
-    COMMAND ${CMAKE_COMMAND} -E echo "  binary_client          - Build binary client tool"
-    COMMAND ${CMAKE_COMMAND} -E echo "  tcp_client             - Build TCP client tool"
-    COMMAND ${CMAKE_COMMAND} -E echo "  multicast_subscriber   - Build multicast subscriber"
     COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Server Testing:"
+    COMMAND ${CMAKE_COMMAND} -E echo "Testing:"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-unit              - Run unit tests"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-binary            - UDP binary protocol test"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-tcp               - TCP multi-client test"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-dual-processor    - Dual-processor routing test"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-multicast         - Multicast feed test"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-all               - Run full server test suite"
-    COMMAND ${CMAKE_COMMAND} -E echo ""
-    COMMAND ${CMAKE_COMMAND} -E echo "Client Testing:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-client-basic      - Run basic client scenarios (1-3)"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-client-stress     - Run 10K order stress test"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-client-multi      - Run multi-symbol test"
-    COMMAND ${CMAKE_COMMAND} -E echo "  test-client-multicast  - Run client with multicast"
-    COMMAND ${CMAKE_COMMAND} -E echo "  client-scenarios       - List available scenarios"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running Server:"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run                    - Run server (TCP dual-processor)"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-tcp                - Run server (TCP mode)"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-udp                - Run server (UDP mode)"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-multicast          - Run server with multicast"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run                    - Run server (CSV, dual processor)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-binary             - Run server (binary format)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-quiet              - Run server (quiet/benchmark)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-benchmark          - Run server (binary + quiet)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-single             - Run server (single processor)"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running Client:"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-client             - Run client (interactive)"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-client-verbose     - Run client (verbose)"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-client-multicast   - Run client with multicast"
-    COMMAND ${CMAKE_COMMAND} -E echo "  run-client-mcast-only  - Run multicast-only subscriber"
+    COMMAND ${CMAKE_COMMAND} -E echo "  client-scenarios       - List available scenarios"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Memory Analysis:"
     COMMAND ${CMAKE_COMMAND} -E echo "  valgrind               - Run with memory leak detection"
@@ -549,7 +357,9 @@ message(STATUS "Compiler:      ${CMAKE_C_COMPILER}")
 message(STATUS "Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Standard:    C${CMAKE_C_STANDARD}")
 message(STATUS "mcmodel:       ${MCMODEL_SUPPORTED}")
-message(STATUS "Processors:    Dual (A-M/N-Z) by default")
-message(STATUS "Multicast:     Enabled (optional)")
-message(STATUS "Client:        matching_engine_client")
+message(STATUS "")
+message(STATUS "Unified Server Ports:")
+message(STATUS "  TCP:         1234")
+message(STATUS "  UDP:         1235")
+message(STATUS "  Multicast:   239.255.0.1:1236")
 message(STATUS "========================================")
