@@ -76,11 +76,14 @@ framing_result_t framing_read_extract(framing_read_state_t* state,
         return FRAMING_NEED_MORE_DATA;
     }
     
-    /* Complete message ready - return pointer to payload */
-    *msg_data = state->buffer + FRAME_HEADER_SIZE;
-    *msg_len = payload_length;
+    /*
+     * CRITICAL: Copy message to extract_buffer BEFORE memmove!
+     * The memmove will shift remaining data to the front of buffer,
+     * which would overwrite the message we're trying to return.
+     */
+    memcpy(state->extract_buffer, state->buffer + FRAME_HEADER_SIZE, payload_length);
     
-    /* Shift remaining data to front of buffer */
+    /* Now shift remaining data to front of buffer */
     size_t remaining = state->buffer_pos - total_message_size;
     
     if (remaining > 0) {
@@ -90,6 +93,10 @@ framing_result_t framing_read_extract(framing_read_state_t* state,
     
     state->buffer_pos = remaining;
     
+    /* Return pointer to the safely copied data */
+    *msg_data = state->extract_buffer;
+    *msg_len = payload_length;
+    
     /* Post-condition assertion */
     assert(state->buffer_pos <= FRAMING_BUFFER_SIZE && "Buffer corruption after extract");
     
@@ -98,122 +105,45 @@ framing_result_t framing_read_extract(framing_read_state_t* state,
 
 bool framing_read_has_data(const framing_read_state_t* state) {
     assert(state != NULL && "NULL state in framing_read_has_data");
-    return state->buffer_pos >= FRAME_HEADER_SIZE;
-}
-
-size_t framing_read_buffer_used(const framing_read_state_t* state) {
-    assert(state != NULL && "NULL state in framing_read_buffer_used");
-    return state->buffer_pos;
-}
-
-size_t framing_read_buffer_available(const framing_read_state_t* state) {
-    assert(state != NULL && "NULL state in framing_read_buffer_available");
-    return FRAMING_BUFFER_SIZE - state->buffer_pos;
+    
+    /* Check if we might have a complete message buffered */
+    if (state->buffer_pos < FRAME_HEADER_SIZE) {
+        return false;
+    }
+    
+    /* Parse the length to see if we have enough data */
+    uint32_t length_be;
+    memcpy(&length_be, state->buffer, FRAME_HEADER_SIZE);
+    uint32_t payload_length = ntohl(length_be);
+    
+    /* Sanity check */
+    if (payload_length == 0 || payload_length > MAX_FRAMED_MESSAGE_SIZE) {
+        return true;  /* Will trigger error on extract */
+    }
+    
+    return state->buffer_pos >= (FRAME_HEADER_SIZE + payload_length);
 }
 
 /* ============================================================================
  * Write-side Implementation
  * ============================================================================ */
 
-bool frame_message(const char* msg_data, size_t msg_len,
-                   char* output, size_t* output_len) {
-    assert(msg_data != NULL && "NULL msg_data in frame_message");
-    assert(output != NULL && "NULL output in frame_message");
-    assert(output_len != NULL && "NULL output_len in frame_message");
+bool frame_message(const char* msg, size_t msg_len, char* out, size_t* out_len) {
+    assert(msg != NULL && "NULL msg in frame_message");
+    assert(out != NULL && "NULL out in frame_message");
+    assert(out_len != NULL && "NULL out_len in frame_message");
     
-    /* Validate message size */
     if (msg_len > MAX_FRAMED_MESSAGE_SIZE) {
         return false;
     }
     
-    /* Write 4-byte length header (big-endian) */
+    /* Write length prefix in network byte order */
     uint32_t length_be = htonl((uint32_t)msg_len);
-    memcpy(output, &length_be, FRAME_HEADER_SIZE);
+    memcpy(out, &length_be, FRAME_HEADER_SIZE);
     
-    /* Write message payload */
-    memcpy(output + FRAME_HEADER_SIZE, msg_data, msg_len);
+    /* Copy payload */
+    memcpy(out + FRAME_HEADER_SIZE, msg, msg_len);
     
-    *output_len = FRAME_HEADER_SIZE + msg_len;
-    
+    *out_len = FRAME_HEADER_SIZE + msg_len;
     return true;
-}
-
-bool framing_write_state_init(framing_write_state_t* state,
-                               const char* msg_data,
-                               size_t msg_len) {
-    assert(state != NULL && "NULL state in framing_write_state_init");
-    assert(msg_data != NULL && "NULL msg_data in framing_write_state_init");
-    
-    /* Validate size */
-    if (msg_len > MAX_FRAMED_MESSAGE_SIZE) {
-        return false;
-    }
-    
-    /* Frame the message into buffer */
-    size_t framed_len;
-    if (!frame_message(msg_data, msg_len, state->buffer, &framed_len)) {
-        return false;
-    }
-    
-    state->total_len = framed_len;
-    state->written = 0;
-    
-    return true;
-}
-
-void framing_write_get_remaining(framing_write_state_t* state,
-                                  const char** data,
-                                  size_t* len) {
-    assert(state != NULL && "NULL state in framing_write_get_remaining");
-    assert(data != NULL && "NULL data in framing_write_get_remaining");
-    assert(len != NULL && "NULL len in framing_write_get_remaining");
-    assert(state->written <= state->total_len && "Write position overflow");
-    
-    *data = state->buffer + state->written;
-    *len = state->total_len - state->written;
-}
-
-void framing_write_mark_written(framing_write_state_t* state,
-                                 size_t bytes_written) {
-    assert(state != NULL && "NULL state in framing_write_mark_written");
-    
-    state->written += bytes_written;
-    
-    /* Clamp to prevent overflow */
-    if (state->written > state->total_len) {
-        state->written = state->total_len;
-    }
-}
-
-bool framing_write_is_complete(framing_write_state_t* state) {
-    assert(state != NULL && "NULL state in framing_write_is_complete");
-    return state->written >= state->total_len;
-}
-
-/* ============================================================================
- * Legacy API (backward compatibility)
- * ============================================================================ */
-
-bool framing_read_process(framing_read_state_t* state,
-                          const char* incoming_data,
-                          size_t incoming_len,
-                          const char** msg_data,
-                          size_t* msg_len) {
-    assert(state != NULL && "NULL state in framing_read_process");
-    assert(incoming_data != NULL && "NULL data in framing_read_process");
-    assert(msg_data != NULL && "NULL msg_data in framing_read_process");
-    assert(msg_len != NULL && "NULL msg_len in framing_read_process");
-    
-    /* Append new data */
-    size_t consumed = framing_read_append(state, incoming_data, incoming_len);
-    
-    if (consumed < incoming_len) {
-        /* Buffer overflow - some data lost */
-        /* Note: This is the legacy behavior limitation */
-    }
-    
-    /* Try to extract one message */
-    framing_result_t result = framing_read_extract(state, msg_data, msg_len);
-    
-    return (result == FRAMING_MESSAGE_READY);
 }

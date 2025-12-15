@@ -1,173 +1,93 @@
-#ifndef MATCHING_ENGINE_MESSAGE_FRAMING_H
-#define MATCHING_ENGINE_MESSAGE_FRAMING_H
+#ifndef MESSAGE_FRAMING_H
+#define MESSAGE_FRAMING_H
 
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /**
- * Message Framing Layer
+ * Message Framing for TCP Streams
  * 
- * Handles TCP stream reassembly into discrete messages.
- * Uses length-prefixed framing: [4-byte length][payload]
+ * Handles length-prefixed message framing for reliable TCP communication.
+ * Format: [4-byte big-endian length][payload]
  * 
- * Power of Ten Compliance:
- * - Rule 2: All extraction loops have fixed upper bounds (MAX_MESSAGES_PER_READ)
- * - Rule 3: No dynamic allocation - uses fixed-size buffers
- * - Rule 5: Assertions validate parameters and state
+ * Thread Safety: NOT thread-safe. Each connection needs its own framing state.
  */
 
-/* Frame header is 4 bytes (network byte order length) */
+/* Frame header size (4-byte length prefix) */
 #define FRAME_HEADER_SIZE 4
 
-/* Maximum message payload size (excluding header) */
-#define MAX_FRAMED_MESSAGE_SIZE 8192
+/* Maximum message size (excluding header) */
+#define MAX_FRAMED_MESSAGE_SIZE 4096
 
-/* Maximum complete messages to extract per read (Rule 2 compliance) */
-#define MAX_MESSAGES_PER_READ 1024
-
-/* Total buffer size including header space */
-#define FRAMING_BUFFER_SIZE (MAX_FRAMED_MESSAGE_SIZE + FRAME_HEADER_SIZE)
+/* Internal buffer size - must hold at least header + max message + some extra */
+#define FRAMING_BUFFER_SIZE (MAX_FRAMED_MESSAGE_SIZE + FRAME_HEADER_SIZE + 256)
 
 /**
- * Read state for accumulating incoming TCP data
+ * Result codes for framing operations
+ */
+typedef enum {
+    FRAMING_OK = 0,
+    FRAMING_NEED_MORE_DATA,
+    FRAMING_MESSAGE_READY,
+    FRAMING_ERROR
+} framing_result_t;
+
+/**
+ * Read-side framing state
+ * Accumulates bytes until a complete message is available
  */
 typedef struct {
     char buffer[FRAMING_BUFFER_SIZE];
-    size_t buffer_pos;          /* Current write position in buffer */
-    uint32_t expected_length;   /* Expected message length (0 if reading header) */
-    bool reading_header;        /* True if still reading length header */
+    char extract_buffer[MAX_FRAMED_MESSAGE_SIZE];  /* Safe copy of extracted message */
+    size_t buffer_pos;
+    size_t expected_length;
+    bool reading_header;
 } framing_read_state_t;
 
 /**
- * Write state for sending framed messages
- */
-typedef struct {
-    char buffer[FRAMING_BUFFER_SIZE];
-    size_t total_len;           /* Total bytes to send (header + payload) */
-    size_t written;             /* Bytes already written */
-} framing_write_state_t;
-
-/**
- * Result of message extraction attempt
- */
-typedef enum {
-    FRAMING_NEED_MORE_DATA = 0,  /* Incomplete message, need more bytes */
-    FRAMING_MESSAGE_READY = 1,   /* Complete message extracted */
-    FRAMING_ERROR = -1           /* Protocol error (invalid length, overflow) */
-} framing_result_t;
-
-/* ============================================================================
- * Read-side API
- * ============================================================================ */
-
-/**
- * Initialize read state
- * Must be called before first use
+ * Initialize read-side framing state
  */
 void framing_read_state_init(framing_read_state_t* state);
 
 /**
- * Append incoming data to the framing buffer
+ * Append received data to the framing buffer
  * 
- * @param state     Framing state
- * @param data      Incoming data from recv()
- * @param len       Length of incoming data
- * @return          Number of bytes consumed (may be less than len if buffer full)
+ * @param state  Framing state
+ * @param data   Received data
+ * @param len    Length of received data
+ * @return       Number of bytes consumed (may be less than len if buffer full)
  */
-size_t framing_read_append(framing_read_state_t* state, 
-                           const char* data, 
-                           size_t len);
+size_t framing_read_append(framing_read_state_t* state, const char* data, size_t len);
 
 /**
  * Try to extract a complete message from the buffer
  * 
- * Power of Ten Rule 2: This function extracts at most ONE message.
- * Caller must loop with a fixed upper bound (MAX_MESSAGES_PER_READ).
- * 
  * @param state     Framing state
- * @param msg_data  Output: pointer to message payload (valid until next call)
+ * @param msg_data  Output: pointer to message payload (valid until next extract call)
  * @param msg_len   Output: length of message payload
  * @return          FRAMING_MESSAGE_READY if message extracted,
  *                  FRAMING_NEED_MORE_DATA if incomplete,
- *                  FRAMING_ERROR on protocol violation
+ *                  FRAMING_ERROR on protocol error
  */
 framing_result_t framing_read_extract(framing_read_state_t* state,
                                        const char** msg_data,
                                        size_t* msg_len);
 
 /**
- * Check if buffer has potential messages waiting
- * Used to decide whether to continue extraction loop
+ * Check if there's potentially more data to extract
  */
 bool framing_read_has_data(const framing_read_state_t* state);
 
 /**
- * Get buffer statistics for debugging
- */
-size_t framing_read_buffer_used(const framing_read_state_t* state);
-size_t framing_read_buffer_available(const framing_read_state_t* state);
-
-/* ============================================================================
- * Write-side API
- * ============================================================================ */
-
-/**
- * Frame a message for sending (adds length header)
+ * Write-side: Frame a message with length prefix
  * 
- * @param msg_data  Message payload
- * @param msg_len   Message payload length
- * @param output    Output buffer (must be at least msg_len + FRAME_HEADER_SIZE)
- * @param output_len Output: total framed message length
- * @return          true on success, false if message too large
+ * @param msg       Message to frame
+ * @param msg_len   Length of message
+ * @param out       Output buffer (must be at least msg_len + FRAME_HEADER_SIZE)
+ * @param out_len   Output: total framed length
+ * @return          true on success
  */
-bool frame_message(const char* msg_data, size_t msg_len,
-                   char* output, size_t* output_len);
+bool frame_message(const char* msg, size_t msg_len, char* out, size_t* out_len);
 
-/**
- * Initialize write state with a message to send
- */
-bool framing_write_state_init(framing_write_state_t* state,
-                               const char* msg_data,
-                               size_t msg_len);
-
-/**
- * Get pointer to remaining data to write
- */
-void framing_write_get_remaining(framing_write_state_t* state,
-                                  const char** data,
-                                  size_t* len);
-
-/**
- * Mark bytes as successfully written
- */
-void framing_write_mark_written(framing_write_state_t* state,
-                                 size_t bytes_written);
-
-/**
- * Check if all data has been written
- */
-bool framing_write_is_complete(framing_write_state_t* state);
-
-/* ============================================================================
- * Legacy API (for backward compatibility)
- * ============================================================================ */
-
-/**
- * @deprecated Use framing_read_append + framing_read_extract instead
- */
-bool framing_read_process(framing_read_state_t* state,
-                          const char* incoming_data,
-                          size_t incoming_len,
-                          const char** msg_data,
-                          size_t* msg_len);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* MATCHING_ENGINE_MESSAGE_FRAMING_H */
+#endif /* MESSAGE_FRAMING_H */
