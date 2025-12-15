@@ -128,6 +128,53 @@ bool framing_read_has_data(const framing_read_state_t* state) {
  * Write-side Implementation
  * ============================================================================ */
 
+bool framing_write_state_init(framing_write_state_t* state, const char* msg, size_t msg_len) {
+    assert(state != NULL && "NULL state in framing_write_state_init");
+    assert(msg != NULL && "NULL msg in framing_write_state_init");
+    
+    if (msg_len > MAX_FRAMED_MESSAGE_SIZE) {
+        return false;
+    }
+    
+    /* Write length prefix in network byte order */
+    uint32_t length_be = htonl((uint32_t)msg_len);
+    memcpy(state->buffer, &length_be, FRAME_HEADER_SIZE);
+    
+    /* Copy payload */
+    memcpy(state->buffer + FRAME_HEADER_SIZE, msg, msg_len);
+    
+    state->total_len = FRAME_HEADER_SIZE + msg_len;
+    state->bytes_written = 0;
+    
+    return true;
+}
+
+void framing_write_get_remaining(framing_write_state_t* state, const char** data, size_t* len) {
+    assert(state != NULL && "NULL state in framing_write_get_remaining");
+    assert(data != NULL && "NULL data in framing_write_get_remaining");
+    assert(len != NULL && "NULL len in framing_write_get_remaining");
+    
+    *data = state->buffer + state->bytes_written;
+    *len = state->total_len - state->bytes_written;
+}
+
+void framing_write_mark_written(framing_write_state_t* state, size_t len) {
+    assert(state != NULL && "NULL state in framing_write_mark_written");
+    assert(state->bytes_written + len <= state->total_len && "Write overflow");
+    
+    state->bytes_written += len;
+}
+
+bool framing_write_is_complete(const framing_write_state_t* state) {
+    assert(state != NULL && "NULL state in framing_write_is_complete");
+    
+    return state->bytes_written >= state->total_len;
+}
+
+/* ============================================================================
+ * Simple Write API
+ * ============================================================================ */
+
 bool frame_message(const char* msg, size_t msg_len, char* out, size_t* out_len) {
     assert(msg != NULL && "NULL msg in frame_message");
     assert(out != NULL && "NULL out in frame_message");

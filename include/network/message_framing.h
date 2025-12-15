@@ -23,6 +23,9 @@
 /* Internal buffer size - must hold at least header + max message + some extra */
 #define FRAMING_BUFFER_SIZE (MAX_FRAMED_MESSAGE_SIZE + FRAME_HEADER_SIZE + 256)
 
+/* Maximum messages to process per read call */
+#define MAX_MESSAGES_PER_READ 64
+
 /**
  * Result codes for framing operations
  */
@@ -44,6 +47,20 @@ typedef struct {
     size_t expected_length;
     bool reading_header;
 } framing_read_state_t;
+
+/**
+ * Write-side framing state
+ * Handles partial writes for non-blocking sockets
+ */
+typedef struct {
+    char buffer[FRAMING_BUFFER_SIZE];
+    size_t total_len;
+    size_t bytes_written;
+} framing_write_state_t;
+
+/* ============================================================================
+ * Read-side API
+ * ============================================================================ */
 
 /**
  * Initialize read-side framing state
@@ -79,8 +96,48 @@ framing_result_t framing_read_extract(framing_read_state_t* state,
  */
 bool framing_read_has_data(const framing_read_state_t* state);
 
+/* ============================================================================
+ * Write-side API
+ * ============================================================================ */
+
 /**
- * Write-side: Frame a message with length prefix
+ * Initialize write state with a message to send (frames it with length prefix)
+ * 
+ * @param state    Write state to initialize
+ * @param msg      Message payload to send
+ * @param msg_len  Length of message
+ * @return         true on success, false if message too large
+ */
+bool framing_write_state_init(framing_write_state_t* state, const char* msg, size_t msg_len);
+
+/**
+ * Get pointer to remaining data to write
+ * 
+ * @param state  Write state
+ * @param data   Output: pointer to data to write
+ * @param len    Output: length of remaining data
+ */
+void framing_write_get_remaining(framing_write_state_t* state, const char** data, size_t* len);
+
+/**
+ * Mark bytes as successfully written
+ * 
+ * @param state  Write state
+ * @param len    Number of bytes written
+ */
+void framing_write_mark_written(framing_write_state_t* state, size_t len);
+
+/**
+ * Check if all data has been written
+ */
+bool framing_write_is_complete(const framing_write_state_t* state);
+
+/* ============================================================================
+ * Simple Write API (for blocking sockets)
+ * ============================================================================ */
+
+/**
+ * Frame a message with length prefix (simple version for blocking writes)
  * 
  * @param msg       Message to frame
  * @param msg_len   Length of message
