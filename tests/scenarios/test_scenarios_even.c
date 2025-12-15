@@ -4,22 +4,36 @@
 #include "protocol/csv/message_formatter.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
-/* Test infrastructure */
-static matching_engine_t engine;
-static message_parser_t parser;
-static message_formatter_t formatter;
-static memory_pools_t test_pools;  // ← ADD THIS
+/* Test fixture - heap allocated to avoid ARM64 address range issues */
+static matching_engine_t* engine;
+static message_parser_t* parser;
+static message_formatter_t* formatter;
+static memory_pools_t* test_pools;
 
-void setUp(void) {
-    memory_pools_init(&test_pools);  // ← ADD THIS
-    matching_engine_init(&engine, &test_pools);  // ← ADD &test_pools
-    message_parser_init(&parser);
-    message_formatter_init(&formatter);
+static void setUp(void) {
+    test_pools = malloc(sizeof(memory_pools_t));
+    engine = malloc(sizeof(matching_engine_t));
+    parser = malloc(sizeof(message_parser_t));
+    formatter = malloc(sizeof(message_formatter_t));
+    
+    memory_pools_init(test_pools);
+    matching_engine_init(engine, test_pools);
+    message_parser_init(parser);
+    message_formatter_init(formatter);
 }
 
-void tearDown(void) {
-    matching_engine_destroy(&engine);
+static void tearDown(void) {
+    matching_engine_destroy(engine);
+    free(engine);
+    free(parser);
+    free(formatter);
+    free(test_pools);
+    engine = NULL;
+    parser = NULL;
+    formatter = NULL;
+    test_pools = NULL;
 }
 
 /* Helper: Process array of input strings */
@@ -29,13 +43,13 @@ static void process_input(const char* input[], size_t count) {
         output_buffer_init(&output);
 
         input_msg_t msg;
-        message_parser_parse(&parser, input[i], &msg);
+        message_parser_parse(parser, input[i], &msg);
 
-        matching_engine_process_message(&engine, &msg, 0, &output);
+        matching_engine_process_message(engine, &msg, 0, &output);
 
         /* Print outputs for debugging */
         for (int j = 0; j < output.count; j++) {
-            const char* formatted = message_formatter_format(&formatter, &output.messages[j]);
+            const char* formatted = message_formatter_format(formatter, &output.messages[j]);
             fprintf(stderr, "%s\n", formatted);
         }
     }
@@ -77,11 +91,11 @@ void test_Scenario2_ShallowBid(void) {
         "B, AAPL, B, -, -",
         "A, AAPL, 1, 3",
         "B, AAPL, B, 10, 100",
-        "C, AAPL, 1, 3",      // Cancel ack for order 3 (bid at 10)
-        "C, AAPL, 2, 102",    // Cancel ack for order 102 (ask at 11)
-        "C, AAPL, 1, 2",      // Cancel ack for order 2 (ask at 12)
-        "B, AAPL, B, -, -",   // Bid side eliminated
-        "B, AAPL, S, -, -"    // Ask side eliminated
+        "C, AAPL, 1, 3",
+        "C, AAPL, 2, 102",
+        "C, AAPL, 1, 2",
+        "B, AAPL, B, -, -",
+        "B, AAPL, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -114,11 +128,11 @@ void test_Scenario4_LimitBelowBestBid(void) {
         "A, IBM, 2, 103",
         "T, IBM, 1, 1, 2, 103, 10, 100",
         "B, IBM, B, 9, 100",
-        "C, IBM, 2, 101",     // Cancel ack for order 101 (bid at 9)
-        "C, IBM, 2, 102",     // Cancel ack for order 102 (ask at 11)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 12)
-        "B, IBM, B, -, -",    // Bid side eliminated
-        "B, IBM, S, -, -"     // Ask side eliminated
+        "C, IBM, 2, 101",
+        "C, IBM, 2, 102",
+        "C, IBM, 1, 2",
+        "B, IBM, B, -, -",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -151,11 +165,11 @@ void test_Scenario6_MarketSell(void) {
         "A, IBM, 2, 103",
         "T, IBM, 1, 1, 2, 103, 10, 100",
         "B, IBM, B, 9, 100",
-        "C, IBM, 2, 101",     // Cancel ack for order 101 (bid at 9)
-        "C, IBM, 2, 102",     // Cancel ack for order 102 (ask at 11)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 12)
-        "B, IBM, B, -, -",    // Bid side eliminated
-        "B, IBM, S, -, -"     // Ask side eliminated
+        "C, IBM, 2, 101",
+        "C, IBM, 2, 102",
+        "C, IBM, 1, 2",
+        "B, IBM, B, -, -",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -190,14 +204,14 @@ void test_Scenario8_TightenSpread(void) {
         "B, IBM, B, 11, 100",
         "A, IBM, 1, 3",
         "B, IBM, S, 14, 100",
-        "C, IBM, 2, 103",     // Cancel ack for order 103 (bid at 11)
-        "C, IBM, 1, 1",       // Cancel ack for order 1 (bid at 10)
-        "C, IBM, 2, 101",     // Cancel ack for order 101 (bid at 9)
-        "C, IBM, 1, 3",       // Cancel ack for order 3 (ask at 14)
-        "C, IBM, 2, 102",     // Cancel ack for order 102 (ask at 15)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 16)
-        "B, IBM, B, -, -",    // Bid side eliminated
-        "B, IBM, S, -, -"     // Ask side eliminated
+        "C, IBM, 2, 103",
+        "C, IBM, 1, 1",
+        "C, IBM, 2, 101",
+        "C, IBM, 1, 3",
+        "C, IBM, 2, 102",
+        "C, IBM, 1, 2",
+        "B, IBM, B, -, -",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -230,12 +244,12 @@ void test_Scenario10_MarketBuyPartial(void) {
         "A, IBM, 1, 3",
         "T, IBM, 1, 3, 2, 102, 11, 20",
         "B, IBM, S, 11, 80",
-        "C, IBM, 1, 1",       // Cancel ack for order 1 (bid at 10)
-        "C, IBM, 2, 101",     // Cancel ack for order 101 (bid at 9)
-        "C, IBM, 2, 102",     // Cancel ack for order 102 (ask at 11, 80 remaining)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 12)
-        "B, IBM, B, -, -",    // Bid side eliminated
-        "B, IBM, S, -, -"     // Ask side eliminated
+        "C, IBM, 1, 1",
+        "C, IBM, 2, 101",
+        "C, IBM, 2, 102",
+        "C, IBM, 1, 2",
+        "B, IBM, B, -, -",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -268,12 +282,12 @@ void test_Scenario12_LimitBuyPartial(void) {
         "A, IBM, 1, 3",
         "T, IBM, 1, 3, 2, 102, 11, 20",
         "B, IBM, S, 11, 80",
-        "C, IBM, 1, 1",       // Cancel ack for order 1 (bid at 10)
-        "C, IBM, 2, 101",     // Cancel ack for order 101 (bid at 9)
-        "C, IBM, 2, 102",     // Cancel ack for order 102 (ask at 11, 80 remaining)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 12)
-        "B, IBM, B, -, -",    // Bid side eliminated
-        "B, IBM, S, -, -"     // Ask side eliminated
+        "C, IBM, 1, 1",
+        "C, IBM, 2, 101",
+        "C, IBM, 2, 102",
+        "C, IBM, 1, 2",
+        "B, IBM, B, -, -",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -308,10 +322,10 @@ void test_Scenario14_CancelBestBidOffer(void) {
         "B, IBM, B, 9, 100",
         "C, IBM, 2, 102",
         "B, IBM, S, 12, 100",
-        "C, IBM, 2, 101",     // Cancel ack for order 101 (bid at 9)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 12)
-        "B, IBM, B, -, -",    // Bid side eliminated
-        "B, IBM, S, -, -"     // Ask side eliminated
+        "C, IBM, 2, 101",
+        "C, IBM, 1, 2",
+        "B, IBM, B, -, -",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -345,10 +359,10 @@ void test_Scenario16_CancelAllBids(void) {
         "C, IBM, 1, 1",
         "B, IBM, B, 9, 100",
         "C, IBM, 2, 101",
-        "B, IBM, B, -, -",    // Bid side eliminated during cancels
-        "C, IBM, 2, 102",     // Cancel ack for order 102 (ask at 11)
-        "C, IBM, 1, 2",       // Cancel ack for order 2 (ask at 12)
-        "B, IBM, S, -, -"     // Ask side eliminated (bid already eliminated)
+        "B, IBM, B, -, -",
+        "C, IBM, 2, 102",
+        "C, IBM, 1, 2",
+        "B, IBM, S, -, -"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
