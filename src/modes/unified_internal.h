@@ -3,15 +3,13 @@
 
 /**
  * Unified Server - Internal shared structures and declarations
- * 
- * This header is for internal use by the unified_*.c files only.
- * External code should use unified_mode.h
  */
 
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <pthread.h>
+#include <time.h>
 
 #include "modes/unified_mode.h"
 #include "core/matching_engine.h"
@@ -57,7 +55,8 @@ typedef struct {
     /* Network */
     int tcp_listen_fd;
     int udp_fd;
-    multicast_publisher_t* multicast;
+    int multicast_fd;  /* Simple UDP socket for multicast send */
+    struct sockaddr_in multicast_addr;
     
     /* Formatters (for output) */
     binary_message_formatter_t bin_formatter;
@@ -84,7 +83,7 @@ extern atomic_bool g_shutdown;
 /**
  * Get current timestamp in nanoseconds
  */
-static inline int64_t get_timestamp_ns(void) {
+static inline int64_t unified_get_timestamp_ns(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
@@ -123,17 +122,17 @@ void unified_route_input(unified_server_t* server,
  * ============================================================================ */
 
 /**
- * TCP listener thread - accepts connections and spawns handlers
+ * TCP listener thread
  */
 void* unified_tcp_listener_thread(void* arg);
 
 /**
- * UDP receiver thread - receives datagrams and routes to processors
+ * UDP receiver thread
  */
 void* unified_udp_receiver_thread(void* arg);
 
 /**
- * Output router thread - routes outputs to clients and multicast
+ * Output router thread
  */
 void* unified_output_router_thread(void* arg);
 
@@ -143,7 +142,6 @@ void* unified_output_router_thread(void* arg);
 
 /**
  * Send output message to a specific client
- * Automatically formats based on client's protocol
  */
 bool unified_send_to_client(unified_server_t* server, 
                             uint32_t client_id,
@@ -153,5 +151,10 @@ bool unified_send_to_client(unified_server_t* server,
  * Broadcast message to all connected clients
  */
 void unified_broadcast_to_all(unified_server_t* server, const output_msg_t* msg);
+
+/**
+ * Send to multicast group
+ */
+void unified_send_multicast(unified_server_t* server, const output_msg_t* msg);
 
 #endif /* UNIFIED_INTERNAL_H */

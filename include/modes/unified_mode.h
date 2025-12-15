@@ -11,7 +11,7 @@
  * 
  * All transports feed into the same dual-processor matching engine.
  * Output routing is handled automatically:
- *   - Ack/Cancel Ack/Reject → originating client only
+ *   - Ack/Cancel Ack → originating client only
  *   - Trade → both buyer and seller
  *   - Top of Book → all connected clients
  *   - Multicast → all messages in binary
@@ -21,6 +21,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <pthread.h>
 
 /* ============================================================================
  * Configuration
@@ -88,60 +89,14 @@ static inline void unified_config_init(unified_config_t* config) {
  * 
  * This function blocks until shutdown is signaled (e.g., Ctrl+C).
  * 
- * Architecture:
- *   - TCP Listener Thread: Accepts connections, spawns per-client handlers
- *   - UDP Receiver Thread: Receives datagrams, tracks clients
- *   - Processor Thread(s): 1 or 2 depending on config
- *   - Output Router Thread: Routes outputs to correct clients + multicast
- * 
  * @param config  Server configuration
  * @return        0 on clean shutdown, non-zero on error
  */
 int run_unified_server(const unified_config_t* config);
 
 /* ============================================================================
- * Output Message Routing
+ * User-to-Client Mapping
  * ============================================================================ */
-
-/**
- * Output routing decisions based on message type
- * 
- * OUTPUT_MSG_ACK:
- *   → Send to originating client (client_id in envelope)
- *   → Multicast
- * 
- * OUTPUT_MSG_CANCEL_ACK:
- *   → Send to originating client
- *   → Multicast
- * 
- * OUTPUT_MSG_REJECT:
- *   → Send to originating client
- *   → Multicast
- * 
- * OUTPUT_MSG_TRADE:
- *   → Send to buyer (buyer_user_id → lookup client_id)
- *   → Send to seller (seller_user_id → lookup client_id)
- *   → Multicast
- * 
- * OUTPUT_MSG_TOP_OF_BOOK:
- *   → Broadcast to ALL connected clients
- *   → Multicast
- * 
- * Note: For trades, we need a user_id → client_id mapping.
- * This is established when processing orders (user_id comes from client).
- */
-
-/**
- * User-to-client mapping
- * 
- * When a client sends an order with user_id=X, we record that
- * user_id X belongs to client_id Y. This allows routing trade
- * confirmations to the correct client.
- * 
- * Note: In a real system, user_id would be authenticated and
- * one user could have multiple clients. For simplicity, we
- * assume 1:1 mapping (last client to use a user_id "owns" it).
- */
 
 #define MAX_USER_ID_MAPPINGS 65536
 
@@ -174,13 +129,11 @@ void user_client_map_destroy(user_client_map_t* map);
 
 /**
  * Set mapping: user_id → client_id
- * Called when processing an order from a client.
  */
 void user_client_map_set(user_client_map_t* map, uint32_t user_id, uint32_t client_id);
 
 /**
- * Get client_id for a user_id
- * Returns 0 if not found.
+ * Get client_id for a user_id (returns 0 if not found)
  */
 uint32_t user_client_map_get(user_client_map_t* map, uint32_t user_id);
 

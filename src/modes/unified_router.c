@@ -7,6 +7,23 @@
 #include <sys/socket.h>
 
 /* ============================================================================
+ * Send to Multicast
+ * ============================================================================ */
+
+void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
+    if (server->multicast_fd < 0) return;
+    
+    size_t bin_len = 0;
+    const void* bin_data = binary_message_formatter_format(&server->bin_formatter, msg, &bin_len);
+    
+    if (bin_data && bin_len > 0) {
+        sendto(server->multicast_fd, bin_data, bin_len, 0,
+               (struct sockaddr*)&server->multicast_addr, sizeof(server->multicast_addr));
+        atomic_fetch_add(&server->multicast_messages, 1);
+    }
+}
+
+/* ============================================================================
  * Send to Client Implementation
  * ============================================================================ */
 
@@ -126,17 +143,17 @@ static void process_output_envelope(unified_server_t* server,
     switch (msg->type) {
         case OUTPUT_MSG_ACK:
         case OUTPUT_MSG_CANCEL_ACK:
-        case OUTPUT_MSG_REJECT:
             /* Send to originator only */
             unified_send_to_client(server, originator, msg);
             break;
             
         case OUTPUT_MSG_TRADE: {
             /* Send to both buyer and seller */
+            /* Note: buyer/seller user_ids are in the trade message */
             uint32_t buyer_client = user_client_map_get(server->user_map,
-                                                         msg->data.trade.buyer_user_id);
+                                                         msg->data.trade.buyer_user);
             uint32_t seller_client = user_client_map_get(server->user_map,
-                                                          msg->data.trade.seller_user_id);
+                                                          msg->data.trade.seller_user);
             
             if (buyer_client != 0) {
                 unified_send_to_client(server, buyer_client, msg);
@@ -157,15 +174,7 @@ static void process_output_envelope(unified_server_t* server,
     }
     
     /* Send to multicast (always binary) */
-    if (server->multicast) {
-        size_t bin_len = 0;
-        const void* bin_data = binary_message_formatter_format(
-            &server->bin_formatter, msg, &bin_len);
-        if (bin_data && bin_len > 0) {
-            multicast_publisher_send(server->multicast, bin_data, bin_len);
-            atomic_fetch_add(&server->multicast_messages, 1);
-        }
-    }
+    unified_send_multicast(server, msg);
     
     atomic_fetch_add(&server->messages_routed, 1);
 }
@@ -182,7 +191,7 @@ void* unified_output_router_thread(void* arg) {
     output_msg_envelope_t envelope;
     
     /* Progress tracking for quiet mode */
-    uint64_t last_progress_time = get_timestamp_ns();
+    uint64_t last_progress_time = unified_get_timestamp_ns();
     uint64_t start_time = last_progress_time;
     uint64_t last_routed = 0;
     const uint64_t PROGRESS_INTERVAL_NS = 10ULL * 1000000000ULL;  /* 10 seconds */
@@ -210,7 +219,7 @@ void* unified_output_router_thread(void* arg) {
         
         /* Progress update in quiet mode */
         if (server->config.quiet_mode) {
-            uint64_t now = get_timestamp_ns();
+            uint64_t now = unified_get_timestamp_ns();
             if (now - last_progress_time >= PROGRESS_INTERVAL_NS) {
                 uint64_t total_routed = atomic_load(&server->messages_routed);
                 uint64_t elapsed_ns = now - start_time;

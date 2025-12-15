@@ -57,6 +57,9 @@ static void* tcp_client_handler(void* arg) {
     message_parser_t csv_parser;
     message_parser_init(&csv_parser);
     
+    binary_message_parser_t bin_parser;
+    binary_message_parser_init(&bin_parser);
+    
     client_protocol_t protocol = CLIENT_PROTOCOL_UNKNOWN;
     
     while (!atomic_load(&g_shutdown)) {
@@ -120,7 +123,7 @@ static void* tcp_client_handler(void* arg) {
                 
                 /* Parse binary message */
                 input_msg_t input;
-                if (binary_message_parser_parse(msg_start, msg_size, &input)) {
+                if (binary_message_parser_parse(&bin_parser, msg_start, msg_size, &input)) {
                     unified_route_input(server, &input, client_id, NULL);
                     atomic_fetch_add(&server->tcp_messages_received, 1);
                     client_registry_inc_received(server->registry, client_id);

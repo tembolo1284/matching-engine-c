@@ -29,6 +29,9 @@ void* unified_udp_receiver_thread(void* arg) {
     message_parser_t csv_parser;
     message_parser_init(&csv_parser);
     
+    binary_message_parser_t bin_parser;
+    binary_message_parser_init(&bin_parser);
+    
     while (!atomic_load(&g_shutdown)) {
         struct sockaddr_in client_addr;
         socklen_t addr_len = sizeof(client_addr);
@@ -95,7 +98,7 @@ void* unified_udp_receiver_thread(void* arg) {
                 if (remaining < msg_size) break;
                 
                 input_msg_t input;
-                if (binary_message_parser_parse(msg_start, msg_size, &input)) {
+                if (binary_message_parser_parse(&bin_parser, msg_start, msg_size, &input)) {
                     unified_route_input(server, &input, client_id, &compact_addr);
                     atomic_fetch_add(&server->udp_messages_received, 1);
                     client_registry_inc_received(server->registry, client_id);

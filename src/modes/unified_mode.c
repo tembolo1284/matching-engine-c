@@ -98,7 +98,6 @@ void unified_route_input(unified_server_t* server,
     input_msg_envelope_t envelope;
     envelope.msg = *input;
     envelope.client_id = client_id;
-    envelope.timestamp = get_timestamp_ns();
     envelope.sequence = 0;
     
     if (udp_addr) {
@@ -303,22 +302,35 @@ static bool init_udp_socket(unified_server_t* server) {
     return true;
 }
 
-static bool init_multicast(unified_server_t* server) {
+static bool init_multicast_socket(unified_server_t* server) {
     if (server->config.disable_multicast) return true;
     
-    server->multicast = malloc(sizeof(multicast_publisher_t));
-    if (!server->multicast) {
-        fprintf(stderr, "[Unified] Failed to allocate multicast publisher\n");
+    server->multicast_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (server->multicast_fd < 0) {
+        fprintf(stderr, "⚠ Multicast disabled (socket failed)\n");
         return true;  /* Non-fatal */
     }
     
+    /* Set multicast TTL */
+    int ttl = 1;
+    setsockopt(server->multicast_fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+    
+    /* Disable loopback */
+    int loop = 0;
+    setsockopt(server->multicast_fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
+    
+    /* Setup multicast address */
     const char* group = server->config.multicast_group ? 
                         server->config.multicast_group : UNIFIED_MULTICAST_GROUP;
     
-    if (!multicast_publisher_init(server->multicast, group, server->config.multicast_port)) {
-        fprintf(stderr, "⚠ Multicast disabled (init failed)\n");
-        free(server->multicast);
-        server->multicast = NULL;
+    memset(&server->multicast_addr, 0, sizeof(server->multicast_addr));
+    server->multicast_addr.sin_family = AF_INET;
+    server->multicast_addr.sin_port = htons(server->config.multicast_port);
+    
+    if (inet_pton(AF_INET, group, &server->multicast_addr.sin_addr) <= 0) {
+        fprintf(stderr, "⚠ Multicast disabled (invalid group: %s)\n", group);
+        close(server->multicast_fd);
+        server->multicast_fd = -1;
         return true;  /* Non-fatal */
     }
     
@@ -335,12 +347,7 @@ static void cleanup_server(unified_server_t* server) {
     /* Close sockets */
     if (server->tcp_listen_fd >= 0) close(server->tcp_listen_fd);
     if (server->udp_fd >= 0) close(server->udp_fd);
-    
-    /* Cleanup multicast */
-    if (server->multicast) {
-        multicast_publisher_destroy(server->multicast);
-        free(server->multicast);
-    }
+    if (server->multicast_fd >= 0) close(server->multicast_fd);
     
     /* Cleanup user map */
     if (server->user_map) {
@@ -419,6 +426,7 @@ int run_unified_server(const unified_config_t* config) {
     server->config = *config;
     server->tcp_listen_fd = -1;
     server->udp_fd = -1;
+    server->multicast_fd = -1;
     
     /* Initialize formatters */
     binary_message_formatter_init(&server->bin_formatter);
@@ -430,7 +438,7 @@ int run_unified_server(const unified_config_t* config) {
     if (!init_client_tracking(server)) goto cleanup;
     if (!init_tcp_socket(server)) goto cleanup;
     if (!init_udp_socket(server)) goto cleanup;
-    if (!init_multicast(server)) goto cleanup;
+    if (!init_multicast_socket(server)) goto cleanup;
     
     /* Create processor contexts */
     processor_t processor_0;
@@ -516,7 +524,7 @@ int run_unified_server(const unified_config_t* config) {
     }
     fprintf(stderr, "  - Output Router\n");
     fprintf(stderr, "  - Multicast Publisher%s\n", 
-            config->disable_multicast || !server->multicast ? " (disabled)" : "");
+            config->disable_multicast || server->multicast_fd < 0 ? " (disabled)" : "");
     fprintf(stderr, "\n");
     fprintf(stderr, "✓ Server ready - Press Ctrl+C to stop\n\n");
     
