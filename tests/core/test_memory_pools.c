@@ -59,7 +59,7 @@ void test_MemoryPools_InitializeCorrectly(void) {
 
 /* Test: Total memory size is calculated correctly */
 void test_MemoryPools_TotalMemorySize(void) {
-    seetUp();
+    setUp();
     memory_pool_stats_t stats;
     memory_pools_get_stats(pools, NULL, &stats);
 
