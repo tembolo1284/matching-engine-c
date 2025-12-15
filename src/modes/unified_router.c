@@ -6,7 +6,32 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <errno.h>
+
+/* ============================================================================
+ * Helper: Send with length-prefix framing for TCP binary clients
+ * ============================================================================ */
+
+static ssize_t tcp_send_with_framing(int fd, const void* data, size_t len, 
+                                      bool use_length_prefix) {
+    if (use_length_prefix) {
+        /* Send 4-byte big-endian length prefix + data atomically */
+        uint32_t net_len = htonl((uint32_t)len);
+        
+        struct iovec iov[2];
+        iov[0].iov_base = &net_len;
+        iov[0].iov_len = 4;
+        iov[1].iov_base = (void*)data;
+        iov[1].iov_len = len;
+        
+        ssize_t sent = writev(fd, iov, 2);
+        /* Return data length for consistency checking */
+        return (sent == (ssize_t)(4 + len)) ? (ssize_t)len : -1;
+    } else {
+        return send(fd, data, len, MSG_NOSIGNAL);
+    }
+}
 
 /* ============================================================================
  * Send to Multicast
@@ -14,10 +39,10 @@
 
 void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
     if (server->multicast_fd < 0) return;
-    
+
     size_t bin_len = 0;
     const void* bin_data = binary_message_formatter_format(&server->bin_formatter, msg, &bin_len);
-    
+
     if (bin_data && bin_len > 0) {
         sendto(server->multicast_fd, bin_data, bin_len, 0,
                (struct sockaddr*)&server->multicast_addr, sizeof(server->multicast_addr));
@@ -29,11 +54,11 @@ void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
  * Send to Client Implementation
  * ============================================================================ */
 
-bool unified_send_to_client(unified_server_t* server, 
+bool unified_send_to_client(unified_server_t* server,
                             uint32_t client_id,
                             const output_msg_t* msg) {
     if (client_id == 0) return false;
-    
+
     client_entry_t entry;
     if (!client_registry_find(server->registry, client_id, &entry)) {
         if (!server->config.quiet_mode) {
@@ -41,11 +66,11 @@ bool unified_send_to_client(unified_server_t* server,
         }
         return false;
     }
-    
+
     /* Format message based on client protocol */
     const void* data;
     size_t len;
-    
+
     if (entry.protocol == CLIENT_PROTOCOL_BINARY) {
         data = binary_message_formatter_format(&server->bin_formatter, msg, &len);
     } else {
@@ -58,24 +83,27 @@ bool unified_send_to_client(unified_server_t* server,
             return false;
         }
     }
-    
+
     if (!data || len == 0) {
         fprintf(stderr, "[Router] No data to send to client %u\n", client_id);
         return false;
     }
-    
+
     bool success = false;
-    
+
     if (entry.transport == TRANSPORT_TCP) {
-        /* TCP send */
+        /* TCP send - use length-prefix framing for binary protocol clients */
         int fd = entry.handle.tcp_fd;
         if (fd >= 0) {
-            ssize_t sent = send(fd, data, len, MSG_NOSIGNAL);
+            bool use_length_prefix = (entry.protocol == CLIENT_PROTOCOL_BINARY);
+            ssize_t sent = tcp_send_with_framing(fd, data, len, use_length_prefix);
             success = (sent == (ssize_t)len);
-            
+
             if (!server->config.quiet_mode) {
-                fprintf(stderr, "[Router] TCP send to client %u (fd=%d): %zd/%zu bytes %s\n",
-                        client_id, fd, sent, len, success ? "OK" : "FAILED");
+                fprintf(stderr, "[Router] TCP send to client %u (fd=%d): %zd/%zu bytes %s%s\n",
+                        client_id, fd, sent, len, 
+                        success ? "OK" : "FAILED",
+                        use_length_prefix ? " (framed)" : "");
                 if (!success && sent < 0) {
                     fprintf(stderr, "[Router] TCP send error: %s\n", strerror(errno));
                 }
@@ -89,21 +117,21 @@ bool unified_send_to_client(unified_server_t* server,
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = entry.handle.udp_addr.addr;
         addr.sin_port = entry.handle.udp_addr.port;
-        
+
         ssize_t sent = sendto(server->udp_fd, data, len, 0,
                               (struct sockaddr*)&addr, sizeof(addr));
         success = (sent == (ssize_t)len);
-        
+
         if (!server->config.quiet_mode) {
             fprintf(stderr, "[Router] UDP send to client %u: %zd/%zu bytes %s\n",
                     client_id, sent, len, success ? "OK" : "FAILED");
         }
     }
-    
+
     if (success) {
         client_registry_inc_sent(server->registry, client_id);
     }
-    
+
     return success;
 }
 
@@ -115,41 +143,43 @@ void unified_broadcast_to_all(unified_server_t* server, const output_msg_t* msg)
     /* Pre-format for both protocols */
     const char* csv_line = message_formatter_format(&server->csv_formatter, msg);
     size_t csv_len = csv_line ? strlen(csv_line) : 0;
-    
+
     size_t bin_len = 0;
     const void* bin_data = binary_message_formatter_format(&server->bin_formatter, msg, &bin_len);
-    
+
     /* Get all client IDs */
     uint32_t client_ids[MAX_REGISTERED_CLIENTS];
     uint32_t count = client_registry_get_all_ids(server->registry, client_ids, MAX_REGISTERED_CLIENTS);
-    
+
     if (!server->config.quiet_mode) {
         fprintf(stderr, "[Router] Broadcasting TOB to %u clients\n", count);
     }
-    
+
     for (uint32_t i = 0; i < count; i++) {
         client_entry_t entry;
         if (!client_registry_find(server->registry, client_ids[i], &entry)) {
             continue;
         }
-        
+
         const void* data;
         size_t len;
-        
-        if (entry.protocol == CLIENT_PROTOCOL_BINARY) {
+        bool is_binary = (entry.protocol == CLIENT_PROTOCOL_BINARY);
+
+        if (is_binary) {
             data = bin_data;
             len = bin_len;
         } else {
             data = csv_line;
             len = csv_len;
         }
-        
+
         if (!data || len == 0) continue;
-        
+
         if (entry.transport == TRANSPORT_TCP) {
             int fd = entry.handle.tcp_fd;
             if (fd >= 0) {
-                send(fd, data, len, MSG_NOSIGNAL);
+                /* Use length-prefix framing for binary protocol TCP clients */
+                tcp_send_with_framing(fd, data, len, is_binary);
             }
         } else if (entry.transport == TRANSPORT_UDP) {
             struct sockaddr_in addr;
@@ -157,13 +187,13 @@ void unified_broadcast_to_all(unified_server_t* server, const output_msg_t* msg)
             addr.sin_family = AF_INET;
             addr.sin_addr.s_addr = entry.handle.udp_addr.addr;
             addr.sin_port = entry.handle.udp_addr.port;
-            
+
             sendto(server->udp_fd, data, len, 0, (struct sockaddr*)&addr, sizeof(addr));
         }
-        
+
         client_registry_inc_sent(server->registry, client_ids[i]);
     }
-    
+
     atomic_fetch_add(&server->tob_broadcasts, 1);
 }
 
@@ -171,20 +201,20 @@ void unified_broadcast_to_all(unified_server_t* server, const output_msg_t* msg)
  * Process Single Output Envelope
  * ============================================================================ */
 
-static void process_output_envelope(unified_server_t* server, 
+static void process_output_envelope(unified_server_t* server,
                                     const output_msg_envelope_t* envelope) {
     const output_msg_t* msg = &envelope->msg;
     uint32_t originator = envelope->client_id;
-    
+
     if (!server->config.quiet_mode) {
-        const char* type_str = 
+        const char* type_str =
             msg->type == OUTPUT_MSG_ACK ? "ACK" :
             msg->type == OUTPUT_MSG_CANCEL_ACK ? "CANCEL_ACK" :
             msg->type == OUTPUT_MSG_TRADE ? "TRADE" :
             msg->type == OUTPUT_MSG_TOP_OF_BOOK ? "TOP_OF_BOOK" : "UNKNOWN";
         fprintf(stderr, "[Router] Processing %s for client %u\n", type_str, originator);
     }
-    
+
     /* Route based on message type */
     switch (msg->type) {
         case OUTPUT_MSG_ACK:
@@ -192,20 +222,20 @@ static void process_output_envelope(unified_server_t* server,
             /* Send to originator only */
             unified_send_to_client(server, originator, msg);
             break;
-            
+
         case OUTPUT_MSG_TRADE: {
             /* Send to both buyer and seller */
             uint32_t buyer_client = user_client_map_get(server->user_map,
                                                          msg->data.trade.user_id_buy);
             uint32_t seller_client = user_client_map_get(server->user_map,
                                                           msg->data.trade.user_id_sell);
-            
+
             if (!server->config.quiet_mode) {
                 fprintf(stderr, "[Router] Trade: buyer_user=%u -> client=%u, seller_user=%u -> client=%u\n",
                         msg->data.trade.user_id_buy, buyer_client,
                         msg->data.trade.user_id_sell, seller_client);
             }
-            
+
             if (buyer_client != 0) {
                 unified_send_to_client(server, buyer_client, msg);
             }
@@ -214,19 +244,19 @@ static void process_output_envelope(unified_server_t* server,
             }
             break;
         }
-        
+
         case OUTPUT_MSG_TOP_OF_BOOK:
             /* Broadcast to all connected clients */
             unified_broadcast_to_all(server, msg);
             break;
-            
+
         default:
             break;
     }
-    
+
     /* Send to multicast (always binary) */
     unified_send_multicast(server, msg);
-    
+
     atomic_fetch_add(&server->messages_routed, 1);
 }
 
@@ -236,38 +266,38 @@ static void process_output_envelope(unified_server_t* server,
 
 void* unified_output_router_thread(void* arg) {
     unified_server_t* server = (unified_server_t*)arg;
-    
+
     fprintf(stderr, "[Router] Output router started\n");
-    
+
     output_msg_envelope_t envelope;
-    
+
     /* Progress tracking for quiet mode */
     uint64_t last_progress_time = unified_get_timestamp_ns();
     uint64_t start_time = last_progress_time;
     uint64_t last_routed = 0;
     const uint64_t PROGRESS_INTERVAL_NS = 10ULL * 1000000000ULL;  /* 10 seconds */
-    
+
     while (!atomic_load(&g_shutdown)) {
         bool got_message = false;
-        
+
         /* Drain output queue 0 */
         if (output_envelope_queue_dequeue(server->output_queue_0, &envelope)) {
             process_output_envelope(server, &envelope);
             got_message = true;
         }
-        
+
         /* Drain output queue 1 (if dual processor) */
-        if (server->output_queue_1 && 
+        if (server->output_queue_1 &&
             output_envelope_queue_dequeue(server->output_queue_1, &envelope)) {
             process_output_envelope(server, &envelope);
             got_message = true;
         }
-        
+
         if (!got_message) {
             struct timespec ts = {0, 1000};  /* 1µs */
             nanosleep(&ts, NULL);
         }
-        
+
         /* Progress update in quiet mode */
         if (server->config.quiet_mode) {
             uint64_t now = unified_get_timestamp_ns();
@@ -279,10 +309,10 @@ void* unified_output_router_thread(void* arg) {
                 double interval_sec = (double)(now - last_progress_time) / 1e9;
                 double current_rate = interval_sec > 0 ? interval_msgs / interval_sec : 0;
                 double avg_rate = elapsed_sec > 0 ? total_routed / elapsed_sec : 0;
-                
+
                 client_registry_stats_t stats;
                 client_registry_get_stats(server->registry, &stats);
-                
+
                 fprintf(stderr, "[PROGRESS] %6.1fs | %12llu routed | %8.2fK msg/s (avg: %.2fK) | TCP: %u UDP: %u\n",
                         elapsed_sec,
                         (unsigned long long)total_routed,
@@ -290,13 +320,13 @@ void* unified_output_router_thread(void* arg) {
                         avg_rate / 1000.0,
                         stats.tcp_clients_active,
                         stats.udp_clients_active);
-                
+
                 last_progress_time = now;
                 last_routed = total_routed;
             }
         }
     }
-    
+
     fprintf(stderr, "[Router] Output router stopped\n");
     return NULL;
 }
