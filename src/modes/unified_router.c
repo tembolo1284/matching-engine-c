@@ -151,9 +151,9 @@ static void process_output_envelope(unified_server_t* server,
             /* Send to both buyer and seller */
             /* Note: buyer/seller user_ids are in the trade message */
             uint32_t buyer_client = user_client_map_get(server->user_map,
-                                                         msg->data.trade.buyer_user);
+                                                         msg->data.trade.user_id_buy);
             uint32_t seller_client = user_client_map_get(server->user_map,
-                                                          msg->data.trade.seller_user);
+                                                          msg->data.trade.user_id_sell);
             
             if (buyer_client != 0) {
                 unified_send_to_client(server, buyer_client, msg);
