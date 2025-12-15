@@ -58,7 +58,7 @@ typedef struct __attribute__((packed)) {
 
 /**
  * Binary Acknowledgement Message
- * Total size: 19 bytes
+ * Total size: 18 bytes
  */
 typedef struct __attribute__((packed)) {
     uint8_t  magic;              /* 0x4D */
@@ -70,7 +70,7 @@ typedef struct __attribute__((packed)) {
 
 /**
  * Binary Cancel Acknowledgement Message
- * Total size: 19 bytes
+ * Total size: 18 bytes
  */
 typedef struct __attribute__((packed)) {
     uint8_t  magic;              /* 0x4D */
@@ -82,7 +82,7 @@ typedef struct __attribute__((packed)) {
 
 /**
  * Binary Trade Message
- * Total size: 31 bytes
+ * Total size: 34 bytes
  */
 typedef struct __attribute__((packed)) {
     uint8_t  magic;              /* 0x4D */
@@ -107,6 +107,7 @@ typedef struct __attribute__((packed)) {
     uint8_t  side;               /* 'B' or 'S' */
     uint32_t price;              /* Network byte order, 0 for eliminated */
     uint32_t quantity;           /* Network byte order */
+    uint8_t _padding;
 } binary_top_of_book_t;
 
 /**

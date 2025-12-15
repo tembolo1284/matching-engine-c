@@ -90,6 +90,8 @@ static size_t format_top_of_book(binary_message_formatter_t* formatter, const to
         bin->price = htonl(msg->price);
         bin->quantity = htonl(msg->total_quantity);
     }
+
+    bin->_padding = 0;
     
     return sizeof(binary_top_of_book_t);
 }
