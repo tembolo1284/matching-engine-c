@@ -5,19 +5,34 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 
-/* Test fixture - heap allocated to avoid ARM64 address range issues */
+/* Test fixture - use mmap for large allocations to avoid overcommit issues */
 static matching_engine_t* engine;
 static message_parser_t* parser;
 static message_formatter_t* formatter;
 static memory_pools_t* test_pools;
 
 static void setUp(void) {
-    test_pools = malloc(sizeof(memory_pools_t));
-    engine = malloc(sizeof(matching_engine_t));
+    /* Use mmap with MAP_POPULATE for large structures */
+    test_pools = mmap(NULL, sizeof(memory_pools_t),
+                      PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
+                      -1, 0);
+    engine = mmap(NULL, sizeof(matching_engine_t),
+                  PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
+                  -1, 0);
+    
+    /* Small structures can use malloc */
     parser = malloc(sizeof(message_parser_t));
     formatter = malloc(sizeof(message_formatter_t));
-    
+
+    TEST_ASSERT_TRUE(test_pools != MAP_FAILED);
+    TEST_ASSERT_TRUE(engine != MAP_FAILED);
+    TEST_ASSERT_NOT_NULL(parser);
+    TEST_ASSERT_NOT_NULL(formatter);
+
     memory_pools_init(test_pools);
     matching_engine_init(engine, test_pools);
     message_parser_init(parser);
@@ -25,33 +40,43 @@ static void setUp(void) {
 }
 
 static void tearDown(void) {
-    matching_engine_destroy(engine);
-    free(engine);
-    free(parser);
-    free(formatter);
-    free(test_pools);
-    engine = NULL;
-    parser = NULL;
-    formatter = NULL;
-    test_pools = NULL;
+    if (engine && engine != MAP_FAILED) {
+        matching_engine_destroy(engine);
+        munmap(engine, sizeof(matching_engine_t));
+        engine = NULL;
+    }
+    if (test_pools && test_pools != MAP_FAILED) {
+        munmap(test_pools, sizeof(memory_pools_t));
+        test_pools = NULL;
+    }
+    if (parser) {
+        free(parser);
+        parser = NULL;
+    }
+    if (formatter) {
+        free(formatter);
+        formatter = NULL;
+    }
 }
 
 /* Helper: Process array of input strings */
 static void process_input(const char* input[], size_t count) {
     for (size_t i = 0; i < count; i++) {
-        output_buffer_t output;
-        output_buffer_init(&output);
+        output_buffer_t* output = malloc(sizeof(output_buffer_t));
+        TEST_ASSERT_NOT_NULL(output);
+        output_buffer_init(output);
 
         input_msg_t msg;
         message_parser_parse(parser, input[i], &msg);
 
-        matching_engine_process_message(engine, &msg, 0, &output);
+        matching_engine_process_message(engine, &msg, 0, output);
 
         /* Print outputs for debugging */
-        for (int j = 0; j < output.count; j++) {
-            const char* formatted = message_formatter_format(formatter, &output.messages[j]);
-            fprintf(stderr, "%s\n", formatted);
+        for (int j = 0; j < output->count; j++) {
+            const char* formatted = message_formatter_format(formatter, &output->messages[j]);
+            fprintf(stderr, "%s", formatted);
         }
+        free(output);
     }
 }
 
@@ -80,22 +105,22 @@ void test_Scenario2_ShallowBid(void) {
     };
 
     const char* expected[] = {
-        "A, AAPL, 1, 1",
-        "B, AAPL, B, 10, 100",
-        "A, AAPL, 1, 2",
-        "B, AAPL, S, 12, 100",
-        "A, AAPL, 2, 102",
-        "B, AAPL, S, 11, 100",
-        "A, AAPL, 2, 103",
-        "T, AAPL, 1, 1, 2, 103, 10, 100",
-        "B, AAPL, B, -, -",
-        "A, AAPL, 1, 3",
-        "B, AAPL, B, 10, 100",
-        "C, AAPL, 1, 3",
-        "C, AAPL, 2, 102",
-        "C, AAPL, 1, 2",
-        "B, AAPL, B, -, -",
-        "B, AAPL, S, -, -"
+        "A, AAPL, 1, 1\n",
+        "B, AAPL, B, 10, 100\n",
+        "A, AAPL, 1, 2\n",
+        "B, AAPL, S, 12, 100\n",
+        "A, AAPL, 2, 102\n",
+        "B, AAPL, S, 11, 100\n",
+        "A, AAPL, 2, 103\n",
+        "T, AAPL, 1, 1, 2, 103, 10, 100\n",
+        "B, AAPL, B, -, -\n",
+        "A, AAPL, 1, 3\n",
+        "B, AAPL, B, 10, 100\n",
+        "C, AAPL, 1, 3\n",
+        "C, AAPL, 2, 102\n",
+        "C, AAPL, 1, 2\n",
+        "B, AAPL, B, -, -\n",
+        "B, AAPL, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -118,21 +143,21 @@ void test_Scenario4_LimitBelowBestBid(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 2, 103",
-        "T, IBM, 1, 1, 2, 103, 10, 100",
-        "B, IBM, B, 9, 100",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 2, 103\n",
+        "T, IBM, 1, 1, 2, 103, 10, 100\n",
+        "B, IBM, B, 9, 100\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -155,21 +180,21 @@ void test_Scenario6_MarketSell(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 2, 103",
-        "T, IBM, 1, 1, 2, 103, 10, 100",
-        "B, IBM, B, 9, 100",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 2, 103\n",
+        "T, IBM, 1, 1, 2, 103, 10, 100\n",
+        "B, IBM, B, 9, 100\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -193,25 +218,25 @@ void test_Scenario8_TightenSpread(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 16, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 15, 100",
-        "A, IBM, 2, 103",
-        "B, IBM, B, 11, 100",
-        "A, IBM, 1, 3",
-        "B, IBM, S, 14, 100",
-        "C, IBM, 2, 103",
-        "C, IBM, 1, 1",
-        "C, IBM, 2, 101",
-        "C, IBM, 1, 3",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 16, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 15, 100\n",
+        "A, IBM, 2, 103\n",
+        "B, IBM, B, 11, 100\n",
+        "A, IBM, 1, 3\n",
+        "B, IBM, S, 14, 100\n",
+        "C, IBM, 2, 103\n",
+        "C, IBM, 1, 1\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 1, 3\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -234,22 +259,22 @@ void test_Scenario10_MarketBuyPartial(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 1, 3",
-        "T, IBM, 1, 3, 2, 102, 11, 20",
-        "B, IBM, S, 11, 80",
-        "C, IBM, 1, 1",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 1, 3\n",
+        "T, IBM, 1, 3, 2, 102, 11, 20\n",
+        "B, IBM, S, 11, 80\n",
+        "C, IBM, 1, 1\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -272,22 +297,22 @@ void test_Scenario12_LimitBuyPartial(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 1, 3",
-        "T, IBM, 1, 3, 2, 102, 11, 20",
-        "B, IBM, S, 11, 80",
-        "C, IBM, 1, 1",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 1, 3\n",
+        "T, IBM, 1, 3, 2, 102, 11, 20\n",
+        "B, IBM, S, 11, 80\n",
+        "C, IBM, 1, 1\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -311,21 +336,21 @@ void test_Scenario14_CancelBestBidOffer(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "C, IBM, 1, 1",
-        "B, IBM, B, 9, 100",
-        "C, IBM, 2, 102",
-        "B, IBM, S, 12, 100",
-        "C, IBM, 2, 101",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "C, IBM, 1, 1\n",
+        "B, IBM, B, 9, 100\n",
+        "C, IBM, 2, 102\n",
+        "B, IBM, S, 12, 100\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -349,20 +374,20 @@ void test_Scenario16_CancelAllBids(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "C, IBM, 1, 1",
-        "B, IBM, B, 9, 100",
-        "C, IBM, 2, 101",
-        "B, IBM, B, -, -",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "C, IBM, 1, 1\n",
+        "B, IBM, B, 9, 100\n",
+        "C, IBM, 2, 101\n",
+        "B, IBM, B, -, -\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));

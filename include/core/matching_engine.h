@@ -29,7 +29,7 @@ extern "C" {
  * Configuration Constants
  * ============================================================================ */
 
-#define MAX_SYMBOLS 256
+#define MAX_SYMBOLS 64
 
 /*
  * Hash table sizes - MUST be power of 2 for fast masking
@@ -39,7 +39,7 @@ extern "C" {
 #define SYMBOL_MAP_SIZE 512
 #define SYMBOL_MAP_MASK (SYMBOL_MAP_SIZE - 1)
 
-#define ORDER_SYMBOL_MAP_SIZE 16384
+#define ORDER_SYMBOL_MAP_SIZE 8192
 #define ORDER_SYMBOL_MAP_MASK (ORDER_SYMBOL_MAP_SIZE - 1)
 
 /* Maximum probe length for open-addressing (Rule 2) */

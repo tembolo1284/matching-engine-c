@@ -5,8 +5,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/mman.h>
 
-/* Test fixture - heap allocated to avoid ARM64 address range issues */
+/* Test fixture - use mmap for large allocations to avoid overcommit issues */
 static matching_engine_t* engine;
 static message_parser_t* parser;
 static message_formatter_t* formatter;
@@ -21,11 +22,25 @@ static char actual_outputs[MAX_OUTPUT_LINES][MAX_OUTPUT_LINE_LENGTH];
 static int actual_output_count;
 
 static void setUp(void) {
-    test_pools = malloc(sizeof(memory_pools_t));
-    engine = malloc(sizeof(matching_engine_t));
+    /* Use mmap with MAP_POPULATE for large structures */
+    test_pools = mmap(NULL, sizeof(memory_pools_t),
+                      PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
+                      -1, 0);
+    engine = mmap(NULL, sizeof(matching_engine_t),
+                  PROT_READ | PROT_WRITE,
+                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_POPULATE,
+                  -1, 0);
+    
+    /* Small structures can use malloc */
     parser = malloc(sizeof(message_parser_t));
     formatter = malloc(sizeof(message_formatter_t));
-    
+
+    TEST_ASSERT_TRUE(test_pools != MAP_FAILED);
+    TEST_ASSERT_TRUE(engine != MAP_FAILED);
+    TEST_ASSERT_NOT_NULL(parser);
+    TEST_ASSERT_NOT_NULL(formatter);
+
     memory_pools_init(test_pools);
     matching_engine_init(engine, test_pools);
     message_parser_init(parser);
@@ -34,15 +49,23 @@ static void setUp(void) {
 }
 
 static void tearDown(void) {
-    matching_engine_destroy(engine);
-    free(engine);
-    free(parser);
-    free(formatter);
-    free(test_pools);
-    engine = NULL;
-    parser = NULL;
-    formatter = NULL;
-    test_pools = NULL;
+    if (engine && engine != MAP_FAILED) {
+        matching_engine_destroy(engine);
+        munmap(engine, sizeof(matching_engine_t));
+        engine = NULL;
+    }
+    if (test_pools && test_pools != MAP_FAILED) {
+        munmap(test_pools, sizeof(memory_pools_t));
+        test_pools = NULL;
+    }
+    if (parser) {
+        free(parser);
+        parser = NULL;
+    }
+    if (formatter) {
+        free(formatter);
+        formatter = NULL;
+    }
 }
 
 /* Helper: Process input lines and collect formatted outputs */
@@ -53,22 +76,25 @@ static void process_input(const char* input_lines[], int num_lines) {
         input_msg_t msg;
 
         if (message_parser_parse(parser, input_lines[i], &msg)) {
-            output_buffer_t output;
-            output_buffer_init(&output);
+            output_buffer_t* output = malloc(sizeof(output_buffer_t));
+            TEST_ASSERT_NOT_NULL(output);
+            output_buffer_init(output);
 
-            matching_engine_process_message(engine, &msg, 0, &output);
+            matching_engine_process_message(engine, &msg, 0, output);
 
             /* Format each output message */
-            for (int j = 0; j < output.count; j++) {
-                const char* formatted = message_formatter_format(formatter, &output.messages[j]);
+            for (int j = 0; j < output->count; j++) {
+                const char* formatted = message_formatter_format(formatter, &output->messages[j]);
                 strncpy(actual_outputs[actual_output_count], formatted, MAX_OUTPUT_LINE_LENGTH - 1);
                 actual_outputs[actual_output_count][MAX_OUTPUT_LINE_LENGTH - 1] = '\0';
                 actual_output_count++;
 
                 if (actual_output_count >= MAX_OUTPUT_LINES) {
+                    free(output);
                     return; /* Prevent overflow */
                 }
             }
+            free(output);
         }
     }
 }
@@ -103,29 +129,29 @@ void test_Scenario1_BalancedBook(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 1, 3",
-        "T, IBM, 1, 3, 2, 102, 11, 100",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 103",
-        "T, IBM, 1, 1, 2, 103, 10, 100",
-        "B, IBM, B, 9, 100",
-        "A, IBM, 1, 4",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 2, 104",
-        "B, IBM, S, 11, 100",
-        "C, IBM, 1, 4",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 104",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 1, 3\n",
+        "T, IBM, 1, 3, 2, 102, 11, 100\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 103\n",
+        "T, IBM, 1, 1, 2, 103, 10, 100\n",
+        "B, IBM, B, 9, 100\n",
+        "A, IBM, 1, 4\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 2, 104\n",
+        "B, IBM, S, 11, 100\n",
+        "C, IBM, 1, 4\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 104\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -148,21 +174,21 @@ void test_Scenario3_ShallowAsk(void) {
     };
 
     const char* expected[] = {
-        "A, VAL, 1, 1",
-        "B, VAL, B, 10, 100",
-        "A, VAL, 2, 101",
-        "A, VAL, 2, 102",
-        "B, VAL, S, 11, 100",
-        "A, VAL, 1, 2",
-        "T, VAL, 1, 2, 2, 102, 11, 100",
-        "B, VAL, S, -, -",
-        "A, VAL, 2, 103",
-        "B, VAL, S, 11, 100",
-        "C, VAL, 1, 1",
-        "C, VAL, 2, 101",
-        "C, VAL, 2, 103",
-        "B, VAL, B, -, -",
-        "B, VAL, S, -, -"
+        "A, VAL, 1, 1\n",
+        "B, VAL, B, 10, 100\n",
+        "A, VAL, 2, 101\n",
+        "A, VAL, 2, 102\n",
+        "B, VAL, S, 11, 100\n",
+        "A, VAL, 1, 2\n",
+        "T, VAL, 1, 2, 2, 102, 11, 100\n",
+        "B, VAL, S, -, -\n",
+        "A, VAL, 2, 103\n",
+        "B, VAL, S, 11, 100\n",
+        "C, VAL, 1, 1\n",
+        "C, VAL, 2, 101\n",
+        "C, VAL, 2, 103\n",
+        "B, VAL, B, -, -\n",
+        "B, VAL, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -185,22 +211,22 @@ void test_Scenario9_MarketSellPartial(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 2, 103",
-        "T, IBM, 1, 1, 2, 103, 10, 20",
-        "B, IBM, B, 10, 80",
-        "C, IBM, 1, 1",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 2, 103\n",
+        "T, IBM, 1, 1, 2, 103, 10, 20\n",
+        "B, IBM, B, 10, 80\n",
+        "C, IBM, 1, 1\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -223,22 +249,22 @@ void test_Scenario11_LimitSellPartial(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 2, 103",
-        "T, IBM, 1, 1, 2, 103, 10, 20",
-        "B, IBM, B, 10, 80",
-        "C, IBM, 1, 1",
-        "C, IBM, 2, 101",
-        "C, IBM, 2, 102",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 2, 103\n",
+        "T, IBM, 1, 1, 2, 103, 10, 20\n",
+        "B, IBM, B, 10, 80\n",
+        "C, IBM, 1, 1\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 2, 102\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -264,29 +290,29 @@ void test_Scenario13_MultipleOrdersAtBestPrice(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "A, IBM, 2, 103",
-        "B, IBM, B, 10, 150",
-        "A, IBM, 1, 3",
-        "B, IBM, S, 11, 150",
-        "A, IBM, 1, 4",
-        "T, IBM, 1, 4, 2, 102, 11, 100",
-        "B, IBM, S, 11, 50",
-        "A, IBM, 2, 104",
-        "T, IBM, 1, 1, 2, 104, 10, 100",
-        "B, IBM, B, 10, 50",
-        "C, IBM, 2, 103",
-        "C, IBM, 2, 101",
-        "C, IBM, 1, 3",
-        "C, IBM, 1, 2",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "A, IBM, 2, 103\n",
+        "B, IBM, B, 10, 150\n",
+        "A, IBM, 1, 3\n",
+        "B, IBM, S, 11, 150\n",
+        "A, IBM, 1, 4\n",
+        "T, IBM, 1, 4, 2, 102, 11, 100\n",
+        "B, IBM, S, 11, 50\n",
+        "A, IBM, 2, 104\n",
+        "T, IBM, 1, 1, 2, 104, 10, 100\n",
+        "B, IBM, B, 10, 50\n",
+        "C, IBM, 2, 103\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 1, 3\n",
+        "C, IBM, 1, 2\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
@@ -310,19 +336,19 @@ void test_Scenario15_CancelBehindBest(void) {
     };
 
     const char* expected[] = {
-        "A, IBM, 1, 1",
-        "B, IBM, B, 10, 100",
-        "A, IBM, 1, 2",
-        "B, IBM, S, 12, 100",
-        "A, IBM, 2, 101",
-        "A, IBM, 2, 102",
-        "B, IBM, S, 11, 100",
-        "C, IBM, 1, 2",
-        "C, IBM, 2, 101",
-        "C, IBM, 1, 1",
-        "C, IBM, 2, 102",
-        "B, IBM, B, -, -",
-        "B, IBM, S, -, -"
+        "A, IBM, 1, 1\n",
+        "B, IBM, B, 10, 100\n",
+        "A, IBM, 1, 2\n",
+        "B, IBM, S, 12, 100\n",
+        "A, IBM, 2, 101\n",
+        "A, IBM, 2, 102\n",
+        "B, IBM, S, 11, 100\n",
+        "C, IBM, 1, 2\n",
+        "C, IBM, 2, 101\n",
+        "C, IBM, 1, 1\n",
+        "C, IBM, 2, 102\n",
+        "B, IBM, B, -, -\n",
+        "B, IBM, S, -, -\n"
     };
 
     process_input(input, sizeof(input) / sizeof(input[0]));
