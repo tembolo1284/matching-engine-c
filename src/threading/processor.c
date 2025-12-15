@@ -133,10 +133,7 @@ void* processor_thread(void* arg) {
     processor_t* processor = (processor_t*)arg;
     assert(processor != NULL);
 
-    fprintf(stderr, "[Processor %d] Starting (mode: %s, wait: %s)\n",
-            processor->config.processor_id,
-            processor->config.tcp_mode ? "TCP" : "UDP",
-            processor->config.spin_wait ? "spin" : "sleep");
+    fprintf(stderr, "[Processor %d] Starting (wait:sleep)\n", ctx->processor_id);
 
     atomic_store(&processor->started, true);
     atomic_store(&processor->running, true);
