@@ -606,7 +606,7 @@ bool engine_client_recv(engine_client_t* client,
             }
         } else {
             if (!transport_recv(&client->transport, buffer,
-                                sizeof(buffer), &len, 0)) {
+                                sizeof(buffer), &len, -1)) {
                 continue;
             }
         }
