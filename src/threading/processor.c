@@ -133,7 +133,7 @@ void* processor_thread(void* arg) {
     processor_t* processor = (processor_t*)arg;
     assert(processor != NULL);
 
-    fprintf(stderr, "[Processor %d] Starting (wait:sleep)\n", processor->processor_id);
+    fprintf(stderr, "[Processor %d] Starting (wait:sleep)\n", processor->config.processor_id);
 
     atomic_store(&processor->started, true);
     atomic_store(&processor->running, true);
