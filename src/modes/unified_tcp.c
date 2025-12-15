@@ -40,7 +40,8 @@ static void* tcp_client_handler(void* arg) {
     uint16_t port = ntohs(ctx->client_addr.sin_port);
     
     if (!server->config.quiet_mode) {
-        fprintf(stderr, "[TCP] Client %u connected from %s:%u\n", client_id, addr_str, port);
+        fprintf(stderr, "[TCP] Client %u connected from %s:%u (fd=%d)\n", 
+                client_id, addr_str, port, fd);
     }
     
     /* Allocate receive buffer */
@@ -83,11 +84,20 @@ static void* tcp_client_handler(void* arg) {
         
         buffer_used += n;
         
+        if (!server->config.quiet_mode) {
+            fprintf(stderr, "[TCP] Client %u received %zd bytes (buffer: %zu)\n", 
+                    client_id, n, buffer_used);
+        }
+        
         /* Detect protocol on first data */
         if (protocol == CLIENT_PROTOCOL_UNKNOWN && buffer_used > 0) {
             protocol = unified_detect_protocol(recv_buffer, buffer_used);
             if (protocol != CLIENT_PROTOCOL_UNKNOWN) {
                 client_registry_set_protocol(server->registry, client_id, protocol);
+                if (!server->config.quiet_mode) {
+                    fprintf(stderr, "[TCP] Client %u protocol detected: %s\n",
+                            client_id, protocol == CLIENT_PROTOCOL_BINARY ? "BINARY" : "CSV");
+                }
             }
         }
         
@@ -103,6 +113,10 @@ static void* tcp_client_handler(void* arg) {
                 if (remaining < 2) break;  /* Need at least magic + type */
                 
                 if (msg_start[0] != BINARY_MAGIC) {
+                    if (!server->config.quiet_mode) {
+                        fprintf(stderr, "[TCP] Client %u: bad magic byte 0x%02X at offset %zu\n",
+                                client_id, msg_start[0], processed);
+                    }
                     processed++;  /* Skip bad byte */
                     continue;
                 }
@@ -115,18 +129,37 @@ static void* tcp_client_handler(void* arg) {
                     case 'C': msg_size = sizeof(binary_cancel_t); break;
                     case 'F': msg_size = sizeof(binary_flush_t); break;
                     default:
+                        if (!server->config.quiet_mode) {
+                            fprintf(stderr, "[TCP] Client %u: unknown message type '%c' (0x%02X)\n",
+                                    client_id, msg_type, msg_type);
+                        }
                         processed++;
                         continue;
                 }
                 
-                if (remaining < msg_size) break;  /* Incomplete message */
+                if (remaining < msg_size) {
+                    if (!server->config.quiet_mode) {
+                        fprintf(stderr, "[TCP] Client %u: incomplete message, need %zu have %zu\n",
+                                client_id, msg_size, remaining);
+                    }
+                    break;
+                }
                 
                 /* Parse binary message */
                 input_msg_t input;
                 if (binary_message_parser_parse(&bin_parser, msg_start, msg_size, &input)) {
+                    if (!server->config.quiet_mode) {
+                        fprintf(stderr, "[TCP] Client %u: parsed %s message\n",
+                                client_id,
+                                input.type == INPUT_MSG_NEW_ORDER ? "NEW_ORDER" :
+                                input.type == INPUT_MSG_CANCEL ? "CANCEL" :
+                                input.type == INPUT_MSG_FLUSH ? "FLUSH" : "UNKNOWN");
+                    }
                     unified_route_input(server, &input, client_id, NULL);
                     atomic_fetch_add(&server->tcp_messages_received, 1);
                     client_registry_inc_received(server->registry, client_id);
+                } else {
+                    fprintf(stderr, "[TCP] Client %u: failed to parse binary message\n", client_id);
                 }
                 
                 processed += msg_size;
@@ -146,12 +179,25 @@ static void* tcp_client_handler(void* arg) {
                 recv_buffer[line_end] = '\0';
                 const char* line = (const char*)(recv_buffer + processed);
                 
+                if (!server->config.quiet_mode) {
+                    fprintf(stderr, "[TCP] Client %u: CSV line: '%s'\n", client_id, line);
+                }
+                
                 /* Parse CSV message */
                 input_msg_t input;
                 if (message_parser_parse(&csv_parser, line, &input)) {
+                    if (!server->config.quiet_mode) {
+                        fprintf(stderr, "[TCP] Client %u: parsed %s message\n",
+                                client_id,
+                                input.type == INPUT_MSG_NEW_ORDER ? "NEW_ORDER" :
+                                input.type == INPUT_MSG_CANCEL ? "CANCEL" :
+                                input.type == INPUT_MSG_FLUSH ? "FLUSH" : "UNKNOWN");
+                    }
                     unified_route_input(server, &input, client_id, NULL);
                     atomic_fetch_add(&server->tcp_messages_received, 1);
                     client_registry_inc_received(server->registry, client_id);
+                } else {
+                    fprintf(stderr, "[TCP] Client %u: failed to parse CSV line\n", client_id);
                 }
                 
                 processed = line_end + 1;
@@ -209,8 +255,8 @@ void* unified_tcp_listener_thread(void* arg) {
         struct timeval tv = {1, 0};
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         
-        /* Register client */
-        uint32_t client_id = client_registry_add_tcp(server->registry, NULL);
+        /* Register client WITH the file descriptor */
+        uint32_t client_id = client_registry_add_tcp(server->registry, client_fd);
         if (client_id == 0) {
             fprintf(stderr, "[TCP] Failed to register client, closing connection\n");
             close(client_fd);

@@ -6,13 +6,6 @@
  * 
  * Provides a single registry for all connected clients, regardless of transport.
  * Thread-safe for concurrent access from TCP listener, UDP receiver, and output router.
- * 
- * Features:
- *   - O(1) lookup by client_id
- *   - Per-client protocol detection (CSV/Binary)
- *   - Per-client transport tracking (TCP/UDP)
- *   - Iteration for broadcast messages (TOB updates)
- *   - Automatic cleanup on disconnect
  */
 
 #include <stdint.h>
@@ -44,25 +37,25 @@ typedef enum {
 
 /**
  * Client entry in the registry
+ * Layout optimized for alignment (largest fields first)
  */
 typedef struct {
-    uint32_t client_id;             /* Unique client identifier */
-    transport_type_t transport;      /* TCP or UDP */
-    client_protocol_t protocol;      /* CSV or Binary (auto-detected) */
+    int64_t last_seen;              /* 8 bytes - Timestamp of last activity */
+    
+    atomic_uint_fast64_t messages_sent;     /* 8 bytes */
+    atomic_uint_fast64_t messages_received; /* 8 bytes */
     
     /* Transport-specific handle */
     union {
-        void* tcp_conn;              /* tcp_connection_t* for TCP clients */
-        udp_client_addr_t udp_addr;  /* Address for UDP clients */
-    } handle;
+        int tcp_fd;                  /* File descriptor for TCP clients */
+        udp_client_addr_t udp_addr;  /* Address for UDP clients (8 bytes) */
+    } handle;                        /* 8 bytes */
     
-    int64_t connected_at;            /* Timestamp when client connected */
-    int64_t last_activity;           /* Timestamp of last message */
-    
-    atomic_uint_fast64_t messages_sent;     /* Messages sent to this client */
-    atomic_uint_fast64_t messages_received; /* Messages received from this client */
-    
-    bool active;                     /* Slot in use */
+    uint32_t client_id;              /* 4 bytes - Unique client identifier */
+    transport_type_t transport;      /* 4 bytes - TCP or UDP */
+    client_protocol_t protocol;      /* 1 byte - CSV or Binary */
+    bool active;                     /* 1 byte - Slot in use */
+    uint8_t _pad[2];                 /* 2 bytes - Explicit padding */
 } client_entry_t;
 
 /**
@@ -114,10 +107,10 @@ void client_registry_destroy(client_registry_t* registry);
  * Register a new TCP client
  * 
  * @param registry   The client registry
- * @param tcp_conn   Pointer to the tcp_connection_t (stored as handle)
+ * @param tcp_fd     TCP socket file descriptor
  * @return           Assigned client_id, or 0 on failure
  */
-uint32_t client_registry_add_tcp(client_registry_t* registry, void* tcp_conn);
+uint32_t client_registry_add_tcp(client_registry_t* registry, int tcp_fd);
 
 /**
  * Register a new UDP client
@@ -212,9 +205,6 @@ bool client_registry_set_protocol(client_registry_t* registry,
 
 /**
  * Update client's last activity timestamp
- * 
- * @param registry   The client registry
- * @param client_id  Client ID
  */
 void client_registry_touch(client_registry_t* registry, uint32_t client_id);
 
@@ -234,12 +224,6 @@ void client_registry_inc_sent(client_registry_t* registry, uint32_t client_id);
 
 /**
  * Iterate over all active clients
- * Holds read lock during iteration - callback should be fast
- * 
- * @param registry   The client registry
- * @param callback   Function to call for each client
- * @param user_data  User data passed to callback
- * @return           Number of clients visited
  */
 uint32_t client_registry_foreach(client_registry_t* registry,
                                   client_iterator_fn callback,
@@ -261,12 +245,6 @@ uint32_t client_registry_foreach_udp(client_registry_t* registry,
 
 /**
  * Get array of all active client IDs
- * Caller provides buffer. Returns number of IDs written.
- * 
- * @param registry       The client registry
- * @param out_ids        Output buffer for client IDs
- * @param max_ids        Size of output buffer
- * @return               Number of IDs written
  */
 uint32_t client_registry_get_all_ids(client_registry_t* registry,
                                       uint32_t* out_ids,

@@ -35,30 +35,7 @@ static inline uint32_t hash_client_id(uint32_t client_id) {
 }
 
 /**
- * Hash function for UDP address
- */
-static inline uint32_t hash_udp_addr(udp_client_addr_t addr) {
-    uint32_t hash = 2166136261u;
-    
-    /* Hash the address bytes */
-    const uint8_t* bytes = (const uint8_t*)&addr.addr;
-    for (int i = 0; i < 4; i++) {
-        hash ^= bytes[i];
-        hash *= 16777619u;
-    }
-    
-    /* Hash the port */
-    hash ^= (addr.port & 0xFF);
-    hash *= 16777619u;
-    hash ^= ((addr.port >> 8) & 0xFF);
-    hash *= 16777619u;
-    
-    return hash;
-}
-
-/**
  * Find slot for client_id (linear probing)
- * Returns slot index, or -1 if not found and table is full
  */
 static int find_slot_by_id(client_registry_t* registry, uint32_t client_id, bool find_empty) {
     uint32_t hash = hash_client_id(client_id);
@@ -72,7 +49,6 @@ static int find_slot_by_id(client_registry_t* registry, uint32_t client_id, bool
             if (find_empty) {
                 return (int)idx;
             }
-            /* Continue searching - entry might have been deleted */
             continue;
         }
         
@@ -81,7 +57,7 @@ static int find_slot_by_id(client_registry_t* registry, uint32_t client_id, bool
         }
     }
     
-    return -1;  /* Not found / full */
+    return -1;
 }
 
 /**
@@ -102,7 +78,7 @@ static int find_slot_by_udp_addr(client_registry_t* registry, udp_client_addr_t 
 }
 
 /**
- * Find an empty slot using client_id hash as starting point
+ * Find an empty slot
  */
 static int find_empty_slot(client_registry_t* registry, uint32_t hint_id) {
     uint32_t hash = hash_client_id(hint_id);
@@ -115,7 +91,7 @@ static int find_empty_slot(client_registry_t* registry, uint32_t hint_id) {
         }
     }
     
-    return -1;  /* Full */
+    return -1;
 }
 
 /* ============================================================================
@@ -147,7 +123,7 @@ void client_registry_destroy(client_registry_t* registry) {
  * Client Registration
  * ============================================================================ */
 
-uint32_t client_registry_add_tcp(client_registry_t* registry, void* tcp_conn) {
+uint32_t client_registry_add_tcp(client_registry_t* registry, int tcp_fd) {
     /* Generate new TCP client ID */
     uint32_t client_id = atomic_fetch_add(&registry->next_tcp_id, 1);
     
@@ -170,9 +146,8 @@ uint32_t client_registry_add_tcp(client_registry_t* registry, void* tcp_conn) {
     entry->client_id = client_id;
     entry->transport = TRANSPORT_TCP;
     entry->protocol = CLIENT_PROTOCOL_UNKNOWN;
-    entry->handle.tcp_conn = tcp_conn;
-    entry->connected_at = get_timestamp_ns();
-    entry->last_activity = entry->connected_at;
+    entry->handle.tcp_fd = tcp_fd;
+    entry->last_seen = get_timestamp_ns();
     atomic_store(&entry->messages_sent, 0);
     atomic_store(&entry->messages_received, 0);
     entry->active = true;
@@ -209,8 +184,7 @@ uint32_t client_registry_add_udp(client_registry_t* registry, udp_client_addr_t 
     entry->transport = TRANSPORT_UDP;
     entry->protocol = CLIENT_PROTOCOL_UNKNOWN;
     entry->handle.udp_addr = addr;
-    entry->connected_at = get_timestamp_ns();
-    entry->last_activity = entry->connected_at;
+    entry->last_seen = get_timestamp_ns();
     atomic_store(&entry->messages_sent, 0);
     atomic_store(&entry->messages_received, 0);
     entry->active = true;
@@ -236,7 +210,7 @@ uint32_t client_registry_get_or_add_udp(client_registry_t* registry, udp_client_
     
     pthread_rwlock_unlock(&registry->lock);
     
-    /* Not found - need to add (this handles race condition by re-checking) */
+    /* Not found - need to add */
     pthread_rwlock_wrlock(&registry->lock);
     
     /* Re-check under write lock */
@@ -266,8 +240,7 @@ uint32_t client_registry_get_or_add_udp(client_registry_t* registry, udp_client_
     entry->transport = TRANSPORT_UDP;
     entry->protocol = CLIENT_PROTOCOL_UNKNOWN;
     entry->handle.udp_addr = addr;
-    entry->connected_at = get_timestamp_ns();
-    entry->last_activity = entry->connected_at;
+    entry->last_seen = get_timestamp_ns();
     atomic_store(&entry->messages_sent, 0);
     atomic_store(&entry->messages_received, 0);
     entry->active = true;
@@ -436,8 +409,7 @@ void client_registry_touch(client_registry_t* registry, uint32_t client_id) {
     
     int slot = find_slot_by_id(registry, client_id, false);
     if (slot >= 0 && registry->entries[slot].active) {
-        /* Note: This is a benign race - last_activity is informational */
-        registry->entries[slot].last_activity = get_timestamp_ns();
+        registry->entries[slot].last_seen = get_timestamp_ns();
     }
     
     pthread_rwlock_unlock(&registry->lock);
