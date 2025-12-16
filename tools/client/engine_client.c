@@ -127,7 +127,7 @@ static bool probe_server_encoding(engine_client_t* client) {
         (void)transport_send(&client->transport, data, len);
     }
 
-    /* 
+    /*
      * CRITICAL: Wait for server to fully process flush across all processors.
      * The dual-processor architecture means messages route through queues
      * and responses may arrive with delay. We must drain everything.
@@ -563,6 +563,23 @@ bool engine_client_recv(engine_client_t* client,
     char buffer[CLIENT_RECV_BUFFER_SIZE];
     size_t len = 0;
 
+    /*
+     * IMPORTANT: First check if there's already buffered data in the transport.
+     * When multiple messages arrive in a single recv(), only one is extracted
+     * per call. The remaining messages are in the framing buffer and won't
+     * trigger poll() since the socket has no new data.
+     */
+    if (client->connected && client->config.mode != MODE_MULTICAST_ONLY) {
+        if (transport_has_data(&client->transport)) {
+            if (transport_recv(&client->transport, buffer, sizeof(buffer), &len, 0)) {
+                if (codec_decode_response(&client->codec, buffer, len, msg)) {
+                    process_response(client, msg, false);
+                    return true;
+                }
+            }
+        }
+    }
+
     /* Build poll set */
     struct pollfd pfds[MAX_POLL_FDS];
     int nfds = 0;
@@ -628,13 +645,29 @@ int engine_client_recv_all(engine_client_t* client, int timeout_ms) {
     output_msg_t msg;
     int count = 0;
 
-    /* Bounded loop */
-    for (int i = 0; i < MAX_RECV_ATTEMPTS; i++) {
+    /*
+     * First drain any buffered messages (no timeout needed).
+     * This handles messages already received but not yet processed.
+     */
+    while (count < MAX_RECV_ATTEMPTS) {
+        if (client->connected && client->config.mode != MODE_MULTICAST_ONLY) {
+            if (transport_has_data(&client->transport)) {
+                if (engine_client_recv(client, &msg, 0)) {
+                    count++;
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+
+    /* Then poll for new messages with timeout */
+    for (int i = count; i < MAX_RECV_ATTEMPTS; i++) {
         if (!engine_client_recv(client, &msg, timeout_ms)) {
             break;
         }
         count++;
-        timeout_ms = 50;  /* Shorter timeout after first */
+        timeout_ms = 10;  /* Shorter timeout after first */
     }
 
     return count;
