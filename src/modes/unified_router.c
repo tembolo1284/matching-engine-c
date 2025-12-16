@@ -38,15 +38,29 @@ static ssize_t tcp_send_with_framing(int fd, const void* data, size_t len,
  * ============================================================================ */
 
 void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
-    if (server->multicast_fd < 0) return;
+    if (server->multicast_fd < 0) { 
+        fprintf(stderr, "[Multicast] SKIP - fd is %d\n", server->multicast_fd);
+        return;
+    }
 
     size_t bin_len = 0;
     const void* bin_data = binary_message_formatter_format(&server->bin_formatter, msg, &bin_len);
 
     if (bin_data && bin_len > 0) {
-        sendto(server->multicast_fd, bin_data, bin_len, 0,
-               (struct sockaddr*)&server->multicast_addr, sizeof(server->multicast_addr));
+        ssize_t sent = sendto(server->multicast_fd, bin_data, bin_len, 0, (struct sockaddr*)&server->multicast_addr, sizeof(server->multicast_addr));
+
+        fprintf(stderr, "[Multicast] Sent %zd/%zu bytes to %s:%d (fd=%d)\n", 
+                sent, bin_len,
+                inet_ntoa(server->multicast_addr.sin_addr),
+                ntohs(server->multicast_addr.sin_port),
+                server->multicast_fd);
+        
+        if (sent < 0) {
+            fprintf(stderr, "[Multicast] ERROR: %s\n", strerror(errno));
+        }
         atomic_fetch_add(&server->multicast_messages, 1);
+    } else {
+        fprintf(stderr, "[Multicast] SKIP - no data formatted\n");
     }
 }
 
