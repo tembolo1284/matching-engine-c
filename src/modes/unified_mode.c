@@ -316,7 +316,7 @@ static bool init_multicast_socket(unified_server_t* server) {
     setsockopt(server->multicast_fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
     
     /* Disable loopback */
-    int loop = 0;
+    int loop = 1;
     setsockopt(server->multicast_fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
     
     /* Setup multicast address */
