@@ -101,17 +101,6 @@ static bool is_binary_message(const char* data, size_t len) {
     return (len >= 2 && (unsigned char)data[0] == BINARY_MAGIC);
 }
 
-// Decode binary message type
-static const char* get_binary_msg_type(uint8_t type) {
-    switch (type) {
-        case 'A': return "ACK";
-        case 'X': return "CANCEL_ACK";
-        case 'T': return "TRADE";
-        case 'B': return "TOP_OF_BOOK";
-        default: return "UNKNOWN";
-    }
-}
-
 // Parse and display binary message
 static void handle_binary_message(const char* data, size_t len) {
     if (len < 2) {
@@ -119,30 +108,92 @@ static void handle_binary_message(const char* data, size_t len) {
         atomic_fetch_add(&g_parse_errors, 1);
         return;
     }
-    
+
     uint8_t magic = (uint8_t)data[0];
     uint8_t msg_type = (uint8_t)data[1];
-    
+
     if (magic != BINARY_MAGIC) {
         fprintf(stderr, "[ERROR] Invalid magic byte: 0x%02X\n", magic);
         atomic_fetch_add(&g_parse_errors, 1);
         return;
     }
-    
-    printf("[BINARY] %s", get_binary_msg_type(msg_type));
-    
-    // For detailed decoding, you could parse the full structs here
-    // For now, just show the message type and raw hex for debugging
-    if (len <= 50) {
-        printf(" (");
-        for (size_t i = 0; i < len && i < 20; i++) {
-            printf("%02X ", (unsigned char)data[i]);
+
+    // Helper to read big-endian uint32
+    #define READ_U32(ptr) ((uint32_t)((uint8_t)(ptr)[0] << 24 | (uint8_t)(ptr)[1] << 16 | (uint8_t)(ptr)[2] << 8 | (uint8_t)(ptr)[3]))
+
+    switch (msg_type) {
+        case 'A': {  // ACK: magic(1) + type(1) + symbol(8) + user_id(4) + order_id(4) = 18
+            if (len >= 18) {
+                char symbol[9] = {0};
+                memcpy(symbol, data + 2, 8);
+                // Trim trailing spaces
+                for (int i = 7; i >= 0 && symbol[i] == ' '; i--) symbol[i] = '\0';
+                uint32_t user_id = READ_U32(data + 10);
+                uint32_t order_id = READ_U32(data + 14);
+                printf("[ACK] %s, user=%u, order=%u\n", symbol, user_id, order_id);
+            } else {
+                printf("[ACK] (incomplete: %zu bytes)\n", len);
+            }
+            break;
         }
-        printf("...)");
+        case 'X': {  // CANCEL_ACK: magic(1) + type(1) + symbol(8) + user_id(4) + order_id(4) = 18
+            if (len >= 18) {
+                char symbol[9] = {0};
+                memcpy(symbol, data + 2, 8);
+                for (int i = 7; i >= 0 && symbol[i] == ' '; i--) symbol[i] = '\0';
+                uint32_t user_id = READ_U32(data + 10);
+                uint32_t order_id = READ_U32(data + 14);
+                printf("[CANCEL_ACK] %s, user=%u, order=%u\n", symbol, user_id, order_id);
+            } else {
+                printf("[CANCEL_ACK] (incomplete: %zu bytes)\n", len);
+            }
+            break;
+        }
+        case 'T': {  // TRADE: magic(1) + type(1) + symbol(8) + user_buy(4) + order_buy(4) + user_sell(4) + order_sell(4) + price(4) + qty(4) = 34
+            if (len >= 34) {
+                char symbol[9] = {0};
+                memcpy(symbol, data + 2, 8);
+                for (int i = 7; i >= 0 && symbol[i] == ' '; i--) symbol[i] = '\0';
+                uint32_t user_buy = READ_U32(data + 10);
+                uint32_t order_buy = READ_U32(data + 14);
+                uint32_t user_sell = READ_U32(data + 18);
+                uint32_t order_sell = READ_U32(data + 22);
+                uint32_t price = READ_U32(data + 26);
+                uint32_t qty = READ_U32(data + 30);
+                printf("[TRADE] %s, price=%u, qty=%u, buy(user=%u,order=%u), sell(user=%u,order=%u)\n",
+                       symbol, price, qty, user_buy, order_buy, user_sell, order_sell);
+            } else {
+                printf("[TRADE] (incomplete: %zu bytes)\n", len);
+            }
+            break;
+        }
+        case 'B': {  // TOP_OF_BOOK: magic(1) + type(1) + symbol(8) + side(1) + price(4) + qty(4) = 19 or 20
+            if (len >= 19) {
+                char symbol[9] = {0};
+                memcpy(symbol, data + 2, 8);
+                for (int i = 7; i >= 0 && symbol[i] == ' '; i--) symbol[i] = '\0';
+                char side = data[10];
+                uint32_t price = READ_U32(data + 11);
+                uint32_t qty = READ_U32(data + 15);
+                
+                if (price == 0 && qty == 0) {
+                    printf("[TOB] %s, %c: empty\n", symbol, side);
+                } else {
+                    printf("[TOB] %s, %c: %u @ %u\n", symbol, side, qty, price);
+                }
+            } else {
+                printf("[TOB] (incomplete: %zu bytes)\n", len);
+            }
+            break;
+        }
+        default:
+            printf("[BINARY] Unknown type 0x%02X (%zu bytes)\n", msg_type, len);
+            break;
     }
-    printf("\n");
+
+    #undef READ_U32
+
     fflush(stdout);
-    
     atomic_fetch_add(&g_binary_messages, 1);
     atomic_fetch_add(&g_messages_received, 1);
 }
