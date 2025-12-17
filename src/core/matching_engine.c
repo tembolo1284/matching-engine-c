@@ -348,7 +348,7 @@ void matching_engine_process_cancel_order(matching_engine_t* engine,
 
     if (entry == NULL) {
         /* Order not found - send cancel ack anyway */
-        output_msg_t cancel_ack = make_cancel_ack_msg(msg->symbol, msg->user_id, msg->user_order_id);
+        output_msg_t cancel_ack = make_cancel_ack_msg("UNKNOWN", msg->user_id, msg->user_order_id);
         output_buffer_add(output, &cancel_ack);
         return;
     }
@@ -358,7 +358,7 @@ void matching_engine_process_cancel_order(matching_engine_t* engine,
 
     if (book_slot == NULL) {
         /* Order book doesn't exist - send cancel ack anyway */
-        output_msg_t cancel_ack = make_cancel_ack_msg(msg->symbol, msg->user_id, msg->user_order_id);
+        output_msg_t cancel_ack = make_cancel_ack_msg(entry->symbol, msg->user_id, msg->user_order_id);
         output_buffer_add(output, &cancel_ack);
         order_symbol_map_remove(&engine->order_to_symbol, order_key);
         return;
