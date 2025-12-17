@@ -109,6 +109,14 @@ require_client_built() {
     fi
 }
 
+# NEW: require multicast subscriber tool built
+require_multicast_subscriber_built() {
+    if [ ! -x "$BUILD_DIR/multicast_subscriber" ]; then
+        print_error "multicast_subscriber not built. Run ./build.sh build first (or ./build.sh multicast-sub-build)."
+        exit 1
+    fi
+}
+
 require_valgrind_built() {
     if [ ! -x "$VALGRIND_BUILD_DIR/matching_engine_tests" ]; then
         print_error "Valgrind-compatible build not found."
@@ -163,6 +171,58 @@ run_benchmark() {
     print_status "Starting Unified Server (Binary + Quiet)"
     echo ""
     "./${BUILD_DIR}/matching_engine" --binary --quiet "$@"
+}
+
+# -------------------------
+# Multicast Subscriber Tool
+# -------------------------
+
+# NEW: run the multicast subscriber tool
+# Usage:
+#   ./build.sh multicast-sub
+#   ./build.sh multicast-sub 239.255.0.1 1236
+#   ./build.sh multicast-sub 239.255.0.1:1236
+run_multicast_subscriber() {
+    require_multicast_subscriber_built
+
+    local group="$MULTICAST_GROUP"
+    local port="$MULTICAST_PORT"
+
+    # Accept either "239.255.0.1 1236" OR "239.255.0.1:1236"
+    if [ $# -ge 1 ]; then
+        if [[ "$1" == *:* ]]; then
+            group="${1%%:*}"
+            port="${1##*:}"
+        else
+            group="$1"
+            if [ $# -ge 2 ]; then
+                port="$2"
+            fi
+        fi
+    fi
+
+    print_status "Starting Multicast Subscriber"
+    echo ""
+    echo "=========================================="
+    echo "  Multicast Subscriber"
+    echo "=========================================="
+    echo "  Group: $group"
+    echo "  Port:  $port"
+    echo "=========================================="
+    echo ""
+
+    "./${BUILD_DIR}/multicast_subscriber" "$group" "$port"
+}
+
+# NEW: convenience command to build only multicast_subscriber
+build_multicast_subscriber() {
+    print_status "Building multicast_subscriber..."
+    # If build dir isn't configured yet, configure it quickly
+    if [ ! -f "$BUILD_DIR/CMakeCache.txt" ]; then
+        configure "$BUILD_TYPE" "$GENERATOR" "$BUILD_DIR"
+    fi
+    build "$BUILD_DIR" multicast_subscriber
+    print_success "multicast_subscriber build complete"
 }
 
 # -------------------------
@@ -365,36 +425,41 @@ Matching Engine - Build Script
 Usage: ./build.sh [command] [args...]
 
 BUILD COMMANDS
-  build              Build Release
-  debug              Build Debug
-  rebuild            Clean + rebuild
-  clean              Remove build directory
-  clean-all          Remove all build directories
+  build                    Build Release
+  debug                    Build Debug
+  rebuild                  Clean + rebuild
+  clean                    Remove build directory
+  clean-all                Remove all build directories
+  multicast-sub-build      Build only multicast_subscriber tool
 
 TEST COMMANDS
-  test               Run unit tests
-  valgrind           Run unit tests under valgrind
-  valgrind-server    Run server under valgrind
+  test                     Run unit tests
+  valgrind                 Run unit tests under valgrind
+  valgrind-server          Run server under valgrind
 
 SERVER COMMANDS (Unified - all transports always active)
-  run                Start server (CSV, dual processor)
-  run-binary         Start server (binary format)
-  run-quiet          Start server (quiet/benchmark mode)
-  run-benchmark      Start server (binary + quiet)
+  run                      Start server (CSV, dual processor)
+  run-binary               Start server (binary format)
+  run-quiet                Start server (quiet/benchmark mode)
+  run-benchmark            Start server (binary + quiet)
 
   Server always listens on:
     TCP:       $TCP_PORT
     UDP:       $UDP_PORT
     Multicast: $MULTICAST_GROUP:$MULTICAST_PORT
 
+TOOLS
+  multicast-sub [GROUP [PORT]]   Run multicast subscriber (default: $MULTICAST_GROUP:$MULTICAST_PORT)
+  multicast-sub GROUP:PORT       Run multicast subscriber with host:port form
+
 CLIENT COMMANDS
-  client [tcp|udp]           Interactive client
-  client-scenario N [tcp|udp] Run scenario N
-  scenarios                   List available scenarios
+  client [tcp|udp]               Interactive client
+  client-scenario N [tcp|udp]    Run scenario N
+  scenarios                      List available scenarios
 
 BENCHMARK COMMANDS
-  benchmark-match N   Matching benchmark (23=1M, 24=10M, 25=50M pairs)
-  benchmark-dual N    Dual-processor benchmark (26=250M, 27=500M pairs)
+  benchmark-match N              Matching benchmark (23=1M, 24=10M, 25=50M pairs)
+  benchmark-dual N               Dual-processor benchmark (26=250M, 27=500M pairs)
 
 SCENARIOS
   Basic (1-3):       Correctness testing
@@ -403,21 +468,25 @@ SCENARIOS
   Dual-Proc (26-27): 250M, 500M pairs (ultimate test)
 
 EXAMPLES
-  ./build.sh build                  # Build everything
-  ./build.sh test                   # Run unit tests
+  ./build.sh build                       # Build everything
+  ./build.sh test                        # Run unit tests
 
-  ./build.sh run                    # Start server (CSV)
-  ./build.sh run-binary             # Start server (binary)
-  ./build.sh run-quiet              # Start server (benchmark mode)
+  ./build.sh run                         # Start server (CSV)
+  ./build.sh run-binary                  # Start server (binary)
+  ./build.sh run-quiet                   # Start server (benchmark mode)
 
-  ./build.sh client                 # Interactive TCP client
-  ./build.sh client udp             # Interactive UDP client
-  ./build.sh client-scenario 1      # Run scenario 1 via TCP
-  ./build.sh client-scenario 23 udp # Run scenario 23 via UDP
+  ./build.sh multicast-sub               # Subscriber defaults to $MULTICAST_GROUP:$MULTICAST_PORT
+  ./build.sh multicast-sub 239.255.0.1 1236
+  ./build.sh multicast-sub 239.255.0.1:1236
 
-  ./build.sh benchmark-match 23     # Quick test: 1M pairs
-  ./build.sh benchmark-match 25     # Big test: 50M pairs
-  ./build.sh benchmark-dual 26      # Ultimate: 250M pairs
+  ./build.sh client                      # Interactive TCP client
+  ./build.sh client udp                  # Interactive UDP client
+  ./build.sh client-scenario 1           # Run scenario 1 via TCP
+  ./build.sh client-scenario 23 udp      # Run scenario 23 via UDP
+
+  ./build.sh benchmark-match 23          # Quick test: 1M pairs
+  ./build.sh benchmark-match 25          # Big test: 50M pairs
+  ./build.sh benchmark-dual 26           # Ultimate: 250M pairs
 EOF
 }
 
@@ -462,6 +531,10 @@ main() {
         clean-all)
             clean
             clean_valgrind
+            ;;
+        multicast-sub-build)
+            shift
+            build_multicast_subscriber "$@"
             ;;
 
         # Tests
@@ -517,6 +590,12 @@ main() {
             list_scenarios
             ;;
 
+        # Tools
+        multicast-sub|multicast-subscriber|mcast-sub)
+            shift
+            run_multicast_subscriber "$@"
+            ;;
+
         # Help
         help)
             show_help
@@ -535,3 +614,4 @@ if ! command_exists cmake; then
 fi
 
 main "$@"
+
