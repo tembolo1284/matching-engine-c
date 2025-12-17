@@ -96,7 +96,7 @@ static void* tcp_client_handler(void* arg) {
     char addr_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &ctx->client_addr.sin_addr, addr_str, sizeof(addr_str));
     uint16_t port = ntohs(ctx->client_addr.sin_port);
-    
+    (void)port;  //remove when you bring the debug print back.
     // fprintf(stderr, "[TCP] Client %u connected from %s:%u (fd=%d)\n", 
             // client_id, addr_str, port, fd);
     

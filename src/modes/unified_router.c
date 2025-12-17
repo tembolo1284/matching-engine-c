@@ -50,10 +50,10 @@ void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
         ssize_t sent = sendto(server->multicast_fd, bin_data, bin_len, 0, (struct sockaddr*)&server->multicast_addr, sizeof(server->multicast_addr));
 
         // fprintf(stderr, "[Multicast] Sent %zd/%zu bytes to %s:%d (fd=%d)\n", 
-                sent, bin_len,
-                inet_ntoa(server->multicast_addr.sin_addr),
-                ntohs(server->multicast_addr.sin_port),
-                server->multicast_fd);
+        //        sent, bin_len,
+        //        inet_ntoa(server->multicast_addr.sin_addr),
+        //        ntohs(server->multicast_addr.sin_port),
+        //        server->multicast_fd);
         
         if (sent < 0) {
             fprintf(stderr, "[Multicast] ERROR: %s\n", strerror(errno));
@@ -115,9 +115,9 @@ bool unified_send_to_client(unified_server_t* server,
 
             if (!server->config.quiet_mode) {
                 // fprintf(stderr, "[Router] TCP send to client %u (fd=%d): %zd/%zu bytes %s%s\n",
-                        client_id, fd, sent, len, 
-                        success ? "OK" : "FAILED",
-                        use_length_prefix ? " (framed)" : "");
+                //         client_id, fd, sent, len, 
+                //         success ? "OK" : "FAILED",
+                //         use_length_prefix ? " (framed)" : "");
                 if (!success && sent < 0) {
                     fprintf(stderr, "[Router] TCP send error: %s\n", strerror(errno));
                 }
@@ -226,6 +226,7 @@ static void process_output_envelope(unified_server_t* server,
             msg->type == OUTPUT_MSG_CANCEL_ACK ? "CANCEL_ACK" :
             msg->type == OUTPUT_MSG_TRADE ? "TRADE" :
             msg->type == OUTPUT_MSG_TOP_OF_BOOK ? "TOP_OF_BOOK" : "UNKNOWN";
+        (void)type_str;
         // fprintf(stderr, "[Router] Processing %s for client %u\n", type_str, originator);
     }
 
@@ -246,8 +247,8 @@ static void process_output_envelope(unified_server_t* server,
 
             if (!server->config.quiet_mode) {
                 // fprintf(stderr, "[Router] Trade: buyer_user=%u -> client=%u, seller_user=%u -> client=%u\n",
-                        msg->data.trade.user_id_buy, buyer_client,
-                        msg->data.trade.user_id_sell, seller_client);
+                //        msg->data.trade.user_id_buy, buyer_client,
+                //        msg->data.trade.user_id_sell, seller_client);
             }
 
             if (buyer_client != 0) {
