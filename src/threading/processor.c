@@ -25,12 +25,12 @@ bool processor_init(processor_t* processor,
                     output_envelope_queue_t* output_queue,
                     atomic_bool* shutdown_flag) {
     /* Rule 5: Validate parameters */
-    assert(processor != NULL);
-    assert(config != NULL);
-    assert(engine != NULL);
-    assert(input_queue != NULL);
-    assert(output_queue != NULL);
-    assert(shutdown_flag != NULL);
+    assert(processor != NULL && "NULL processor in processor_init");
+    assert(config != NULL && "NULL config in processor_init");
+    assert(engine != NULL && "NULL engine in processor_init");
+    assert(input_queue != NULL && "NULL input_queue in processor_init");
+    assert(output_queue != NULL && "NULL output_queue in processor_init");
+    assert(shutdown_flag != NULL && "NULL shutdown_flag in processor_init");
 
     memset(processor, 0, sizeof(*processor));
 
@@ -52,11 +52,15 @@ bool processor_init(processor_t* processor,
     processor->stats.empty_polls = 0;
     processor->stats.output_queue_full = 0;
 
+    /* Rule 5: Postcondition */
+    assert(!atomic_load(&processor->running) && "processor running after init");
+
     return true;
 }
 
 void processor_cleanup(processor_t* processor) {
-    assert(processor != NULL);
+    assert(processor != NULL && "NULL processor in processor_cleanup");
+    assert(!atomic_load(&processor->running) && "cleanup called on running processor");
     /* Nothing to clean up - no dynamic allocation (Rule 3) */
     (void)processor;
 }
@@ -71,6 +75,9 @@ static inline bool enqueue_output(processor_t* processor,
                                   uint64_t seq,
                                   uint64_t* local_output_count,
                                   uint64_t* local_queue_full) {
+    assert(processor != NULL && "NULL processor in enqueue_output");
+    assert(msg != NULL && "NULL msg in enqueue_output");
+
     output_msg_envelope_t env = create_output_envelope(msg, client_id, seq);
 
     if (output_envelope_queue_enqueue(processor->output_queue, &env)) {
@@ -93,6 +100,9 @@ static inline void drain_output_buffer(processor_t* processor,
                                        uint64_t* local_outputs,
                                        uint64_t* local_trades,
                                        uint64_t* local_queue_full) {
+    assert(processor != NULL && "NULL processor in drain_output_buffer");
+    assert(output_buffer != NULL && "NULL output_buffer in drain_output_buffer");
+
     /* Rule 2: Loop bounded by output_buffer->count <= MAX_OUTPUT_MESSAGES */
     for (uint32_t j = 0; j < output_buffer->count; j++) {
         output_msg_t* out_msg = &output_buffer->messages[j];
@@ -131,9 +141,11 @@ static inline void drain_output_buffer(processor_t* processor,
 
 void* processor_thread(void* arg) {
     processor_t* processor = (processor_t*)arg;
-    assert(processor != NULL);
+    assert(processor != NULL && "NULL processor in processor_thread");
 
-    fprintf(stderr, "[Processor %d] Starting (wait:sleep)\n", processor->config.processor_id);
+    fprintf(stderr, "[Processor %d] Starting (mode: %s)\n",
+            processor->config.processor_id,
+            processor->config.spin_wait ? "spin-wait" : "sleep");
 
     atomic_store(&processor->started, true);
     atomic_store(&processor->running, true);
@@ -144,7 +156,7 @@ void* processor_thread(void* arg) {
     /* Output buffer - reused across all messages in batch */
     output_buffer_t output_buffer;
 
-    /* Local counters - batched update to atomics */
+    /* Local counters - batched update to stats struct */
     uint64_t local_messages = 0;
     uint64_t local_batches = 0;
     uint64_t local_outputs = 0;
@@ -191,19 +203,16 @@ void* processor_thread(void* arg) {
         }
 
         /* ================================================================
-         * Phase 1: Dequeue batch of input messages
+         * Phase 1: Batch dequeue input messages
+         * 
+         * PERFORMANCE: Uses batch dequeue for single atomic operation
+         * instead of PROCESSOR_BATCH_SIZE separate atomic operations.
          * ================================================================ */
-        size_t count = 0;
-
-        /* Rule 2: Loop bounded by PROCESSOR_BATCH_SIZE */
-        for (size_t i = 0; i < PROCESSOR_BATCH_SIZE; i++) {
-            if (input_envelope_queue_dequeue(processor->input_queue, &input_batch[count])) {
-                count++;
-            } else {
-                /* Queue empty - could retry, but usually means we got everything */
-                break;
-            }
-        }
+        size_t count = input_envelope_queue_dequeue_batch(
+            processor->input_queue,
+            input_batch,
+            PROCESSOR_BATCH_SIZE
+        );
 
         /* ================================================================
          * Phase 2: Handle empty queue (spin or sleep)
@@ -274,7 +283,7 @@ void* processor_thread(void* arg) {
         }
 
         /* ================================================================
-         * Phase 5: Periodic flush of statistics to atomics
+         * Phase 5: Periodic flush of statistics
          * ================================================================ */
         since_last_flush += count;
 
@@ -321,7 +330,7 @@ void* processor_thread(void* arg) {
  * ============================================================================ */
 
 void processor_print_stats(const processor_t* processor) {
-    assert(processor != NULL);
+    assert(processor != NULL && "NULL processor in processor_print_stats");
 
     /* Read stats - may be slightly stale, acceptable for monitoring */
     uint64_t messages = processor->stats.messages_processed;
@@ -351,8 +360,8 @@ void processor_print_stats(const processor_t* processor) {
  * ============================================================================ */
 
 void processor_cancel_client_orders(processor_t* processor, uint32_t client_id) {
-    assert(processor != NULL);
-    assert(client_id > 0);  /* 0 is reserved for broadcast/UDP */
+    assert(processor != NULL && "NULL processor in processor_cancel_client_orders");
+    assert(client_id > 0 && "Invalid client_id (0 is reserved)");
 
     fprintf(stderr, "[Processor %d] Cancelling all orders for client %u\n",
             processor->config.processor_id, client_id);

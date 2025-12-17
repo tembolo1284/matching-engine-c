@@ -39,7 +39,7 @@ static ssize_t tcp_send_with_framing(int fd, const void* data, size_t len,
 
 void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
     if (server->multicast_fd < 0) { 
-        fprintf(stderr, "[Multicast] SKIP - fd is %d\n", server->multicast_fd);
+        // fprintf(stderr, "[Multicast] SKIP - fd is %d\n", server->multicast_fd);
         return;
     }
 
@@ -49,7 +49,7 @@ void unified_send_multicast(unified_server_t* server, const output_msg_t* msg) {
     if (bin_data && bin_len > 0) {
         ssize_t sent = sendto(server->multicast_fd, bin_data, bin_len, 0, (struct sockaddr*)&server->multicast_addr, sizeof(server->multicast_addr));
 
-        fprintf(stderr, "[Multicast] Sent %zd/%zu bytes to %s:%d (fd=%d)\n", 
+        // fprintf(stderr, "[Multicast] Sent %zd/%zu bytes to %s:%d (fd=%d)\n", 
                 sent, bin_len,
                 inet_ntoa(server->multicast_addr.sin_addr),
                 ntohs(server->multicast_addr.sin_port),
@@ -114,7 +114,7 @@ bool unified_send_to_client(unified_server_t* server,
             success = (sent == (ssize_t)len);
 
             if (!server->config.quiet_mode) {
-                fprintf(stderr, "[Router] TCP send to client %u (fd=%d): %zd/%zu bytes %s%s\n",
+                // fprintf(stderr, "[Router] TCP send to client %u (fd=%d): %zd/%zu bytes %s%s\n",
                         client_id, fd, sent, len, 
                         success ? "OK" : "FAILED",
                         use_length_prefix ? " (framed)" : "");
@@ -137,8 +137,8 @@ bool unified_send_to_client(unified_server_t* server,
         success = (sent == (ssize_t)len);
 
         if (!server->config.quiet_mode) {
-            fprintf(stderr, "[Router] UDP send to client %u: %zd/%zu bytes %s\n",
-                    client_id, sent, len, success ? "OK" : "FAILED");
+            // fprintf(stderr, "[Router] UDP send to client %u: %zd/%zu bytes %s\n",
+                    // client_id, sent, len, success ? "OK" : "FAILED");
         }
     }
 
@@ -166,7 +166,7 @@ void unified_broadcast_to_all(unified_server_t* server, const output_msg_t* msg)
     uint32_t count = client_registry_get_all_ids(server->registry, client_ids, MAX_REGISTERED_CLIENTS);
 
     if (!server->config.quiet_mode) {
-        fprintf(stderr, "[Router] Broadcasting TOB to %u clients\n", count);
+        // fprintf(stderr, "[Router] Broadcasting TOB to %u clients\n", count);
     }
 
     for (uint32_t i = 0; i < count; i++) {
@@ -226,7 +226,7 @@ static void process_output_envelope(unified_server_t* server,
             msg->type == OUTPUT_MSG_CANCEL_ACK ? "CANCEL_ACK" :
             msg->type == OUTPUT_MSG_TRADE ? "TRADE" :
             msg->type == OUTPUT_MSG_TOP_OF_BOOK ? "TOP_OF_BOOK" : "UNKNOWN";
-        fprintf(stderr, "[Router] Processing %s for client %u\n", type_str, originator);
+        // fprintf(stderr, "[Router] Processing %s for client %u\n", type_str, originator);
     }
 
     /* Route based on message type */
@@ -245,7 +245,7 @@ static void process_output_envelope(unified_server_t* server,
                                                           msg->data.trade.user_id_sell);
 
             if (!server->config.quiet_mode) {
-                fprintf(stderr, "[Router] Trade: buyer_user=%u -> client=%u, seller_user=%u -> client=%u\n",
+                // fprintf(stderr, "[Router] Trade: buyer_user=%u -> client=%u, seller_user=%u -> client=%u\n",
                         msg->data.trade.user_id_buy, buyer_client,
                         msg->data.trade.user_id_sell, seller_client);
             }
@@ -281,7 +281,7 @@ static void process_output_envelope(unified_server_t* server,
 void* unified_output_router_thread(void* arg) {
     unified_server_t* server = (unified_server_t*)arg;
 
-    fprintf(stderr, "[Router] Output router started\n");
+    // fprintf(stderr, "[Router] Output router started\n");
 
     output_msg_envelope_t envelope;
 
