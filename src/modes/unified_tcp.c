@@ -97,8 +97,8 @@ static void* tcp_client_handler(void* arg) {
     inet_ntop(AF_INET, &ctx->client_addr.sin_addr, addr_str, sizeof(addr_str));
     uint16_t port = ntohs(ctx->client_addr.sin_port);
     
-    fprintf(stderr, "[TCP] Client %u connected from %s:%u (fd=%d)\n", 
-            client_id, addr_str, port, fd);
+    // fprintf(stderr, "[TCP] Client %u connected from %s:%u (fd=%d)\n", 
+            // client_id, addr_str, port, fd);
     
     /* Allocate receive buffer */
     uint8_t* recv_buffer = malloc(TCP_RECV_BUFFER_SIZE);
@@ -120,8 +120,8 @@ static void* tcp_client_handler(void* arg) {
     framing_type_t framing = FRAMING_UNKNOWN;
     client_protocol_t protocol = CLIENT_PROTOCOL_UNKNOWN;
     
-    fprintf(stderr, "[TCP] Client %u: Expected sizes: NewOrder=%zu Cancel=%zu Flush=%zu\n",
-            client_id, sizeof(binary_new_order_t), sizeof(binary_cancel_t), sizeof(binary_flush_t));
+    // fprintf(stderr, "[TCP] Client %u: Expected sizes: NewOrder=%zu Cancel=%zu Flush=%zu\n",
+            // client_id, sizeof(binary_new_order_t), sizeof(binary_cancel_t), sizeof(binary_flush_t));
     
     while (!atomic_load(&g_shutdown)) {
         /* Receive data */
@@ -143,8 +143,8 @@ static void* tcp_client_handler(void* arg) {
         buffer_used += n;
         
         if (!server->config.quiet_mode) {
-            fprintf(stderr, "[TCP] Client %u: Received %zd bytes (buffer: %zu)\n", 
-                    client_id, n, buffer_used);
+            // fprintf(stderr, "[TCP] Client %u: Received %zd bytes (buffer: %zu)\n", 
+                    // client_id, n, buffer_used);
             hex_dump("[TCP] Data", recv_buffer, buffer_used, 48);
         }
         
@@ -202,7 +202,7 @@ static void* tcp_client_handler(void* arg) {
                 const uint8_t* msg_start = ptr + 4;
                 
                 if (!server->config.quiet_mode) {
-                    fprintf(stderr, "[TCP] Client %u: Processing msg len=%u\n", client_id, msg_len);
+                    // fprintf(stderr, "[TCP] Client %u: Processing msg len=%u\n", client_id, msg_len);
                     hex_dump("[TCP] Msg", msg_start, msg_len, 32);
                 }
                 
