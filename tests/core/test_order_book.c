@@ -111,7 +111,7 @@ void test_MatchingBuyAndSell(void) {
 
     /* Find the trade message */
     bool found_trade = false;
-    for (int i = 0; i < output2.count; i++) {
+    for (uint32_t i = 0; i < output2.count; i++) {
         if (output2.messages[i].type == OUTPUT_MSG_TRADE) {
             found_trade = true;
             trade_msg_t* trade = &output2.messages[i].data.trade;
@@ -164,7 +164,7 @@ void test_PartialFill(void) {
 
     /* Should have a trade for 30 shares */
     bool found_trade = false;
-    for (int i = 0; i < output2.count; i++) {
+    for (uint32_t i = 0; i < output2.count; i++) {
         if (output2.messages[i].type == OUTPUT_MSG_TRADE) {
             TEST_ASSERT_EQUAL(30, output2.messages[i].data.trade.quantity);
             found_trade = true;
@@ -210,7 +210,7 @@ void test_MarketOrderBuy(void) {
 
     /* Should match at sell price (100) */
     bool found_trade = false;
-    for (int i = 0; i < output2.count; i++) {
+    for (uint32_t i = 0; i < output2.count; i++) {
         if (output2.messages[i].type == OUTPUT_MSG_TRADE) {
             TEST_ASSERT_EQUAL(100, output2.messages[i].data.trade.price);
             TEST_ASSERT_EQUAL(50, output2.messages[i].data.trade.quantity);
@@ -254,7 +254,7 @@ void test_MarketOrderSell(void) {
 
     /* Should match at buy price (100) */
     bool found_trade = false;
-    for (int i = 0; i < output2.count; i++) {
+    for (uint32_t i = 0; i < output2.count; i++) {
         if (output2.messages[i].type == OUTPUT_MSG_TRADE) {
             TEST_ASSERT_EQUAL(100, output2.messages[i].data.trade.price);
             found_trade = true;
@@ -321,7 +321,7 @@ void test_PriceTimePriority(void) {
 
     /* Should get 3 trades */
     int trade_count = 0;
-    for (int i = 0; i < output.count; i++) {
+    for (uint32_t i = 0; i < output.count; i++) {
         if (output.messages[i].type == OUTPUT_MSG_TRADE) {
             trade_msg_t* trade = &output.messages[i].data.trade;
             if (trade_count == 0) {

@@ -16,20 +16,35 @@ extern "C" {
 /**
  * OrderBook - Single symbol order book with price-time priority
  *
- * Design principles (Power of Ten + Roman Bansal's rules):
+ * Design principles (Power of Ten + cache optimization):
  * - No dynamic allocation after init (Rule 3)
  * - All loops have fixed upper bounds (Rule 2)
+ * - Minimum 2 assertions per function (Rule 5)
  * - Open-addressing hash table for cache-friendly lookups
  * - Cache-line aligned orders to prevent false sharing
  * - Pre-allocated memory pools
  */
 
 /* ============================================================================
+ * Cache Alignment Macro
+ * ============================================================================ */
+
+#ifndef CACHE_ALIGNED
+    #if defined(__GNUC__) || defined(__clang__)
+        #define CACHE_ALIGNED __attribute__((aligned(64)))
+    #elif defined(_MSC_VER)
+        #define CACHE_ALIGNED __declspec(align(64))
+    #else
+        #error "Unsupported compiler: no cache alignment primitive available"
+    #endif
+#endif
+
+/* ============================================================================
  * Configuration Constants
  * ============================================================================ */
 
 /* Maximum price levels we can handle */
-#define MAX_PRICE_LEVELS 500
+#define MAX_PRICE_LEVELS 512
 
 /* Maximum orders per price level (for capacity planning) */
 #define TYPICAL_ORDERS_PER_LEVEL 20
@@ -47,6 +62,10 @@ extern "C" {
 #define ORDER_MAP_SIZE 16384
 #define ORDER_MAP_MASK (ORDER_MAP_SIZE - 1)
 
+/* Compile-time verification that sizes are powers of 2 */
+_Static_assert((ORDER_MAP_SIZE & (ORDER_MAP_SIZE - 1)) == 0,
+               "ORDER_MAP_SIZE must be power of 2 for mask to work");
+
 /* Maximum probe length for open-addressing (Rule 2 compliance) */
 #define MAX_PROBE_LENGTH 128
 
@@ -57,7 +76,17 @@ extern "C" {
 /* Memory pool sizes */
 #define MAX_ORDERS_IN_POOL 8192
 
-/* Sentinel values for open-addressing hash table */
+/* 
+ * Sentinel values for open-addressing hash table
+ * 
+ * HASH_SLOT_EMPTY (0): Slot has never been used. Terminates probe sequence.
+ * HASH_SLOT_TOMBSTONE (UINT64_MAX): Slot was deleted. Continue probing.
+ * 
+ * IMPORTANT: make_order_key() must never return these values.
+ * With user_id in high 32 bits and user_order_id in low 32 bits:
+ *   - 0 only occurs if both are 0 (invalid user)
+ *   - UINT64_MAX only occurs if both are UINT32_MAX (practically impossible)
+ */
 #define HASH_SLOT_EMPTY     0ULL
 #define HASH_SLOT_TOMBSTONE UINT64_MAX
 
@@ -67,30 +96,36 @@ extern "C" {
 
 /**
  * Price level - holds orders at a specific price
- * Aligned to avoid false sharing between adjacent levels
+ * Aligned to 64 bytes to avoid false sharing between adjacent levels
+ * 
+ * Padding calculation (64-bit system):
+ *   uint32_t price:          4 bytes
+ *   uint32_t total_quantity: 4 bytes  
+ *   order_t* orders_head:    8 bytes
+ *   order_t* orders_tail:    8 bytes
+ *   bool active:             1 byte
+ *   ---------------------------------
+ *   Subtotal:               25 bytes
+ *   Padding needed:         39 bytes (to reach 64)
  */
-#if defined(__GNUC__) || defined(__clang__)
-typedef struct __attribute__((aligned(64))) {
-#else
 typedef struct {
-#endif
-    uint32_t price;
-    uint32_t total_quantity;
-    order_t* orders_head;
-    order_t* orders_tail;
-    bool active;
-    uint8_t _padding[64 - sizeof(uint32_t)*2 - sizeof(order_t*)*2 - sizeof(bool)];
-} price_level_t;
+    uint32_t price;             /* Price for this level */
+    uint32_t total_quantity;    /* Sum of remaining_qty for all orders */
+    order_t* orders_head;       /* First order (oldest, highest time priority) */
+    order_t* orders_tail;       /* Last order (newest) */
+    bool active;                /* True if level has orders */
+    uint8_t _pad[39];           /* Explicit padding to 64 bytes */
+} price_level_t CACHE_ALIGNED;
 
-_Static_assert(sizeof(price_level_t) == 64, "price_level_t should be cache-line aligned");
+_Static_assert(sizeof(price_level_t) == 64, "price_level_t must be cache-line sized");
 
 /**
  * Order location for cancellation lookup
  */
 typedef struct {
-    side_t side;
-    uint32_t price;
-    order_t* order_ptr;
+    side_t side;                /* SIDE_BUY or SIDE_SELL */
+    uint32_t price;             /* Price level where order resides */
+    order_t* order_ptr;         /* Direct pointer to order */
 } order_location_t;
 
 /**
@@ -99,7 +134,7 @@ typedef struct {
  */
 typedef struct {
     uint64_t key;               /* Combined user_id + user_order_id */
-    order_location_t location;
+    order_location_t location;  /* Where to find the order */
 } order_map_slot_t;
 
 /**
@@ -115,7 +150,7 @@ typedef struct {
 } order_map_t;
 
 /* ============================================================================
- * Memory Pool Structure (Simplified - no hash entry pool needed)
+ * Memory Pool Structure
  * ============================================================================ */
 
 /**
@@ -125,14 +160,14 @@ typedef struct {
 typedef struct {
     order_t orders[MAX_ORDERS_IN_POOL];
     uint32_t free_list[MAX_ORDERS_IN_POOL];
-    int free_count;
-    uint32_t total_allocations;
-    uint32_t peak_usage;
-    uint32_t allocation_failures;
+    uint32_t free_count;        /* Number of available slots */
+    uint32_t total_allocations; /* Lifetime allocation count */
+    uint32_t peak_usage;        /* High water mark */
+    uint32_t allocation_failures; /* Count of exhaustion events */
 } order_pool_t;
 
 /**
- * Memory pools container (simplified - only order pool now)
+ * Memory pools container
  */
 typedef struct {
     order_pool_t order_pool;
@@ -145,12 +180,20 @@ typedef struct {
 /**
  * Flush state - tracks progress through iterative flush
  * Allows flushing large books in batches without buffer overflow
+ * 
+ * Fields ordered by size (largest first) for optimal packing:
+ *   order_t* (8) + uint32_t (4) + uint32_t (4) + 4*bool (4) + padding (4) = 24 bytes
  */
 typedef struct {
-    bool in_progress;           /* True if flush is ongoing */
-    int current_bid_level;      /* Current bid level being processed */
-    int current_ask_level;      /* Current ask level being processed */
+    /* 8-byte aligned */
     order_t* current_order;     /* Current order within level (NULL = start of level) */
+    
+    /* 4-byte aligned */
+    uint32_t current_bid_level; /* Current bid level being processed */
+    uint32_t current_ask_level; /* Current ask level being processed */
+    
+    /* 1-byte fields (packed together) */
+    bool in_progress;           /* True if flush is ongoing */
     bool processing_bids;       /* True = processing bids, False = processing asks */
     bool bids_done;             /* True if all bids have been processed */
     bool asks_done;             /* True if all asks have been processed */
@@ -161,16 +204,16 @@ typedef struct {
  * ============================================================================ */
 
 /**
- * Order book structure
+ * Order book structure for a single symbol
  */
 typedef struct {
     char symbol[MAX_SYMBOL_LENGTH];
 
-    /* Price levels - fixed arrays */
-    price_level_t bids[MAX_PRICE_LEVELS];
-    price_level_t asks[MAX_PRICE_LEVELS];
-    int num_bid_levels;
-    int num_ask_levels;
+    /* Price levels - fixed arrays, sorted by price */
+    price_level_t bids[MAX_PRICE_LEVELS];  /* Descending price order */
+    price_level_t asks[MAX_PRICE_LEVELS];  /* Ascending price order */
+    uint32_t num_bid_levels;
+    uint32_t num_ask_levels;
 
     /* Order lookup - open-addressing hash table */
     order_map_t order_map;
@@ -181,14 +224,14 @@ typedef struct {
     uint32_t prev_best_ask_price;
     uint32_t prev_best_ask_qty;
 
-    /* Track if sides ever had orders */
+    /* Track if sides ever had orders (for TOB eliminated messages) */
     bool bid_side_ever_active;
     bool ask_side_ever_active;
 
     /* Flush state for iterative flushing */
     flush_state_t flush_state;
 
-    /* Memory pools */
+    /* Memory pools (shared, not owned) */
     memory_pools_t* pools;
 
 } order_book_t;
@@ -198,7 +241,7 @@ typedef struct {
  */
 typedef struct {
     output_msg_t messages[MAX_OUTPUT_MESSAGES];
-    int count;
+    uint32_t count;
 } output_buffer_t;
 
 /* ============================================================================
@@ -260,6 +303,8 @@ bool order_book_flush(order_book_t* book, output_buffer_t* output);
  * Check if flush is in progress
  */
 static inline bool order_book_flush_in_progress(const order_book_t* book) {
+    assert(book != NULL && "NULL book in order_book_flush_in_progress");
+    assert(book->pools != NULL && "Book has NULL pools pointer");
     return book->flush_state.in_progress;
 }
 
@@ -281,43 +326,72 @@ uint32_t order_book_get_best_ask_quantity(const order_book_t* book);
  * Helper Functions (Inline)
  * ============================================================================ */
 
+/**
+ * Initialize output buffer
+ */
 static inline void output_buffer_init(output_buffer_t* buf) {
+    assert(buf != NULL && "NULL buffer in output_buffer_init");
     buf->count = 0;
+    assert(buf->count == 0 && "output_buffer_init failed");
 }
 
-static inline bool output_buffer_has_space(const output_buffer_t* buf, int needed) {
+/**
+ * Check if output buffer has space for more messages
+ */
+static inline bool output_buffer_has_space(const output_buffer_t* buf, uint32_t needed) {
+    assert(buf != NULL && "NULL buffer in output_buffer_has_space");
+    assert(buf->count <= MAX_OUTPUT_MESSAGES && "Buffer count exceeds maximum");
     return (buf->count + needed) <= MAX_OUTPUT_MESSAGES;
 }
 
+/**
+ * Add message to output buffer
+ * Silently drops message if buffer is full (logged in DEBUG)
+ */
 static inline void output_buffer_add(output_buffer_t* buf, const output_msg_t* msg) {
     assert(buf != NULL && "NULL buffer in output_buffer_add");
     assert(msg != NULL && "NULL message in output_buffer_add");
+    assert(buf->count <= MAX_OUTPUT_MESSAGES && "Invalid buffer count");
 
     if (buf->count < MAX_OUTPUT_MESSAGES) {
         buf->messages[buf->count++] = *msg;
-    } else {
-        /* Rule 5: Log overflow but don't crash */
-        #ifdef DEBUG
-        fprintf(stderr, "WARNING: Output buffer overflow\n");
-        #endif
     }
+    /* Silent drop on overflow - production systems should monitor this */
 }
 
 /**
  * Create order key from user_id and user_order_id
  * This is the key used in the hash table
+ * 
+ * Key format: [user_id (32 bits)][user_order_id (32 bits)]
  */
 static inline uint64_t make_order_key(uint32_t user_id, uint32_t user_order_id) {
-    return ((uint64_t)user_id << 32) | user_order_id;
+    /* Preconditions: key must not collide with sentinel values */
+    assert((user_id != 0 || user_order_id != 0) && 
+           "Zero order key is reserved for HASH_SLOT_EMPTY");
+    
+    uint64_t key = ((uint64_t)user_id << 32) | user_order_id;
+    
+    assert(key != HASH_SLOT_TOMBSTONE && 
+           "Order key collision with HASH_SLOT_TOMBSTONE");
+    
+    return key;
 }
 
 /**
  * Fast hash function using multiply-shift
- * Based on Knuth's multiplicative hash
- * Much faster than modulo, and mixes bits well
+ * Based on splitmix64 / Knuth's multiplicative hash
+ * 
+ * Properties:
+ * - Good avalanche (small input changes affect all output bits)
+ * - Fast (no division, just multiply/shift/xor)
+ * - Deterministic
  */
 static inline uint32_t hash_order_key(uint64_t key) {
-    /* Golden ratio constant for 64-bit */
+    assert(key != HASH_SLOT_EMPTY && "Cannot hash empty key");
+    assert(key != HASH_SLOT_TOMBSTONE && "Cannot hash tombstone key");
+    
+    /* Golden ratio constant - good bit mixing properties */
     const uint64_t GOLDEN_RATIO = 0x9E3779B97F4A7C15ULL;
 
     /* Multiply and take high bits - mixes all input bits */

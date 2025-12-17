@@ -94,7 +94,7 @@ static inline void drain_output_buffer(processor_t* processor,
                                        uint64_t* local_trades,
                                        uint64_t* local_queue_full) {
     /* Rule 2: Loop bounded by output_buffer->count <= MAX_OUTPUT_MESSAGES */
-    for (int j = 0; j < output_buffer->count; j++) {
+    for (uint32_t j = 0; j < output_buffer->count; j++) {
         output_msg_t* out_msg = &output_buffer->messages[j];
         uint64_t seq = (*local_sequence)++;
 
@@ -376,7 +376,7 @@ void processor_cancel_client_orders(processor_t* processor, uint32_t client_id) 
                                           (uint64_t)output_buffer.count);
 
     /* Rule 2: Loop bounded by output_buffer.count */
-    for (int i = 0; i < output_buffer.count; i++) {
+    for (uint32_t i = 0; i < output_buffer.count; i++) {
         output_msg_t* out_msg = &output_buffer.messages[i];
 
         output_msg_envelope_t envelope = create_output_envelope(

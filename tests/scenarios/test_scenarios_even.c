@@ -75,7 +75,7 @@ static void process_input(const char* input[], size_t count) {
         matching_engine_process_message(engine, &msg, 0, output);
 
         /* Print outputs for debugging */
-        for (int j = 0; j < output->count; j++) {
+        for (uint32_t j = 0; j < output->count; j++) {
             const char* formatted = message_formatter_format(formatter, &output->messages[j]);
             fprintf(stderr, "%s", formatted);
         }

@@ -121,7 +121,7 @@ void test_MultipleSymbols(void) {
     matching_engine_process_message(engine, &input3, 0, out3);
 
     bool found_trade = false;
-    for (int i = 0; i < out3->count; i++) {
+    for (uint32_t i = 0; i < out3->count; i++) {
         if (out3->messages[i].type == OUTPUT_MSG_TRADE) {
             found_trade = true;
         }
@@ -267,7 +267,7 @@ void test_IsolatedOrderBooks(void) {
     matching_engine_process_message(engine, &input2, 0, out2);
 
     bool found_trade = false;
-    for (int i = 0; i < out2->count; i++) {
+    for (uint32_t i = 0; i < out2->count; i++) {
         if (out2->messages[i].type == OUTPUT_MSG_TRADE) {
             found_trade = true;
         }

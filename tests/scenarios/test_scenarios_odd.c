@@ -86,7 +86,7 @@ static void process_input(const char* input_lines[], int num_lines) {
             matching_engine_process_message(engine, &msg, 0, output);
 
             /* Format each output message */
-            for (int j = 0; j < output->count; j++) {
+            for (uint32_t j = 0; j < output->count; j++) {
                 const char* formatted = message_formatter_format(formatter, &output->messages[j]);
                 strncpy(actual_outputs[actual_output_count], formatted, MAX_OUTPUT_LINE_LENGTH - 1);
                 actual_outputs[actual_output_count][MAX_OUTPUT_LINE_LENGTH - 1] = '\0';
