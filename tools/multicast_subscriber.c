@@ -162,7 +162,7 @@ static void handle_binary_message(const char* data, size_t len) {
                 uint32_t order_sell = READ_U32(data + 22);
                 uint32_t price = READ_U32(data + 26);
                 uint32_t qty = READ_U32(data + 30);
-                printf("[TRADE] %s, price=%u, qty=%u, buy(user=%u,order=%u), sell(user=%u,order=%u)\n",
+                printf("[TRADE] %s, price=%.3f, qty=%u, buy(user=%u,order=%u), sell(user=%u,order=%u)\n",
                        symbol, price / PRICE_MULT, qty, user_buy, order_buy, user_sell, order_sell);
             } else {
                 printf("[TRADE] (incomplete: %zu bytes)\n", len);
@@ -181,7 +181,7 @@ static void handle_binary_message(const char* data, size_t len) {
                 if (price == 0 && qty == 0) {
                     printf("[TOB] %s, %c: empty\n", symbol, side);
                 } else {
-                    printf("[TOB] %s, %c: %u @ %u\n", symbol, side, qty, price / PRICE_MULT);
+                    printf("[TOB] %s, %c: %u @ %.3f\n", symbol, side, qty, price / PRICE_MULT);
                 }
             } else {
                 printf("[TOB] (incomplete: %zu bytes)\n", len);
