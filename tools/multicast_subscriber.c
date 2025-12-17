@@ -121,6 +121,8 @@ static void handle_binary_message(const char* data, size_t len) {
     // Helper to read big-endian uint32
     #define READ_U32(ptr) ((uint32_t)((uint8_t)(ptr)[0] << 24 | (uint8_t)(ptr)[1] << 16 | (uint8_t)(ptr)[2] << 8 | (uint8_t)(ptr)[3]))
 
+    #define PRICE_MULT 1000.0
+
     switch (msg_type) {
         case 'A': {  // ACK: magic(1) + type(1) + symbol(8) + user_id(4) + order_id(4) = 18
             if (len >= 18) {
@@ -161,7 +163,7 @@ static void handle_binary_message(const char* data, size_t len) {
                 uint32_t price = READ_U32(data + 26);
                 uint32_t qty = READ_U32(data + 30);
                 printf("[TRADE] %s, price=%u, qty=%u, buy(user=%u,order=%u), sell(user=%u,order=%u)\n",
-                       symbol, price, qty, user_buy, order_buy, user_sell, order_sell);
+                       symbol, price / PRICE_MULT, qty, user_buy, order_buy, user_sell, order_sell);
             } else {
                 printf("[TRADE] (incomplete: %zu bytes)\n", len);
             }
@@ -179,7 +181,7 @@ static void handle_binary_message(const char* data, size_t len) {
                 if (price == 0 && qty == 0) {
                     printf("[TOB] %s, %c: empty\n", symbol, side);
                 } else {
-                    printf("[TOB] %s, %c: %u @ %u\n", symbol, side, qty, price);
+                    printf("[TOB] %s, %c: %u @ %u\n", symbol, side, qty, price / PRICE_MULT);
                 }
             } else {
                 printf("[TOB] (incomplete: %zu bytes)\n", len);
@@ -192,6 +194,7 @@ static void handle_binary_message(const char* data, size_t len) {
     }
 
     #undef READ_U32
+    #undef PRICE_MULT
 
     fflush(stdout);
     atomic_fetch_add(&g_binary_messages, 1);
