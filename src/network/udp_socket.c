@@ -14,11 +14,12 @@
 
 #include "network/udp_transport.h"
 #include "network/transport_types.h"
+#include "protocol/message_types.h"
+#include "protocol/message_types_extended.h"
 #include "protocol/csv/message_parser.h"
 #include "protocol/binary/binary_message_parser.h"
 #include "protocol/symbol_router.h"
 #include "threading/queues.h"
-#include "platform/timestamps.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,19 +53,16 @@ _Static_assert((CLIENT_HASH_SIZE & CLIENT_HASH_MASK) == 0,
                "CLIENT_HASH_SIZE must be power of 2");
 
 /* ============================================================================
- * Client Entry (32 bytes for cache efficiency)
+ * Client Entry
  * ============================================================================ */
 
 typedef struct {
-    int64_t last_seen;              /* 8 bytes */
-    transport_addr_t addr;          /* 8 bytes */
-    uint32_t client_id;             /* 4 bytes */
-    transport_protocol_t protocol;  /* 1 byte */
-    bool active;                    /* 1 byte */
-    uint8_t _pad[10];               /* 10 bytes → 32 total */
+    int64_t last_seen;
+    transport_addr_t addr;
+    uint32_t client_id;
+    transport_protocol_t protocol;
+    bool active;
 } client_entry_t;
-
-_Static_assert(sizeof(client_entry_t) == 32, "client_entry_t must be 32 bytes");
 
 /* ============================================================================
  * Transport Structure
@@ -101,6 +99,9 @@ struct udp_transport {
     /* Statistics */
     transport_stats_t stats;
     
+    /* Sequence number */
+    uint64_t sequence;
+    
     /* Thread-local parsers (used only in recv thread) */
     message_parser_t csv_parser;
     binary_message_parser_t binary_parser;
@@ -113,31 +114,6 @@ struct udp_transport {
 static uint32_t hash_addr(const transport_addr_t* addr) {
     assert(addr != NULL && "NULL addr");
     return transport_addr_hash(addr);
-}
-
-static client_entry_t* find_client_by_addr(udp_transport_t* t,
-                                            const transport_addr_t* addr) {
-    assert(t != NULL && "NULL transport");
-    assert(addr != NULL && "NULL addr");
-    
-    uint32_t hash = hash_addr(addr);
-    uint32_t index = hash & CLIENT_HASH_MASK;
-    
-    for (uint32_t probe = 0; probe < MAX_PROBE_LENGTH; probe++) {
-        client_entry_t* entry = &t->clients[index];
-        
-        if (!entry->active) {
-            return NULL;  /* Empty slot = not found */
-        }
-        
-        if (transport_addr_equal(&entry->addr, addr)) {
-            return entry;
-        }
-        
-        index = (index + 1) & CLIENT_HASH_MASK;
-    }
-    
-    return NULL;  /* Probe limit reached */
 }
 
 static client_entry_t* find_client_by_id(udp_transport_t* t, uint32_t client_id) {
@@ -402,12 +378,14 @@ static void* recv_thread_func(void* arg) {
         
         t->stats.rx_messages++;
         
-        /* Create envelope */
-        input_msg_envelope_t envelope = {
-            .msg = msg,
-            .client_id = client_id,
-            .timestamp = get_timestamp()
-        };
+        /* Create envelope using project's helper function */
+        udp_client_addr_t udp_addr;
+        udp_addr.addr = src.ip_addr;
+        udp_addr.port = src.port;
+        udp_addr._pad = 0;
+        
+        uint64_t seq = t->sequence++;
+        input_msg_envelope_t envelope = create_input_envelope_udp(&msg, client_id, &udp_addr, seq);
         
         /* Route to appropriate queue */
         input_envelope_queue_t* target = t->input_queue_0;
@@ -416,9 +394,9 @@ static void* recv_thread_func(void* arg) {
             /* Determine processor based on symbol */
             const char* symbol = NULL;
             
-            if (msg.type == MSG_NEW_ORDER) {
+            if (msg.type == INPUT_MSG_NEW_ORDER) {
                 symbol = msg.data.new_order.symbol;
-            } else if (msg.type == MSG_CANCEL) {
+            } else if (msg.type == INPUT_MSG_CANCEL) {
                 symbol = msg.data.cancel.symbol;
             }
             
@@ -428,7 +406,7 @@ static void* recv_thread_func(void* arg) {
             }
             
             /* Flush goes to both queues */
-            if (msg.type == MSG_FLUSH) {
+            if (msg.type == INPUT_MSG_FLUSH) {
                 input_envelope_queue_enqueue(t->input_queue_0, &envelope);
                 input_envelope_queue_enqueue(t->input_queue_1, &envelope);
                 continue;
@@ -475,7 +453,8 @@ udp_transport_t* udp_transport_create(const udp_transport_config_t* config,
     t->input_queue_0 = input_queue_0;
     t->input_queue_1 = input_queue_1;
     t->shutdown_flag = shutdown_flag;
-    t->next_client_id = 1;
+    t->next_client_id = CLIENT_ID_UDP_BASE + 1;  /* UDP clients start after UDP_BASE */
+    t->sequence = 0;
     
     atomic_init(&t->running, false);
     atomic_init(&t->started, false);

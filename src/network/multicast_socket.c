@@ -14,6 +14,8 @@
 
 #include "network/multicast_transport.h"
 #include "network/transport_types.h"
+#include "protocol/message_types.h"
+#include "protocol/message_types_extended.h"
 #include "protocol/csv/message_formatter.h"
 #include "protocol/binary/binary_message_formatter.h"
 #include "threading/queues.h"
