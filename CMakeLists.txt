@@ -33,6 +33,12 @@ endif()
 # Valgrind-compatible build option (disables AVX-512)
 option(VALGRIND_BUILD "Build without AVX-512 for Valgrind compatibility" OFF)
 
+# ============================================================================
+# DPDK Kernel Bypass Option
+# ============================================================================
+option(USE_DPDK "Enable DPDK kernel bypass for UDP/multicast" OFF)
+set(DPDK_VDEV "" CACHE STRING "DPDK virtual device type (null, ring, or empty for physical)")
+
 # Platform-specific flags
 if(UNIX AND NOT APPLE)
     if(VALGRIND_BUILD)
@@ -40,6 +46,10 @@ if(UNIX AND NOT APPLE)
         # Valgrind 3.18 doesn't support AVX-512 instructions
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=x86-64-v3")
         message(STATUS "Valgrind build: using -march=x86-64-v3 (no AVX-512)")
+    elseif(USE_DPDK)
+        # DPDK benefits from native optimizations
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+        message(STATUS "DPDK build: using -march=native")
     else()
         set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
     endif()
@@ -51,7 +61,74 @@ endif()
 # Include directories
 include_directories(include)
 
+# ============================================================================
+# DPDK Configuration
+# ============================================================================
+if(USE_DPDK)
+    message(STATUS "========================================")
+    message(STATUS "Building with DPDK kernel bypass")
+    message(STATUS "========================================")
+    
+    # DPDK only works on Linux
+    if(NOT UNIX OR APPLE)
+        message(FATAL_ERROR "DPDK is only supported on Linux")
+    endif()
+    
+    # Find DPDK via pkg-config
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(DPDK REQUIRED libdpdk)
+    
+    if(NOT DPDK_FOUND)
+        message(FATAL_ERROR "DPDK not found! Install with: sudo apt install dpdk dpdk-dev libdpdk-dev")
+    endif()
+    
+    message(STATUS "DPDK version: ${DPDK_VERSION}")
+    message(STATUS "DPDK include: ${DPDK_INCLUDE_DIRS}")
+    
+    # Virtual device configuration
+    if(DPDK_VDEV STREQUAL "null")
+        message(STATUS "Using virtual device: net_null (no physical NIC)")
+        add_definitions(-DDPDK_USE_VDEV_NULL=1)
+        set(DPDK_VDEV_DESC "net_null (virtual)")
+    elseif(DPDK_VDEV STREQUAL "ring")
+        message(STATUS "Using virtual device: net_ring (loopback)")
+        add_definitions(-DDPDK_USE_VDEV_RING=1)
+        set(DPDK_VDEV_DESC "net_ring (virtual)")
+    else()
+        message(STATUS "Using physical NIC (bind with dpdk-devbind.py)")
+        set(DPDK_VDEV_DESC "physical NIC")
+    endif()
+    
+    # DPDK compile definitions
+    add_definitions(-DUSE_DPDK=1)
+    
+    # Disable some warnings that DPDK headers trigger
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-declarations")
+    
+    # DPDK network sources
+    set(DPDK_SOURCES
+        src/network/dpdk/dpdk_init.c
+        src/network/dpdk/dpdk_udp.c
+        src/network/dpdk/dpdk_multicast.c
+    )
+    
+    set(NETWORK_TRANSPORT_SOURCES ${DPDK_SOURCES})
+    
+else()
+    message(STATUS "Building with standard sockets")
+    add_definitions(-DUSE_DPDK=0)
+    set(DPDK_VDEV_DESC "N/A (sockets)")
+    
+    # Socket-based transport sources
+    set(NETWORK_TRANSPORT_SOURCES
+        src/network/udp_socket.c
+        src/network/multicast_socket.c
+    )
+endif()
+
+# ============================================================================
 # Library sources (core functionality)
+# ============================================================================
 set(LIB_SOURCES
     src/core/order_book.c
     src/core/matching_engine.c
@@ -78,20 +155,59 @@ set(LIB_SOURCES
     src/modes/unified_tcp.c
     src/modes/unified_udp.c
     src/modes/unified_router.c
+    ${NETWORK_TRANSPORT_SOURCES}
 )
 
 # Create static library from core sources
 add_library(matching_engine_lib STATIC ${LIB_SOURCES})
 target_link_libraries(matching_engine_lib PRIVATE pthread m)
 
+# Add DPDK includes and libs to the library
+if(USE_DPDK)
+    target_include_directories(matching_engine_lib PRIVATE ${DPDK_INCLUDE_DIRS})
+    target_link_libraries(matching_engine_lib PRIVATE ${DPDK_LIBRARIES})
+    target_compile_options(matching_engine_lib PRIVATE ${DPDK_CFLAGS_OTHER})
+endif()
+
 # Main executable (slim dispatcher)
 add_executable(matching_engine src/main.c)
 target_link_libraries(matching_engine PRIVATE matching_engine_lib pthread m)
 
+if(USE_DPDK)
+    target_include_directories(matching_engine PRIVATE ${DPDK_INCLUDE_DIRS})
+    target_link_libraries(matching_engine PRIVATE ${DPDK_LIBRARIES})
+endif()
+
+# ============================================================================
+# DPDK Test Executable (only when USE_DPDK=ON)
+# ============================================================================
+if(USE_DPDK)
+    add_executable(dpdk_test tests/test_dpdk.c)
+    target_include_directories(dpdk_test PRIVATE 
+        include 
+        ${DPDK_INCLUDE_DIRS}
+    )
+    target_link_libraries(dpdk_test PRIVATE 
+        matching_engine_lib
+        ${DPDK_LIBRARIES}
+        pthread
+        m
+    )
+    target_compile_definitions(dpdk_test PRIVATE USE_DPDK=1)
+    
+    # DPDK test target
+    add_custom_target(test-dpdk
+        COMMAND ${CMAKE_COMMAND} -E echo "Running DPDK transport tests..."
+        COMMAND ${CMAKE_COMMAND} -E echo "Note: Requires sudo for huge pages access"
+        COMMAND sudo ${CMAKE_BINARY_DIR}/dpdk_test
+        DEPENDS dpdk_test
+        COMMENT "Running DPDK tests (requires sudo)"
+    )
+endif()
+
 # ============================================================================
 # Tools
 # ============================================================================
-
 add_executable(binary_client tools/binary_client.c)
 target_link_libraries(binary_client PRIVATE pthread)
 
@@ -106,7 +222,6 @@ target_link_libraries(multicast_subscriber PRIVATE pthread)
 # ============================================================================
 # Matching Engine Client
 # ============================================================================
-
 # Client library sources
 set(CLIENT_LIB_SOURCES
     tools/client/transport.c
@@ -144,7 +259,6 @@ target_link_libraries(matching_engine_client PRIVATE
 # ============================================================================
 # Unity Test Framework
 # ============================================================================
-
 set(UNITY_SOURCES tests/unity.c)
 add_library(unity STATIC ${UNITY_SOURCES})
 target_include_directories(unity PUBLIC tests)
@@ -176,6 +290,11 @@ target_include_directories(matching_engine_tests PRIVATE
     tests
 )
 
+if(USE_DPDK)
+    target_include_directories(matching_engine_tests PRIVATE ${DPDK_INCLUDE_DIRS})
+    target_link_libraries(matching_engine_tests PRIVATE ${DPDK_LIBRARIES})
+endif()
+
 # Test-specific compile options (platform-aware)
 if(MCMODEL_SUPPORTED)
     target_compile_options(matching_engine_tests PRIVATE -g -O0 -mcmodel=medium)
@@ -191,7 +310,6 @@ add_test(NAME UnitTests COMMAND matching_engine_tests)
 # ============================================================================
 # Test Targets
 # ============================================================================
-
 add_custom_target(test-unit
     COMMAND matching_engine_tests
     DEPENDS matching_engine_tests
@@ -201,7 +319,6 @@ add_custom_target(test-unit
 # ============================================================================
 # Run Targets (Unified Server)
 # ============================================================================
-
 # Default run - all transports, CSV format, dual processor
 add_custom_target(run
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine
@@ -237,10 +354,26 @@ add_custom_target(run-single
     COMMENT "Running unified server with single processor"
 )
 
+# DPDK run target (requires sudo)
+if(USE_DPDK)
+    add_custom_target(run-dpdk
+        COMMAND ${CMAKE_COMMAND} -E echo "Starting DPDK server (requires sudo)..."
+        COMMAND sudo ${CMAKE_BINARY_DIR}/matching_engine
+        DEPENDS matching_engine
+        COMMENT "Running unified server with DPDK (requires sudo for huge pages)"
+    )
+    
+    add_custom_target(run-dpdk-benchmark
+        COMMAND ${CMAKE_COMMAND} -E echo "Starting DPDK benchmark server (requires sudo)..."
+        COMMAND sudo ${CMAKE_BINARY_DIR}/matching_engine --binary --quiet
+        DEPENDS matching_engine
+        COMMENT "Running DPDK benchmark (requires sudo)"
+    )
+endif()
+
 # ============================================================================
 # Client Run Targets
 # ============================================================================
-
 add_custom_target(run-client
     COMMAND ${CMAKE_BINARY_DIR}/matching_engine_client localhost 1234
     DEPENDS matching_engine_client
@@ -262,7 +395,6 @@ add_custom_target(client-scenarios
 # ============================================================================
 # Memory Analysis Targets
 # ============================================================================
-
 if(UNIX AND NOT APPLE)
     add_custom_target(valgrind
         COMMAND ${CMAKE_COMMAND} -E echo "Starting valgrind test - auto-stop after 5 seconds..."
@@ -286,7 +418,6 @@ endif()
 # ============================================================================
 # Information Targets
 # ============================================================================
-
 add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo "Matching Engine - Build Configuration"
@@ -298,6 +429,10 @@ add_custom_target(info
     COMMAND ${CMAKE_COMMAND} -E echo "C Flags:        ${CMAKE_C_FLAGS}"
     COMMAND ${CMAKE_COMMAND} -E echo "Build dir:      ${CMAKE_BINARY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E echo "mcmodel:        ${MCMODEL_SUPPORTED}"
+    COMMAND ${CMAKE_COMMAND} -E echo ""
+    COMMAND ${CMAKE_COMMAND} -E echo "DPDK Settings:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  USE_DPDK:     ${USE_DPDK}"
+    COMMAND ${CMAKE_COMMAND} -E echo "  DPDK_VDEV:    ${DPDK_VDEV_DESC}"
     COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Unified Server (always starts all transports):"
@@ -323,6 +458,7 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Testing:"
     COMMAND ${CMAKE_COMMAND} -E echo "  test-unit              - Run unit tests"
+    COMMAND ${CMAKE_COMMAND} -E echo "  test-dpdk              - Run DPDK tests (if USE_DPDK=ON)"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running Server:"
     COMMAND ${CMAKE_COMMAND} -E echo "  run                    - Run server (CSV, dual processor)"
@@ -330,6 +466,7 @@ add_custom_target(help-targets
     COMMAND ${CMAKE_COMMAND} -E echo "  run-quiet              - Run server (quiet/benchmark)"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-benchmark          - Run server (binary + quiet)"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-single             - Run server (single processor)"
+    COMMAND ${CMAKE_COMMAND} -E echo "  run-dpdk               - Run with DPDK (if USE_DPDK=ON)"
     COMMAND ${CMAKE_COMMAND} -E echo ""
     COMMAND ${CMAKE_COMMAND} -E echo "Running Client:"
     COMMAND ${CMAKE_COMMAND} -E echo "  run-client             - Run client (interactive)"
@@ -348,7 +485,6 @@ add_custom_target(help-targets
 # ============================================================================
 # Summary
 # ============================================================================
-
 message(STATUS "========================================")
 message(STATUS "Matching Engine - CMake Configuration")
 message(STATUS "========================================")
@@ -357,6 +493,15 @@ message(STATUS "Compiler:      ${CMAKE_C_COMPILER}")
 message(STATUS "Build type:    ${CMAKE_BUILD_TYPE}")
 message(STATUS "C Standard:    C${CMAKE_C_STANDARD}")
 message(STATUS "mcmodel:       ${MCMODEL_SUPPORTED}")
+message(STATUS "")
+message(STATUS "Network Backend:")
+if(USE_DPDK)
+    message(STATUS "  Mode:        DPDK kernel bypass")
+    message(STATUS "  DPDK Ver:    ${DPDK_VERSION}")
+    message(STATUS "  Device:      ${DPDK_VDEV_DESC}")
+else()
+    message(STATUS "  Mode:        Standard sockets")
+endif()
 message(STATUS "")
 message(STATUS "Unified Server Ports:")
 message(STATUS "  TCP:         1234")
