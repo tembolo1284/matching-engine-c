@@ -293,18 +293,7 @@ static void* publisher_thread_func(void* arg) {
  * Public API Implementation
  * ============================================================================ */
 
-void multicast_transport_config_init(multicast_transport_config_t* config) {
-    assert(config != NULL && "NULL config");
-    
-    memset(config, 0, sizeof(*config));
-    config->group_addr = NULL;
-    config->port = 0;
-    config->use_binary = false;
-    config->ttl = MULTICAST_TTL_LOCAL;
-    config->loopback = false;
-    config->interface_addr = NULL;
-    config->tx_buffer_size = 4 * 1024 * 1024;  /* 4 MB */
-}
+/* NOTE: multicast_transport_config_init is defined as static inline in multicast_transport.h */
 
 multicast_transport_t* multicast_transport_create(
     const multicast_transport_config_t* config,
