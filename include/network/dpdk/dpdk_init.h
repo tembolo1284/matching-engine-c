@@ -2,128 +2,136 @@
 #define DPDK_INIT_H
 
 #include "network/dpdk/dpdk_config.h"
-
-#include <stdbool.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * DPDK Initialization API
+ * DPDK Initialization Module
  *
- * This module handles:
- *   - EAL (Environment Abstraction Layer) initialization
- *   - Memory pool creation for packet buffers
- *   - Port configuration and startup
- *   - Virtual device setup for testing
- *
- * Usage:
- *   dpdk_config_t config;
- *   dpdk_config_init(&config);
- *   config.vdev_type = DPDK_VDEV_NULL;  // For testing without NIC
- *
- *   if (!dpdk_init(&config)) {
- *       // Handle error
- *   }
- *
- *   // ... use DPDK ...
- *
- *   dpdk_cleanup();
+ * Handles DPDK EAL initialization, port configuration, and mempool setup.
+ * This module provides a simplified interface for setting up DPDK for
+ * UDP/multicast packet I/O.
  */
 
 /* ============================================================================
- * Initialization / Cleanup
+ * Forward Declarations
+ * ============================================================================ */
+
+struct rte_mempool;
+
+/* ============================================================================
+ * Global State (set during init, read-only after)
+ * ============================================================================ */
+
+/**
+ * Get the global mempool for packet buffers
+ *
+ * @return Pointer to mempool, or NULL if not initialized
+ */
+struct rte_mempool* dpdk_get_mempool(void);
+
+/**
+ * Get the configured port ID
+ *
+ * @return Port ID (0 if using virtual device)
+ */
+uint16_t dpdk_get_port_id(void);
+
+/**
+ * Check if DPDK has been initialized
+ *
+ * @return true if dpdk_init() has been called successfully
+ */
+bool dpdk_is_initialized(void);
+
+/* ============================================================================
+ * Initialization API
  * ============================================================================ */
 
 /**
  * Initialize DPDK environment
  *
- * Must be called before any other DPDK functions.
- * Initializes EAL, creates mempool, configures ports.
+ * This function:
+ * 1. Initializes EAL with provided arguments
+ * 2. Creates packet mempool
+ * 3. Configures the specified port (or virtual device)
+ * 4. Starts the port
  *
- * @param config Configuration (NULL = use defaults)
- * @return true on success, false on error
+ * @param config Configuration structure
+ * @return 0 on success, negative error code on failure
  *
- * Postconditions on success:
- * - EAL initialized
- * - Mempool created
- * - Port(s) configured and started
+ * Error codes:
+ *   -1: EAL init failed
+ *   -2: No ports available
+ *   -3: Mempool creation failed
+ *   -4: Port configuration failed
+ *   -5: RX queue setup failed
+ *   -6: TX queue setup failed
+ *   -7: Port start failed
  */
-bool dpdk_init(const dpdk_config_t* config);
+int dpdk_init(const dpdk_config_t* config);
 
 /**
- * Cleanup DPDK environment
+ * Initialize DPDK with default configuration
  *
- * Stops ports, frees mempool, cleans up EAL.
- * Safe to call multiple times.
+ * Convenience function that uses default settings.
+ *
+ * @return 0 on success, negative error code on failure
+ */
+int dpdk_init_default(void);
+
+/**
+ * Initialize DPDK with virtual device (for testing)
+ *
+ * Uses net_null or net_ring virtual device for testing
+ * without a physical NIC.
+ *
+ * @param vdev_type Type of virtual device
+ * @return 0 on success, negative error code on failure
+ */
+int dpdk_init_vdev(dpdk_vdev_type_t vdev_type);
+
+/**
+ * Cleanup DPDK resources
+ *
+ * Stops port, frees mempool, and cleans up EAL.
+ * Should be called before program exit.
  */
 void dpdk_cleanup(void);
 
-/**
- * Check if DPDK is initialized
- */
-bool dpdk_is_initialized(void);
-
 /* ============================================================================
- * Port Information
+ * Port Control
  * ============================================================================ */
 
 /**
- * Get number of available ports
+ * Stop the DPDK port
+ *
+ * Stops packet reception/transmission on the port.
  */
-uint16_t dpdk_get_port_count(void);
+void dpdk_port_stop(void);
 
 /**
- * Get the active port ID
+ * Start the DPDK port
  *
- * @return Port ID, or UINT16_MAX if no port configured
+ * Resumes packet reception/transmission.
+ *
+ * @return 0 on success, negative on failure
  */
-uint16_t dpdk_get_active_port(void);
+int dpdk_port_start(void);
 
 /**
- * Check if port is up and running
- */
-bool dpdk_port_is_up(uint16_t port_id);
-
-/**
- * Get port MAC address
+ * Get port link status
  *
- * @param port_id Port ID
- * @param mac_out Output: 6-byte MAC address
- * @return true on success
+ * @param link_up Output: true if link is up
+ * @param speed_mbps Output: link speed in Mbps
+ * @return 0 on success, negative on failure
  */
-bool dpdk_get_port_mac(uint16_t port_id, uint8_t mac_out[6]);
-
-/* ============================================================================
- * Mempool Access
- * ============================================================================ */
-
-/**
- * Opaque mempool handle
- *
- * In real DPDK code, this would be struct rte_mempool*.
- * We use void* for the header to avoid requiring DPDK headers.
- */
-typedef void* dpdk_mempool_t;
-
-/**
- * Get the packet mempool
- *
- * Used for allocating packet buffers (mbufs).
- *
- * @return Mempool handle, or NULL if not initialized
- */
-dpdk_mempool_t dpdk_get_mempool(void);
-
-/**
- * Get mempool statistics
- *
- * @param free_count Output: number of free mbufs
- * @param in_use_count Output: number of mbufs in use
- */
-void dpdk_get_mempool_stats(uint32_t* free_count, uint32_t* in_use_count);
+int dpdk_port_link_status(bool* link_up, uint32_t* speed_mbps);
 
 /* ============================================================================
  * Statistics
@@ -132,21 +140,22 @@ void dpdk_get_mempool_stats(uint32_t* free_count, uint32_t* in_use_count);
 /**
  * Get port statistics
  *
- * @param port_id Port ID
- * @param stats Output: statistics structure
- * @return true on success
+ * @param stats Output structure for statistics
+ * @return 0 on success, negative on failure
  */
-bool dpdk_get_port_stats(uint16_t port_id, dpdk_stats_t* stats);
+int dpdk_get_stats(dpdk_stats_t* stats);
 
 /**
  * Reset port statistics
+ *
+ * @return 0 on success, negative on failure
  */
-void dpdk_reset_port_stats(uint16_t port_id);
+int dpdk_reset_stats(void);
 
 /**
  * Print port statistics to stderr
  */
-void dpdk_print_stats(uint16_t port_id);
+void dpdk_print_stats(void);
 
 /* ============================================================================
  * Utility Functions
@@ -154,24 +163,18 @@ void dpdk_print_stats(uint16_t port_id);
 
 /**
  * Get DPDK version string
+ *
+ * @return Version string (e.g., "DPDK 21.11.0")
  */
-const char* dpdk_get_version(void);
+const char* dpdk_version(void);
 
 /**
- * Convert MAC address to string
+ * Get error string for error code
  *
- * @param mac 6-byte MAC address
- * @param buf Output buffer (at least 18 bytes)
- * @return buf
+ * @param errnum Error code from dpdk_init()
+ * @return Human-readable error string
  */
-char* dpdk_mac_to_str(const uint8_t mac[6], char* buf);
-
-/**
- * Get lcore ID for current thread
- *
- * @return lcore ID, or UINT32_MAX if not an EAL thread
- */
-uint32_t dpdk_get_lcore_id(void);
+const char* dpdk_strerror(int errnum);
 
 #ifdef __cplusplus
 }
@@ -181,128 +184,136 @@ uint32_t dpdk_get_lcore_id(void);
 #define DPDK_INIT_H
 
 #include "network/dpdk/dpdk_config.h"
-
-#include <stdbool.h>
 #include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * DPDK Initialization API
+ * DPDK Initialization Module
  *
- * This module handles:
- *   - EAL (Environment Abstraction Layer) initialization
- *   - Memory pool creation for packet buffers
- *   - Port configuration and startup
- *   - Virtual device setup for testing
- *
- * Usage:
- *   dpdk_config_t config;
- *   dpdk_config_init(&config);
- *   config.vdev_type = DPDK_VDEV_NULL;  // For testing without NIC
- *
- *   if (!dpdk_init(&config)) {
- *       // Handle error
- *   }
- *
- *   // ... use DPDK ...
- *
- *   dpdk_cleanup();
+ * Handles DPDK EAL initialization, port configuration, and mempool setup.
+ * This module provides a simplified interface for setting up DPDK for
+ * UDP/multicast packet I/O.
  */
 
 /* ============================================================================
- * Initialization / Cleanup
+ * Forward Declarations
+ * ============================================================================ */
+
+struct rte_mempool;
+
+/* ============================================================================
+ * Global State (set during init, read-only after)
+ * ============================================================================ */
+
+/**
+ * Get the global mempool for packet buffers
+ *
+ * @return Pointer to mempool, or NULL if not initialized
+ */
+struct rte_mempool* dpdk_get_mempool(void);
+
+/**
+ * Get the configured port ID
+ *
+ * @return Port ID (0 if using virtual device)
+ */
+uint16_t dpdk_get_port_id(void);
+
+/**
+ * Check if DPDK has been initialized
+ *
+ * @return true if dpdk_init() has been called successfully
+ */
+bool dpdk_is_initialized(void);
+
+/* ============================================================================
+ * Initialization API
  * ============================================================================ */
 
 /**
  * Initialize DPDK environment
  *
- * Must be called before any other DPDK functions.
- * Initializes EAL, creates mempool, configures ports.
+ * This function:
+ * 1. Initializes EAL with provided arguments
+ * 2. Creates packet mempool
+ * 3. Configures the specified port (or virtual device)
+ * 4. Starts the port
  *
- * @param config Configuration (NULL = use defaults)
- * @return true on success, false on error
+ * @param config Configuration structure
+ * @return 0 on success, negative error code on failure
  *
- * Postconditions on success:
- * - EAL initialized
- * - Mempool created
- * - Port(s) configured and started
+ * Error codes:
+ *   -1: EAL init failed
+ *   -2: No ports available
+ *   -3: Mempool creation failed
+ *   -4: Port configuration failed
+ *   -5: RX queue setup failed
+ *   -6: TX queue setup failed
+ *   -7: Port start failed
  */
-bool dpdk_init(const dpdk_config_t* config);
+int dpdk_init(const dpdk_config_t* config);
 
 /**
- * Cleanup DPDK environment
+ * Initialize DPDK with default configuration
  *
- * Stops ports, frees mempool, cleans up EAL.
- * Safe to call multiple times.
+ * Convenience function that uses default settings.
+ *
+ * @return 0 on success, negative error code on failure
+ */
+int dpdk_init_default(void);
+
+/**
+ * Initialize DPDK with virtual device (for testing)
+ *
+ * Uses net_null or net_ring virtual device for testing
+ * without a physical NIC.
+ *
+ * @param vdev_type Type of virtual device
+ * @return 0 on success, negative error code on failure
+ */
+int dpdk_init_vdev(dpdk_vdev_type_t vdev_type);
+
+/**
+ * Cleanup DPDK resources
+ *
+ * Stops port, frees mempool, and cleans up EAL.
+ * Should be called before program exit.
  */
 void dpdk_cleanup(void);
 
-/**
- * Check if DPDK is initialized
- */
-bool dpdk_is_initialized(void);
-
 /* ============================================================================
- * Port Information
+ * Port Control
  * ============================================================================ */
 
 /**
- * Get number of available ports
+ * Stop the DPDK port
+ *
+ * Stops packet reception/transmission on the port.
  */
-uint16_t dpdk_get_port_count(void);
+void dpdk_port_stop(void);
 
 /**
- * Get the active port ID
+ * Start the DPDK port
  *
- * @return Port ID, or UINT16_MAX if no port configured
+ * Resumes packet reception/transmission.
+ *
+ * @return 0 on success, negative on failure
  */
-uint16_t dpdk_get_active_port(void);
+int dpdk_port_start(void);
 
 /**
- * Check if port is up and running
- */
-bool dpdk_port_is_up(uint16_t port_id);
-
-/**
- * Get port MAC address
+ * Get port link status
  *
- * @param port_id Port ID
- * @param mac_out Output: 6-byte MAC address
- * @return true on success
+ * @param link_up Output: true if link is up
+ * @param speed_mbps Output: link speed in Mbps
+ * @return 0 on success, negative on failure
  */
-bool dpdk_get_port_mac(uint16_t port_id, uint8_t mac_out[6]);
-
-/* ============================================================================
- * Mempool Access
- * ============================================================================ */
-
-/**
- * Opaque mempool handle
- *
- * In real DPDK code, this would be struct rte_mempool*.
- * We use void* for the header to avoid requiring DPDK headers.
- */
-typedef void* dpdk_mempool_t;
-
-/**
- * Get the packet mempool
- *
- * Used for allocating packet buffers (mbufs).
- *
- * @return Mempool handle, or NULL if not initialized
- */
-dpdk_mempool_t dpdk_get_mempool(void);
-
-/**
- * Get mempool statistics
- *
- * @param free_count Output: number of free mbufs
- * @param in_use_count Output: number of mbufs in use
- */
-void dpdk_get_mempool_stats(uint32_t* free_count, uint32_t* in_use_count);
+int dpdk_port_link_status(bool* link_up, uint32_t* speed_mbps);
 
 /* ============================================================================
  * Statistics
@@ -311,21 +322,22 @@ void dpdk_get_mempool_stats(uint32_t* free_count, uint32_t* in_use_count);
 /**
  * Get port statistics
  *
- * @param port_id Port ID
- * @param stats Output: statistics structure
- * @return true on success
+ * @param stats Output structure for statistics
+ * @return 0 on success, negative on failure
  */
-bool dpdk_get_port_stats(uint16_t port_id, dpdk_stats_t* stats);
+int dpdk_get_stats(dpdk_stats_t* stats);
 
 /**
  * Reset port statistics
+ *
+ * @return 0 on success, negative on failure
  */
-void dpdk_reset_port_stats(uint16_t port_id);
+int dpdk_reset_stats(void);
 
 /**
  * Print port statistics to stderr
  */
-void dpdk_print_stats(uint16_t port_id);
+void dpdk_print_stats(void);
 
 /* ============================================================================
  * Utility Functions
@@ -333,24 +345,18 @@ void dpdk_print_stats(uint16_t port_id);
 
 /**
  * Get DPDK version string
+ *
+ * @return Version string (e.g., "DPDK 21.11.0")
  */
-const char* dpdk_get_version(void);
+const char* dpdk_version(void);
 
 /**
- * Convert MAC address to string
+ * Get error string for error code
  *
- * @param mac 6-byte MAC address
- * @param buf Output buffer (at least 18 bytes)
- * @return buf
+ * @param errnum Error code from dpdk_init()
+ * @return Human-readable error string
  */
-char* dpdk_mac_to_str(const uint8_t mac[6], char* buf);
-
-/**
- * Get lcore ID for current thread
- *
- * @return lcore ID, or UINT32_MAX if not an EAL thread
- */
-uint32_t dpdk_get_lcore_id(void);
+const char* dpdk_strerror(int errnum);
 
 #ifdef __cplusplus
 }

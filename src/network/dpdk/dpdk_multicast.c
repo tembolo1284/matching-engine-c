@@ -3,15 +3,19 @@
 #include "network/multicast_transport.h"
 #include "network/dpdk/dpdk_init.h"
 #include "network/dpdk/dpdk_config.h"
+#include "network/transport_types.h"
+#include "protocol/message_types.h"
+#include "protocol/message_types_extended.h"
 #include "protocol/csv/message_formatter.h"
 #include "protocol/binary/binary_message_formatter.h"
+#include "threading/queues.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <arpa/inet.h>
 #include <assert.h>
+#include <time.h>
 
 /* DPDK headers */
 #include <rte_eal.h>
@@ -25,29 +29,20 @@
 /**
  * Multicast Transport - DPDK Implementation
  *
- * Sends multicast packets via DPDK with direct MAC construction.
- * Multicast IP → Multicast MAC mapping:
- *   IP: 239.255.0.1 → MAC: 01:00:5e:7f:00:01
- *
- * Compile with: cmake .. -DUSE_DPDK=ON
- *
- * Rule Compliance:
- * - Rule 2: All loops bounded
- * - Rule 5: Minimum 2 assertions per function
- * - Rule 7: All return values checked
+ * Uses DPDK for high-performance multicast packet transmission.
  */
 
 /* ============================================================================
  * Constants
  * ============================================================================ */
 
-#define BATCH_SIZE              DPDK_TX_BURST_SIZE
+#define BATCH_SIZE              32
 #define MAX_DRAIN_ITERATIONS    100
 #define MAX_OUTPUT_QUEUES       2
 
 static const struct timespec idle_sleep = {
     .tv_sec = 0,
-    .tv_nsec = 1000  /* 1µs */
+    .tv_nsec = 1000
 };
 
 /* ============================================================================
@@ -55,17 +50,16 @@ static const struct timespec idle_sleep = {
  * ============================================================================ */
 
 struct multicast_transport {
-    /* Configuration */
     multicast_transport_config_t config;
     
-    /* DPDK port info */
+    /* DPDK port/queue */
     uint16_t port_id;
     uint16_t tx_queue;
     
     /* Multicast destination */
-    uint32_t mcast_ip;              /* Network byte order */
     struct rte_ether_addr mcast_mac;
-    struct rte_ether_addr our_mac;
+    uint32_t mcast_ip;
+    uint16_t mcast_port;
     
     /* Output queues */
     output_envelope_queue_t* output_queues[MAX_OUTPUT_QUEUES];
@@ -86,112 +80,108 @@ struct multicast_transport {
 };
 
 /* ============================================================================
- * Multicast MAC Calculation
+ * Address Validation
  * ============================================================================ */
 
-/**
- * Convert multicast IP to Ethernet MAC address
- *
- * Multicast MAC format: 01:00:5e:XX:XX:XX
- * Lower 23 bits of IP → Lower 23 bits of MAC
- *
- * @param ip Multicast IP in network byte order
- * @param mac Output: Ethernet MAC address
- */
-static void ip_to_multicast_mac(uint32_t ip, struct rte_ether_addr* mac) {
-    assert(mac != NULL && "NULL mac");
+bool multicast_address_is_valid(const char* addr) {
+    if (addr == NULL || addr[0] == '\0') {
+        return false;
+    }
     
-    /* Multicast MAC prefix: 01:00:5e */
-    mac->addr_bytes[0] = 0x01;
-    mac->addr_bytes[1] = 0x00;
-    mac->addr_bytes[2] = 0x5e;
+    /* Parse IP */
+    uint32_t a, b, c, d;
+    if (sscanf(addr, "%u.%u.%u.%u", &a, &b, &c, &d) != 4) {
+        return false;
+    }
     
-    /* Lower 23 bits of IP (mask off high bit of third octet) */
-    uint32_t host_ip = ntohl(ip);
-    mac->addr_bytes[3] = (host_ip >> 16) & 0x7f;  /* Mask bit 23 */
-    mac->addr_bytes[4] = (host_ip >> 8) & 0xff;
-    mac->addr_bytes[5] = host_ip & 0xff;
+    /* Multicast: 224.0.0.0 - 239.255.255.255 */
+    return (a >= 224 && a <= 239);
 }
 
 /* ============================================================================
  * Packet Building
  * ============================================================================ */
 
-static struct rte_mbuf* build_multicast_packet(multicast_transport_t* t,
-                                                const void* payload,
-                                                size_t payload_len) {
+static struct rte_mbuf* build_udp_packet(multicast_transport_t* t,
+                                          const void* payload,
+                                          size_t payload_len) {
     assert(t != NULL && "NULL transport");
     assert(payload != NULL && "NULL payload");
     
-    struct rte_mempool* pool = dpdk_get_mempool();
-    if (pool == NULL) {
+    struct rte_mempool* mp = dpdk_get_mempool();
+    if (mp == NULL) {
         return NULL;
     }
     
-    struct rte_mbuf* mbuf = rte_pktmbuf_alloc(pool);
-    if (mbuf == NULL) {
+    struct rte_mbuf* m = rte_pktmbuf_alloc(mp);
+    if (m == NULL) {
         return NULL;
     }
     
-    size_t pkt_size = sizeof(struct rte_ether_hdr) +
-                      sizeof(struct rte_ipv4_hdr) +
-                      sizeof(struct rte_udp_hdr) +
-                      payload_len;
+    size_t total_len = DPDK_HEADER_OVERHEAD + payload_len;
     
-    char* pkt = rte_pktmbuf_append(mbuf, pkt_size);
-    if (pkt == NULL) {
-        rte_pktmbuf_free(mbuf);
+    if (total_len > rte_pktmbuf_tailroom(m)) {
+        rte_pktmbuf_free(m);
         return NULL;
     }
     
-    /* Ethernet header - multicast MAC destination */
-    struct rte_ether_hdr* eth_hdr = (struct rte_ether_hdr*)pkt;
-    rte_ether_addr_copy(&t->our_mac, &eth_hdr->src_addr);
-    rte_ether_addr_copy(&t->mcast_mac, &eth_hdr->dst_addr);
-    eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+    char* pkt = rte_pktmbuf_mtod(m, char*);
     
-    /* IPv4 header */
-    struct rte_ipv4_hdr* ip_hdr = (struct rte_ipv4_hdr*)(eth_hdr + 1);
-    memset(ip_hdr, 0, sizeof(*ip_hdr));
-    ip_hdr->version_ihl = 0x45;
-    ip_hdr->total_length = rte_cpu_to_be_16(sizeof(struct rte_ipv4_hdr) +
-                                            sizeof(struct rte_udp_hdr) +
-                                            payload_len);
-    ip_hdr->time_to_live = t->config.ttl;
-    ip_hdr->next_proto_id = IPPROTO_UDP;
-    ip_hdr->dst_addr = t->mcast_ip;
-    /* src_addr left as 0 - could set to interface IP */
-    ip_hdr->hdr_checksum = rte_ipv4_cksum(ip_hdr);
+    /* Ethernet header */
+    struct rte_ether_hdr* eth = (struct rte_ether_hdr*)pkt;
+    memcpy(&eth->dst_addr, &t->mcast_mac, sizeof(struct rte_ether_addr));
+    memset(&eth->src_addr, 0, sizeof(struct rte_ether_addr));  /* Will be filled by NIC */
+    eth->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4);
+    
+    /* IP header */
+    struct rte_ipv4_hdr* ip = (struct rte_ipv4_hdr*)(eth + 1);
+    ip->version_ihl = 0x45;
+    ip->type_of_service = 0;
+    ip->total_length = rte_cpu_to_be_16(DPDK_IPV4_HDR_SIZE + DPDK_UDP_HDR_SIZE + payload_len);
+    ip->packet_id = 0;
+    ip->fragment_offset = 0;
+    ip->time_to_live = t->config.ttl;
+    ip->next_proto_id = IPPROTO_UDP;
+    ip->hdr_checksum = 0;
+    ip->src_addr = 0;  /* Will be filled */
+    ip->dst_addr = t->mcast_ip;
     
     /* UDP header */
-    struct rte_udp_hdr* udp_hdr = (struct rte_udp_hdr*)(ip_hdr + 1);
-    udp_hdr->src_port = rte_cpu_to_be_16(t->config.port);
-    udp_hdr->dst_port = rte_cpu_to_be_16(t->config.port);
-    udp_hdr->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) + payload_len);
-    udp_hdr->dgram_cksum = 0;  /* Optional for IPv4 */
+    struct rte_udp_hdr* udp = (struct rte_udp_hdr*)(ip + 1);
+    udp->src_port = rte_cpu_to_be_16(t->mcast_port);
+    udp->dst_port = rte_cpu_to_be_16(t->mcast_port);
+    udp->dgram_len = rte_cpu_to_be_16(DPDK_UDP_HDR_SIZE + payload_len);
+    udp->dgram_cksum = 0;
     
-    /* Copy payload */
-    memcpy(udp_hdr + 1, payload, payload_len);
+    /* Payload */
+    memcpy((uint8_t*)(udp + 1), payload, payload_len);
     
-    return mbuf;
+    m->data_len = total_len;
+    m->pkt_len = total_len;
+    
+    /* Offload checksum to hardware if available */
+    m->ol_flags = RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
+    m->l2_len = DPDK_ETHER_HDR_SIZE;
+    m->l3_len = DPDK_IPV4_HDR_SIZE;
+    
+    return m;
 }
 
 /* ============================================================================
  * Message Sending
  * ============================================================================ */
 
-static bool send_message_internal(multicast_transport_t* t,
-                                   const output_msg_t* msg) {
+static bool send_message_internal(multicast_transport_t* t, const output_msg_t* msg) {
     assert(t != NULL && "NULL transport");
     assert(msg != NULL && "NULL msg");
     
-    const void* payload = NULL;
-    size_t payload_len = 0;
+    const void* data = NULL;
+    size_t len = 0;
+    char csv_buf[1024];
     
     if (t->config.use_binary) {
-        payload = binary_message_formatter_format(&t->binary_formatter,
-                                                   msg, &payload_len);
-        if (payload == NULL || payload_len == 0) {
+        data = binary_message_formatter_format(&t->binary_formatter, msg, &len);
+        if (data == NULL || len == 0) {
             t->stats.format_errors++;
             return false;
         }
@@ -201,26 +191,28 @@ static bool send_message_internal(multicast_transport_t* t,
             t->stats.format_errors++;
             return false;
         }
-        payload = text;
-        payload_len = strlen(text);
+        strncpy(csv_buf, text, sizeof(csv_buf) - 1);
+        csv_buf[sizeof(csv_buf) - 1] = '\0';
+        data = csv_buf;
+        len = strlen(csv_buf);
     }
     
-    struct rte_mbuf* mbuf = build_multicast_packet(t, payload, payload_len);
-    if (mbuf == NULL) {
+    struct rte_mbuf* m = build_udp_packet(t, data, len);
+    if (m == NULL) {
         t->stats.tx_errors++;
         return false;
     }
     
-    uint16_t nb_tx = rte_eth_tx_burst(t->port_id, t->tx_queue, &mbuf, 1);
+    uint16_t nb_tx = rte_eth_tx_burst(t->port_id, t->tx_queue, &m, 1);
     
     if (nb_tx == 0) {
-        rte_pktmbuf_free(mbuf);
+        rte_pktmbuf_free(m);
         t->stats.tx_errors++;
         return false;
     }
     
     t->stats.tx_packets++;
-    t->stats.tx_bytes += payload_len;
+    t->stats.tx_bytes += len;
     t->stats.tx_messages++;
     t->stats.sequence++;
     
@@ -236,12 +228,9 @@ static void* publisher_thread_func(void* arg) {
     
     assert(t != NULL && "NULL transport");
     
-    char mac_str[18];
-    dpdk_mac_to_str(t->mcast_mac.addr_bytes, mac_str);
-    fprintf(stderr, "[DPDK Multicast] Publisher started (port %u, group %s:%u, MAC %s)\n",
-            t->port_id, t->config.group_addr, t->config.port, mac_str);
+    fprintf(stderr, "[DPDK-Multicast] Publisher started (%s:%u)\n",
+            t->config.group_addr, t->config.port);
     
-    /* Initialize formatters */
     message_formatter_init(&t->csv_formatter);
     binary_message_formatter_init(&t->binary_formatter);
     
@@ -250,12 +239,10 @@ static void* publisher_thread_func(void* arg) {
     while (!atomic_load(t->shutdown_flag)) {
         size_t total_processed = 0;
         
-        /* Round-robin across queues */
         for (int q = 0; q < t->num_queues; q++) {
             output_envelope_queue_t* queue = t->output_queues[q];
             if (queue == NULL) continue;
             
-            /* Dequeue batch */
             size_t count = 0;
             for (size_t i = 0; i < BATCH_SIZE; i++) {
                 if (output_envelope_queue_dequeue(queue, &batch[count])) {
@@ -265,11 +252,13 @@ static void* publisher_thread_func(void* arg) {
                 }
             }
             
-            /* Send each message */
             for (size_t i = 0; i < count; i++) {
                 if (send_message_internal(t, &batch[i].msg)) {
-                    if (q == 0) t->stats.messages_from_queue_0++;
-                    else t->stats.messages_from_queue_1++;
+                    if (q == 0) {
+                        t->stats.messages_from_queue_0++;
+                    } else {
+                        t->stats.messages_from_queue_1++;
+                    }
                 }
             }
             
@@ -281,9 +270,7 @@ static void* publisher_thread_func(void* arg) {
         }
     }
     
-    /* Drain remaining */
-    fprintf(stderr, "[DPDK Multicast] Draining remaining messages...\n");
-    
+    /* Drain on shutdown */
     for (int iter = 0; iter < MAX_DRAIN_ITERATIONS; iter++) {
         bool has_messages = false;
         
@@ -294,33 +281,20 @@ static void* publisher_thread_func(void* arg) {
             output_msg_envelope_t envelope;
             while (output_envelope_queue_dequeue(queue, &envelope)) {
                 has_messages = true;
-                if (send_message_internal(t, &envelope.msg)) {
-                    if (q == 0) t->stats.messages_from_queue_0++;
-                    else t->stats.messages_from_queue_1++;
-                }
+                send_message_internal(t, &envelope.msg);
             }
         }
         
         if (!has_messages) break;
     }
     
-    fprintf(stderr, "[DPDK Multicast] Publisher stopped\n");
+    fprintf(stderr, "[DPDK-Multicast] Publisher stopped\n");
     return NULL;
 }
 
 /* ============================================================================
- * Public API Implementation
+ * Public API
  * ============================================================================ */
-
-bool multicast_address_is_valid(const char* addr) {
-    if (addr == NULL || addr[0] == '\0') return false;
-    
-    struct in_addr in;
-    if (inet_pton(AF_INET, addr, &in) != 1) return false;
-    
-    uint32_t ip = ntohl(in.s_addr);
-    return (ip & 0xF0000000) == 0xE0000000;
-}
 
 multicast_transport_t* multicast_transport_create(
     const multicast_transport_config_t* config,
@@ -330,57 +304,54 @@ multicast_transport_t* multicast_transport_create(
     
     assert(config != NULL && "NULL config");
     assert(config->group_addr != NULL && "NULL group_addr");
-    assert(config->port > 0 && "Invalid port");
     assert(output_queue_0 != NULL && "NULL output_queue_0");
     assert(shutdown_flag != NULL && "NULL shutdown_flag");
     
     if (!dpdk_is_initialized()) {
-        fprintf(stderr, "[DPDK Multicast] DPDK not initialized!\n");
+        fprintf(stderr, "[DPDK-Multicast] DPDK not initialized\n");
         return NULL;
     }
     
     if (!multicast_address_is_valid(config->group_addr)) {
-        fprintf(stderr, "[DPDK Multicast] Invalid multicast address: %s\n",
+        fprintf(stderr, "[DPDK-Multicast] Invalid multicast address: %s\n",
                 config->group_addr);
         return NULL;
     }
     
     multicast_transport_t* t = calloc(1, sizeof(multicast_transport_t));
     if (t == NULL) {
-        fprintf(stderr, "[DPDK Multicast] Failed to allocate transport\n");
         return NULL;
     }
     
     t->config = *config;
-    t->port_id = dpdk_get_active_port();
+    t->port_id = dpdk_get_port_id();
     t->tx_queue = 0;
-    
     t->output_queues[0] = output_queue_0;
     t->output_queues[1] = output_queue_1;
     t->num_queues = (output_queue_1 != NULL) ? 2 : 1;
     t->shutdown_flag = shutdown_flag;
     
+    /* Parse multicast IP */
+    uint32_t a, b, c, d;
+    sscanf(config->group_addr, "%u.%u.%u.%u", &a, &b, &c, &d);
+    t->mcast_ip = rte_cpu_to_be_32((a << 24) | (b << 16) | (c << 8) | d);
+    t->mcast_port = config->port;
+    
+    /* Calculate multicast MAC: 01:00:5e:xx:xx:xx */
+    uint64_t mac = dpdk_mcast_ip_to_mac(t->mcast_ip);
+    t->mcast_mac.addr_bytes[0] = 0x01;
+    t->mcast_mac.addr_bytes[1] = 0x00;
+    t->mcast_mac.addr_bytes[2] = 0x5e;
+    t->mcast_mac.addr_bytes[3] = (mac >> 16) & 0x7f;
+    t->mcast_mac.addr_bytes[4] = (mac >> 8) & 0xff;
+    t->mcast_mac.addr_bytes[5] = mac & 0xff;
+    
     atomic_init(&t->running, false);
     atomic_init(&t->started, false);
-    
     memset(&t->stats, 0, sizeof(t->stats));
     
-    /* Parse and convert multicast IP to MAC */
-    struct in_addr in;
-    inet_pton(AF_INET, config->group_addr, &in);
-    t->mcast_ip = in.s_addr;
-    ip_to_multicast_mac(t->mcast_ip, &t->mcast_mac);
-    
-    /* Get our MAC */
-    if (!dpdk_get_port_mac(t->port_id, t->our_mac.addr_bytes)) {
-        fprintf(stderr, "[DPDK Multicast] Failed to get MAC address\n");
-        free(t);
-        return NULL;
-    }
-    
-    fprintf(stderr, "[DPDK Multicast] Created transport (port %u, group %s:%u, %s)\n",
-            t->port_id, config->group_addr, config->port,
-            config->use_binary ? "binary" : "CSV");
+    fprintf(stderr, "[DPDK-Multicast] Created (%s:%u)\n",
+            config->group_addr, config->port);
     
     return t;
 }
@@ -390,7 +361,6 @@ bool multicast_transport_start(multicast_transport_t* transport) {
     
     bool expected = false;
     if (!atomic_compare_exchange_strong(&transport->started, &expected, true)) {
-        fprintf(stderr, "[DPDK Multicast] Already started\n");
         return false;
     }
     
@@ -399,7 +369,6 @@ bool multicast_transport_start(multicast_transport_t* transport) {
     int rc = pthread_create(&transport->publisher_thread, NULL,
                             publisher_thread_func, transport);
     if (rc != 0) {
-        fprintf(stderr, "[DPDK Multicast] pthread_create failed: %d\n", rc);
         atomic_store(&transport->running, false);
         atomic_store(&transport->started, false);
         return false;
@@ -411,7 +380,9 @@ bool multicast_transport_start(multicast_transport_t* transport) {
 void multicast_transport_stop(multicast_transport_t* transport) {
     assert(transport != NULL && "NULL transport");
     
-    if (!atomic_load(&transport->started)) return;
+    if (!atomic_load(&transport->started)) {
+        return;
+    }
     
     atomic_store(&transport->running, false);
     pthread_join(transport->publisher_thread, NULL);
@@ -436,22 +407,23 @@ bool multicast_transport_send(multicast_transport_t* transport,
     assert(transport != NULL && "NULL transport");
     assert(data != NULL && "NULL data");
     
-    struct rte_mbuf* mbuf = build_multicast_packet(transport, data, len);
-    if (mbuf == NULL) {
+    struct rte_mbuf* m = build_udp_packet(transport, data, len);
+    if (m == NULL) {
         transport->stats.tx_errors++;
         return false;
     }
     
-    uint16_t nb_tx = rte_eth_tx_burst(transport->port_id, transport->tx_queue,
-                                       &mbuf, 1);
+    uint16_t nb_tx = rte_eth_tx_burst(transport->port_id, transport->tx_queue, &m, 1);
+    
     if (nb_tx == 0) {
-        rte_pktmbuf_free(mbuf);
+        rte_pktmbuf_free(m);
         transport->stats.tx_errors++;
         return false;
     }
     
     transport->stats.tx_packets++;
     transport->stats.tx_bytes += len;
+    
     return true;
 }
 
@@ -481,24 +453,21 @@ void multicast_transport_reset_stats(multicast_transport_t* transport) {
     transport->stats.messages_from_queue_0 = 0;
     transport->stats.messages_from_queue_1 = 0;
     transport->stats.format_errors = 0;
-    /* sequence NOT reset */
 }
 
 void multicast_transport_print_stats(const multicast_transport_t* transport) {
     assert(transport != NULL && "NULL transport");
     
-    fprintf(stderr, "\n=== Multicast Transport Statistics (DPDK) ===\n");
+    fprintf(stderr, "\n=== DPDK Multicast Statistics ===\n");
+    fprintf(stderr, "Backend:        DPDK\n");
     fprintf(stderr, "Group:          %s:%u\n",
             transport->config.group_addr, transport->config.port);
-    fprintf(stderr, "Protocol:       %s\n",
-            transport->config.use_binary ? "binary" : "CSV");
     fprintf(stderr, "TX packets:     %lu\n", transport->stats.tx_packets);
     fprintf(stderr, "TX bytes:       %lu\n", transport->stats.tx_bytes);
     fprintf(stderr, "TX messages:    %lu\n", transport->stats.tx_messages);
     fprintf(stderr, "TX errors:      %lu\n", transport->stats.tx_errors);
     fprintf(stderr, "From queue 0:   %lu\n", transport->stats.messages_from_queue_0);
     fprintf(stderr, "From queue 1:   %lu\n", transport->stats.messages_from_queue_1);
-    fprintf(stderr, "Format errors:  %lu\n", transport->stats.format_errors);
     fprintf(stderr, "Sequence:       %lu\n", transport->stats.sequence);
 }
 

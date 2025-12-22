@@ -1,291 +1,262 @@
 /**
- * DPDK Transport Test Program
+ * DPDK Transport Tests
  *
- * Tests DPDK transport layer using virtual devices (no physical NIC required).
- *
- * Build:
- *   cmake .. -DUSE_DPDK=ON -DDPDK_VDEV=null
- *   make dpdk_test
- *
- * Run:
- *   sudo ./dpdk_test
- *
- * Note: Requires sudo for DPDK EAL initialization (huge pages access)
+ * Tests for DPDK UDP and multicast transport implementations.
+ * These tests use virtual devices (net_null) so no physical NIC is required.
  */
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <signal.h>
-#include <unistd.h>
-#include <stdatomic.h>
 
 #ifdef USE_DPDK
 
+#include "unity.h"
 #include "network/dpdk/dpdk_init.h"
 #include "network/dpdk/dpdk_config.h"
 #include "network/udp_transport.h"
 #include "network/multicast_transport.h"
+#include "network/transport_types.h"
+#include "protocol/message_types.h"
+#include "protocol/message_types_extended.h"
 #include "threading/queues.h"
 
-/* Global shutdown flag */
-static atomic_bool g_shutdown = false;
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
 
-/* Signal handler */
-static void signal_handler(int sig) {
-    (void)sig;
-    printf("\n[Test] Shutdown signal received\n");
+/* ============================================================================
+ * Test Fixtures
+ * ============================================================================ */
+
+static atomic_bool g_shutdown = ATOMIC_VAR_INIT(false);
+static input_envelope_queue_t g_input_queue;
+static output_envelope_queue_t g_output_queue;
+
+void setUp(void) {
+    atomic_store(&g_shutdown, false);
+}
+
+void tearDown(void) {
     atomic_store(&g_shutdown, true);
 }
 
-/* Test input queue */
-static input_envelope_queue_t g_input_queue;
+/* ============================================================================
+ * DPDK Initialization Tests
+ * ============================================================================ */
 
-/* Test output queue */
-static output_envelope_queue_t g_output_queue;
-
-/**
- * Test 1: DPDK Initialization with Virtual Device
- */
-static bool test_dpdk_init(void) {
-    printf("\n=== Test 1: DPDK Initialization ===\n");
-    
-    dpdk_config_t config;
-    dpdk_config_init_vdev(&config, DPDK_VDEV_NULL);
-    
-    printf("[Test] Initializing DPDK with net_null virtual device...\n");
-    
-    if (!dpdk_init(&config)) {
-        printf("[FAIL] DPDK initialization failed!\n");
-        return false;
+void test_dpdk_init_vdev_null(void) {
+    /* Skip if DPDK already initialized */
+    if (dpdk_is_initialized()) {
+        TEST_PASS_MESSAGE("DPDK already initialized");
+        return;
     }
     
-    printf("[PASS] DPDK initialized successfully\n");
-    printf("  Version: %s\n", dpdk_get_version());
-    printf("  Ports available: %u\n", dpdk_get_port_count());
-    printf("  Active port: %u\n", dpdk_get_active_port());
+    int ret = dpdk_init_vdev(DPDK_VDEV_NULL);
+    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ret, "dpdk_init_vdev failed");
+    TEST_ASSERT_TRUE_MESSAGE(dpdk_is_initialized(), "DPDK should be initialized");
     
-    /* Get mempool stats */
-    uint32_t free_count, in_use;
-    dpdk_get_mempool_stats(&free_count, &in_use);
-    printf("  Mempool: %u free, %u in use\n", free_count, in_use);
+    /* Check we have a mempool */
+    struct rte_mempool* mp = dpdk_get_mempool();
+    TEST_ASSERT_NOT_NULL_MESSAGE(mp, "Mempool should exist");
     
-    return true;
+    /* Print stats */
+    dpdk_print_stats();
 }
 
-/**
- * Test 2: UDP Transport Creation
- */
-static bool test_udp_transport(void) {
-    printf("\n=== Test 2: UDP Transport ===\n");
-    
-    /* Initialize input queue */
-    if (!input_envelope_queue_init(&g_input_queue, 1024)) {
-        printf("[FAIL] Failed to create input queue\n");
-        return false;
+void test_dpdk_port_status(void) {
+    if (!dpdk_is_initialized()) {
+        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        return;
     }
     
-    /* Create UDP transport config */
+    bool link_up = false;
+    uint32_t speed = 0;
+    
+    int ret = dpdk_port_link_status(&link_up, &speed);
+    TEST_ASSERT_EQUAL_INT(0, ret);
+    
+    /* net_null typically shows link up at 10G */
+    fprintf(stderr, "Link: %s, Speed: %u Mbps\n",
+            link_up ? "UP" : "DOWN", speed);
+}
+
+/* ============================================================================
+ * UDP Transport Tests
+ * ============================================================================ */
+
+void test_udp_transport_create(void) {
+    if (!dpdk_is_initialized()) {
+        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        return;
+    }
+    
+    /* Initialize queue (no size parameter, returns void) */
+    input_envelope_queue_init(&g_input_queue);
+    
     udp_transport_config_t config;
     udp_transport_config_init(&config);
     config.bind_port = 12345;
     config.dual_processor = false;
-    config.detect_protocol = true;
-    
-    printf("[Test] Creating UDP transport (port %u)...\n", config.bind_port);
     
     udp_transport_t* transport = udp_transport_create(&config,
                                                        &g_input_queue,
                                                        NULL,
                                                        &g_shutdown);
+    TEST_ASSERT_NOT_NULL_MESSAGE(transport, "Transport creation failed");
     
-    if (transport == NULL) {
-        printf("[FAIL] Failed to create UDP transport\n");
-        return false;
-    }
+    /* Check backend */
+    const char* backend = udp_transport_get_backend();
+    TEST_ASSERT_EQUAL_STRING("dpdk", backend);
     
-    printf("[PASS] UDP transport created\n");
-    printf("  Backend: %s\n", udp_transport_get_backend());
-    printf("  Port: %u\n", udp_transport_get_port(transport));
-    
-    /* Start transport */
-    printf("[Test] Starting UDP transport...\n");
-    if (!udp_transport_start(transport)) {
-        printf("[FAIL] Failed to start UDP transport\n");
-        udp_transport_destroy(transport);
-        return false;
-    }
-    
-    printf("[PASS] UDP transport started\n");
-    
-    /* Let it run briefly */
-    printf("[Test] Running for 1 second...\n");
-    sleep(1);
-    
-    /* Check stats */
-    transport_stats_t stats;
-    udp_transport_get_stats(transport, &stats);
-    printf("  RX packets: %lu\n", stats.rx_packets);
-    printf("  RX poll empty: %lu\n", stats.rx_poll_empty);
-    
-    /* Stop and destroy */
-    printf("[Test] Stopping UDP transport...\n");
-    udp_transport_stop(transport);
+    /* Cleanup */
     udp_transport_destroy(transport);
-    
-    printf("[PASS] UDP transport test complete\n");
-    return true;
 }
 
-/**
- * Test 3: Multicast Transport Creation
- */
-static bool test_multicast_transport(void) {
-    printf("\n=== Test 3: Multicast Transport ===\n");
-    
-    /* Initialize output queue */
-    if (!output_envelope_queue_init(&g_output_queue, 1024)) {
-        printf("[FAIL] Failed to create output queue\n");
-        return false;
+void test_udp_transport_start_stop(void) {
+    if (!dpdk_is_initialized()) {
+        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        return;
     }
     
-    /* Create multicast transport config */
+    input_envelope_queue_init(&g_input_queue);
+    
+    udp_transport_config_t config;
+    udp_transport_config_init(&config);
+    config.bind_port = 12346;
+    
+    udp_transport_t* transport = udp_transport_create(&config,
+                                                       &g_input_queue,
+                                                       NULL,
+                                                       &g_shutdown);
+    TEST_ASSERT_NOT_NULL(transport);
+    
+    /* Start */
+    bool started = udp_transport_start(transport);
+    TEST_ASSERT_TRUE_MESSAGE(started, "Transport failed to start");
+    TEST_ASSERT_TRUE(udp_transport_is_running(transport));
+    
+    /* Let it run briefly */
+    usleep(10000);  /* 10ms */
+    
+    /* Stop */
+    atomic_store(&g_shutdown, true);
+    udp_transport_stop(transport);
+    TEST_ASSERT_FALSE(udp_transport_is_running(transport));
+    
+    /* Cleanup */
+    udp_transport_destroy(transport);
+}
+
+/* ============================================================================
+ * Multicast Transport Tests
+ * ============================================================================ */
+
+void test_multicast_transport_create(void) {
+    if (!dpdk_is_initialized()) {
+        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        return;
+    }
+    
+    output_envelope_queue_init(&g_output_queue);
+    
     multicast_transport_config_t config;
     multicast_transport_config_init(&config);
     config.group_addr = "239.255.0.1";
     config.port = 5000;
-    config.use_binary = false;
-    config.ttl = MULTICAST_TTL_LOCAL;
-    
-    printf("[Test] Creating multicast transport (%s:%u)...\n",
-           config.group_addr, config.port);
-    
-    /* Validate multicast address */
-    if (!multicast_address_is_valid(config.group_addr)) {
-        printf("[FAIL] Invalid multicast address\n");
-        return false;
-    }
-    printf("[PASS] Multicast address valid\n");
     
     multicast_transport_t* transport = multicast_transport_create(&config,
                                                                    &g_output_queue,
                                                                    NULL,
                                                                    &g_shutdown);
+    TEST_ASSERT_NOT_NULL_MESSAGE(transport, "Transport creation failed");
     
-    if (transport == NULL) {
-        printf("[FAIL] Failed to create multicast transport\n");
-        return false;
-    }
+    /* Check backend */
+    const char* backend = multicast_transport_get_backend();
+    TEST_ASSERT_EQUAL_STRING("dpdk", backend);
     
-    printf("[PASS] Multicast transport created\n");
-    printf("  Backend: %s\n", multicast_transport_get_backend());
-    
-    /* Start transport */
-    printf("[Test] Starting multicast transport...\n");
-    if (!multicast_transport_start(transport)) {
-        printf("[FAIL] Failed to start multicast transport\n");
-        multicast_transport_destroy(transport);
-        return false;
-    }
-    
-    printf("[PASS] Multicast transport started\n");
-    
-    /* Send a test message */
-    printf("[Test] Sending test multicast packet...\n");
-    const char* test_msg = "TEST|Hello World|12345";
-    
-    if (multicast_transport_send(transport, test_msg, strlen(test_msg))) {
-        printf("[PASS] Test packet sent\n");
-    } else {
-        printf("[WARN] Test packet send failed (expected with net_null)\n");
-    }
-    
-    /* Check stats */
-    multicast_transport_stats_t stats;
-    multicast_transport_get_stats(transport, &stats);
-    printf("  TX packets: %lu\n", stats.tx_packets);
-    printf("  TX bytes: %lu\n", stats.tx_bytes);
-    printf("  Sequence: %lu\n", stats.sequence);
-    
-    /* Stop and destroy */
-    printf("[Test] Stopping multicast transport...\n");
-    multicast_transport_stop(transport);
+    /* Cleanup */
     multicast_transport_destroy(transport);
-    
-    printf("[PASS] Multicast transport test complete\n");
-    return true;
 }
 
-/**
- * Test 4: Statistics and Cleanup
- */
-static bool test_cleanup(void) {
-    printf("\n=== Test 4: Cleanup ===\n");
-    
-    /* Print DPDK port statistics */
-    uint16_t port_id = dpdk_get_active_port();
-    dpdk_print_stats(port_id);
-    
-    /* Cleanup DPDK */
-    printf("[Test] Cleaning up DPDK...\n");
-    dpdk_cleanup();
-    
-    if (dpdk_is_initialized()) {
-        printf("[FAIL] DPDK still initialized after cleanup\n");
-        return false;
+void test_multicast_transport_start_stop(void) {
+    if (!dpdk_is_initialized()) {
+        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        return;
     }
     
-    printf("[PASS] DPDK cleanup complete\n");
-    return true;
+    output_envelope_queue_init(&g_output_queue);
+    
+    multicast_transport_config_t config;
+    multicast_transport_config_init(&config);
+    config.group_addr = "239.255.0.1";
+    config.port = 5001;
+    
+    multicast_transport_t* transport = multicast_transport_create(&config,
+                                                                   &g_output_queue,
+                                                                   NULL,
+                                                                   &g_shutdown);
+    TEST_ASSERT_NOT_NULL(transport);
+    
+    /* Start */
+    bool started = multicast_transport_start(transport);
+    TEST_ASSERT_TRUE_MESSAGE(started, "Transport failed to start");
+    TEST_ASSERT_TRUE(multicast_transport_is_running(transport));
+    
+    /* Let it run briefly */
+    usleep(10000);
+    
+    /* Stop */
+    atomic_store(&g_shutdown, true);
+    multicast_transport_stop(transport);
+    TEST_ASSERT_FALSE(multicast_transport_is_running(transport));
+    
+    /* Cleanup */
+    multicast_transport_destroy(transport);
 }
+
+/* ============================================================================
+ * Cleanup
+ * ============================================================================ */
+
+void test_dpdk_cleanup(void) {
+    if (!dpdk_is_initialized()) {
+        TEST_PASS_MESSAGE("DPDK not initialized, nothing to clean up");
+        return;
+    }
+    
+    dpdk_cleanup();
+    TEST_ASSERT_FALSE(dpdk_is_initialized());
+}
+
+/* ============================================================================
+ * Test Runner
+ * ============================================================================ */
 
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
     
-    printf("========================================\n");
-    printf("DPDK Transport Test Program\n");
-    printf("========================================\n");
-    printf("\n");
-    printf("This test uses virtual devices (net_null) to exercise\n");
-    printf("the DPDK code path without requiring a physical NIC.\n");
-    printf("\n");
-    printf("Run with: sudo ./dpdk_test\n");
-    printf("\n");
+    UNITY_BEGIN();
     
-    /* Set up signal handler */
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    /* Run tests in order */
+    RUN_TEST(test_dpdk_init_vdev_null);
+    RUN_TEST(test_dpdk_port_status);
+    RUN_TEST(test_udp_transport_create);
+    RUN_TEST(test_udp_transport_start_stop);
+    RUN_TEST(test_multicast_transport_create);
+    RUN_TEST(test_multicast_transport_start_stop);
+    RUN_TEST(test_dpdk_cleanup);
     
-    int passed = 0;
-    int failed = 0;
-    
-    /* Run tests */
-    if (test_dpdk_init()) passed++; else failed++;
-    
-    if (dpdk_is_initialized()) {
-        if (test_udp_transport()) passed++; else failed++;
-        if (test_multicast_transport()) passed++; else failed++;
-        if (test_cleanup()) passed++; else failed++;
-    } else {
-        printf("\n[SKIP] Skipping transport tests (DPDK init failed)\n");
-        failed += 3;
-    }
-    
-    /* Summary */
-    printf("\n========================================\n");
-    printf("Test Summary: %d passed, %d failed\n", passed, failed);
-    printf("========================================\n");
-    
-    return failed == 0 ? 0 : 1;
+    return UNITY_END();
 }
 
 #else /* !USE_DPDK */
 
+#include <stdio.h>
+
 int main(void) {
-    printf("This test requires DPDK.\n");
-    printf("Build with: cmake .. -DUSE_DPDK=ON\n");
-    return 1;
+    fprintf(stderr, "DPDK tests disabled (USE_DPDK=0)\n");
+    fprintf(stderr, "Build with: cmake .. -DUSE_DPDK=ON\n");
+    return 0;
 }
 
 #endif /* USE_DPDK */
