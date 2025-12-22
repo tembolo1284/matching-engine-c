@@ -2,7 +2,7 @@
  * DPDK Transport Tests
  *
  * Tests for DPDK UDP and multicast transport implementations.
- * These tests use virtual devices (net_null) so no physical NIC is required.
+ * Uses virtual devices (net_null) so no physical NIC is required.
  */
 
 #ifdef USE_DPDK
@@ -46,17 +46,17 @@ void tearDown(void) {
 void test_dpdk_init_vdev_null(void) {
     /* Skip if DPDK already initialized */
     if (dpdk_is_initialized()) {
-        TEST_PASS_MESSAGE("DPDK already initialized");
+        TEST_PASS();
         return;
     }
     
     int ret = dpdk_init_vdev(DPDK_VDEV_NULL);
-    TEST_ASSERT_EQUAL_INT_MESSAGE(0, ret, "dpdk_init_vdev failed");
-    TEST_ASSERT_TRUE_MESSAGE(dpdk_is_initialized(), "DPDK should be initialized");
+    TEST_ASSERT_EQUAL_INT(0, ret);
+    TEST_ASSERT_TRUE(dpdk_is_initialized());
     
     /* Check we have a mempool */
     struct rte_mempool* mp = dpdk_get_mempool();
-    TEST_ASSERT_NOT_NULL_MESSAGE(mp, "Mempool should exist");
+    TEST_ASSERT_NOT_NULL(mp);
     
     /* Print stats */
     dpdk_print_stats();
@@ -64,7 +64,7 @@ void test_dpdk_init_vdev_null(void) {
 
 void test_dpdk_port_status(void) {
     if (!dpdk_is_initialized()) {
-        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        TEST_IGNORE();
         return;
     }
     
@@ -85,11 +85,11 @@ void test_dpdk_port_status(void) {
 
 void test_udp_transport_create(void) {
     if (!dpdk_is_initialized()) {
-        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        TEST_IGNORE();
         return;
     }
     
-    /* Initialize queue (no size parameter, returns void) */
+    /* Initialize queue */
     input_envelope_queue_init(&g_input_queue);
     
     udp_transport_config_t config;
@@ -101,7 +101,7 @@ void test_udp_transport_create(void) {
                                                        &g_input_queue,
                                                        NULL,
                                                        &g_shutdown);
-    TEST_ASSERT_NOT_NULL_MESSAGE(transport, "Transport creation failed");
+    TEST_ASSERT_NOT_NULL(transport);
     
     /* Check backend */
     const char* backend = udp_transport_get_backend();
@@ -113,7 +113,7 @@ void test_udp_transport_create(void) {
 
 void test_udp_transport_start_stop(void) {
     if (!dpdk_is_initialized()) {
-        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        TEST_IGNORE();
         return;
     }
     
@@ -131,7 +131,7 @@ void test_udp_transport_start_stop(void) {
     
     /* Start */
     bool started = udp_transport_start(transport);
-    TEST_ASSERT_TRUE_MESSAGE(started, "Transport failed to start");
+    TEST_ASSERT_TRUE(started);
     TEST_ASSERT_TRUE(udp_transport_is_running(transport));
     
     /* Let it run briefly */
@@ -152,7 +152,7 @@ void test_udp_transport_start_stop(void) {
 
 void test_multicast_transport_create(void) {
     if (!dpdk_is_initialized()) {
-        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        TEST_IGNORE();
         return;
     }
     
@@ -167,7 +167,7 @@ void test_multicast_transport_create(void) {
                                                                    &g_output_queue,
                                                                    NULL,
                                                                    &g_shutdown);
-    TEST_ASSERT_NOT_NULL_MESSAGE(transport, "Transport creation failed");
+    TEST_ASSERT_NOT_NULL(transport);
     
     /* Check backend */
     const char* backend = multicast_transport_get_backend();
@@ -179,7 +179,7 @@ void test_multicast_transport_create(void) {
 
 void test_multicast_transport_start_stop(void) {
     if (!dpdk_is_initialized()) {
-        TEST_IGNORE_MESSAGE("DPDK not initialized");
+        TEST_IGNORE();
         return;
     }
     
@@ -198,7 +198,7 @@ void test_multicast_transport_start_stop(void) {
     
     /* Start */
     bool started = multicast_transport_start(transport);
-    TEST_ASSERT_TRUE_MESSAGE(started, "Transport failed to start");
+    TEST_ASSERT_TRUE(started);
     TEST_ASSERT_TRUE(multicast_transport_is_running(transport));
     
     /* Let it run briefly */
@@ -219,7 +219,7 @@ void test_multicast_transport_start_stop(void) {
 
 void test_dpdk_cleanup(void) {
     if (!dpdk_is_initialized()) {
-        TEST_PASS_MESSAGE("DPDK not initialized, nothing to clean up");
+        TEST_PASS();
         return;
     }
     
