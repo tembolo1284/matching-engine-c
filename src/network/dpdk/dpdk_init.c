@@ -14,6 +14,7 @@
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_lcore.h>
+#include <rte_version.h>
 
 /**
  * DPDK Initialization Implementation
