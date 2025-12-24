@@ -625,8 +625,6 @@ bool engine_client_recv(engine_client_t* client,
                 continue;
             }
         } else {
-            /* FIX: Use 0 timeout instead of -1 (blocking) to prevent hangs */
-            /* poll() already confirmed data is ready, so 0 timeout is safe */
             if (!transport_recv(&client->transport, buffer,
                                 sizeof(buffer), &len, 0)) {
                 continue;
