@@ -2,9 +2,7 @@
  * engine_client.c - High-level matching engine client implementation
  *
  */
-
 #include "client/engine_client.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -163,11 +161,9 @@ void engine_client_init(engine_client_t* client, const client_config_t* config) 
 
     memset(client, 0, sizeof(*client));
     client->config = *config;
-
     transport_init(&client->transport);
     codec_init(&client->codec, config->encoding);
     multicast_receiver_init(&client->multicast);
-
     client->multicast_active = false;
     client->connected = false;
     client->next_order_id = 1;
@@ -225,6 +221,7 @@ bool engine_client_connect(engine_client_t* client) {
         client->codec.detected_encoding = ENCODING_CSV;
         client->codec.send_encoding = ENCODING_CSV;  /* Must set send_encoding too! */
         client->codec.encoding_detected = true;
+
         if (!cfg->quiet) {
             printf("UDP mode: defaulting to CSV (server outputs to stdout)\n");
         }
@@ -235,6 +232,7 @@ bool engine_client_connect(engine_client_t* client) {
             transport_disconnect(&client->transport);
             return false;
         }
+
         if (!cfg->quiet) {
             printf("Server encoding: %s\n",
                    encoding_type_str(cfg->detected_encoding));
@@ -272,6 +270,7 @@ void engine_client_destroy(engine_client_t* client) {
     if (client == NULL) {
         return;
     }
+
     engine_client_disconnect(client);
 }
 
@@ -279,6 +278,7 @@ bool engine_client_is_connected(const engine_client_t* client) {
     if (client == NULL) {
         return false;
     }
+
     return client->connected && transport_is_connected(&client->transport);
 }
 
@@ -342,6 +342,7 @@ void engine_client_set_response_callback(engine_client_t* client,
     if (client == NULL) {
         return;
     }
+
     client->response_callback = callback;
     client->response_user_data = user_data;
 }
@@ -352,6 +353,7 @@ void engine_client_set_multicast_callback(engine_client_t* client,
     if (client == NULL) {
         return;
     }
+
     client->multicast_callback = callback;
     client->multicast_user_data = user_data;
 }
@@ -539,6 +541,7 @@ int engine_client_poll(engine_client_t* client) {
                                          sizeof(buffer), &len, 0)) {
                 break;
             }
+
             if (codec_decode_response(&client->codec, buffer, len, &msg)) {
                 process_response(client, &msg, true);
                 count++;
@@ -622,8 +625,10 @@ bool engine_client_recv(engine_client_t* client,
                 continue;
             }
         } else {
+            /* FIX: Use 0 timeout instead of -1 (blocking) to prevent hangs */
+            /* poll() already confirmed data is ready, so 0 timeout is safe */
             if (!transport_recv(&client->transport, buffer,
-                                sizeof(buffer), &len, -1)) {
+                                sizeof(buffer), &len, 0)) {
                 continue;
             }
         }

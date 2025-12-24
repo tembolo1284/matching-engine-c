@@ -5,9 +5,7 @@
  * Large one-sided stress tests removed since they just fill the pool.
  * Small stress tests (up to 100K) kept for quick validation.
  */
-
 #include "client/scenarios.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,21 +92,38 @@ static void sleep_ms(int ms) {
 
 /**
  * Aggressively drain all pending responses.
- * Keeps trying until no messages received for several attempts.
+ * Keeps trying until no messages received for several attempts,
+ * with a hard timeout to prevent infinite hangs.
  */
 static void drain_responses(engine_client_t* client, int initial_delay_ms) {
     /* Initial delay to let server process */
     sleep_ms(initial_delay_ms);
 
+    /* Hard timeout: max 10 seconds total drain time */
+    uint64_t start_ns = engine_client_now_ns();
+    uint64_t hard_timeout_ns = 10000000000ULL;  /* 10 seconds */
+
     /* Keep draining until we get several empty attempts in a row */
     int empty_count = 0;
-    for (int attempt = 0; attempt < 20 && empty_count < 3; attempt++) {
+    int total_drained = 0;
+
+    while (empty_count < 3) {
+        /* Check hard timeout */
+        uint64_t elapsed = engine_client_now_ns() - start_ns;
+        if (elapsed > hard_timeout_ns) {
+            if (total_drained > 0) {
+                printf("  [drain timeout after %d messages]\n", total_drained);
+            }
+            break;
+        }
+
         int count = engine_client_recv_all(client, 50);
         if (count == 0) {
             empty_count++;
             sleep_ms(25);
         } else {
             empty_count = 0;
+            total_drained += count;
         }
     }
 }
@@ -126,7 +141,6 @@ static void response_counter(const output_msg_t* msg, void* user_data) {
 
     if (ctx->result) {
         ctx->result->responses_received++;
-
         if (msg->type == OUTPUT_MSG_TRADE) {
             ctx->result->trades_executed++;
         }
@@ -226,7 +240,6 @@ void scenario_print_result(const scenario_result_t* result) {
     printf("\n");
     printf("=== Scenario Results ===\n");
     printf("\n");
-
     printf("Orders:\n");
     printf("  Sent:              %u\n", result->orders_sent);
     printf("  Failed:            %u\n", result->orders_failed);
@@ -412,15 +425,12 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     uint32_t progress_interval = count / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
-
     uint64_t start_time = engine_client_now_ns();
 
     /* Send orders - INTERLEAVED with receives to prevent TCP deadlock */
     for (uint32_t i = 0; i < count; i++) {
         uint32_t price = 100 + (i % 100);
-
         uint32_t oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
-
         if (oid > 0) {
             if (result) result->orders_sent++;
         } else {
@@ -448,7 +458,6 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 
     finalize_result(result, client);
     scenario_print_result(result);
-
     return true;
 }
 
@@ -475,7 +484,6 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     uint32_t progress_interval = pairs / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
-
     uint64_t start_time = engine_client_now_ns();
 
     /* Send matching pairs - INTERLEAVED with receives */
@@ -518,12 +526,12 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     } else if (pairs >= 100000) {
         wait_ms = 1000;
     }
+
     printf("\nWaiting %d ms for server to finish processing...\n", wait_ms);
     drain_responses(client, wait_ms);
 
     finalize_result(result, client);
     scenario_print_result(result);
-
     return true;
 }
 
@@ -646,12 +654,12 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     } else if (pairs >= 10000000) {
         wait_ms = 10000;
     }
+
     printf("Waiting %d ms for server to finish processing...\n", wait_ms);
     drain_responses(client, wait_ms);
 
     finalize_result(result, client);
     scenario_print_result(result);
-
     return true;
 }
 
@@ -663,8 +671,8 @@ bool scenario_run(engine_client_t* client,
                   int scenario_id,
                   bool danger_burst,
                   scenario_result_t* result) {
-    const scenario_info_t* info = scenario_get_info(scenario_id);
 
+    const scenario_info_t* info = scenario_get_info(scenario_id);
     if (!info) {
         fprintf(stderr, "Unknown scenario: %d\n\n", scenario_id);
         scenario_print_list();
