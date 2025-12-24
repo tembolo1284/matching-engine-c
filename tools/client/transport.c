@@ -1,10 +1,8 @@
 /**
  * transport.c - Transport layer implementation
  */
-
 #include "client/transport.h"
 #include "protocol/binary/binary_protocol.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -133,16 +131,12 @@ static bool try_tcp_connect(transport_t* t, uint32_t timeout_ms) {
         return false;
     }
     
-    /* Success! Set back to blocking mode with timeouts */
-    int flags = fcntl(t->sock_fd, F_GETFL, 0);
-    fcntl(t->sock_fd, F_SETFL, flags & ~O_NONBLOCK);
+    /* Success! Keep socket in non-blocking mode for recv */
+    /* We'll use poll() for timeouts instead of SO_RCVTIMEO */
     
     /* Set TCP_NODELAY for low latency */
     int nodelay = 1;
     setsockopt(t->sock_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
-    
-    /* Set receive timeout */
-    set_recv_timeout(t->sock_fd, t->recv_timeout_ms);
     
     /* Initialize framing state */
     framing_read_state_init(&t->read_state);
@@ -161,8 +155,8 @@ static bool setup_udp(transport_t* t) {
         return false;
     }
     
-    /* Set receive timeout */
-    set_recv_timeout(t->sock_fd, t->recv_timeout_ms);
+    /* Set non-blocking */
+    set_nonblocking(t->sock_fd);
     
     t->type = TRANSPORT_UDP;
     t->state = CONN_STATE_CONNECTED;
@@ -230,10 +224,23 @@ bool transport_send(transport_t* t, const void* data, size_t len) {
             return false;
         }
         
-        /* Send framed message */
-        ssize_t sent = send(t->sock_fd, framed, framed_len, 0);
-        if (sent != (ssize_t)framed_len) {
-            return false;
+        /* Send framed message - may need multiple writes for non-blocking socket */
+        size_t total_sent = 0;
+        while (total_sent < framed_len) {
+            ssize_t sent = send(t->sock_fd, framed + total_sent, 
+                               framed_len - total_sent, MSG_NOSIGNAL);
+            if (sent < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    /* Would block - poll for writability */
+                    struct pollfd pfd = { .fd = t->sock_fd, .events = POLLOUT };
+                    if (poll(&pfd, 1, 1000) <= 0) {
+                        return false;  /* Timeout or error */
+                    }
+                    continue;
+                }
+                return false;
+            }
+            total_sent += sent;
         }
         
         t->bytes_sent += framed_len;
@@ -263,11 +270,6 @@ bool transport_recv(transport_t* t,
         return false;
     }
     
-    /* Set temporary timeout if specified */
-    if (timeout_ms >= 0) {
-        set_recv_timeout(t->sock_fd, (uint32_t)timeout_ms);
-    }
-    
     if (t->type == TRANSPORT_TCP) {
         /* TCP: handle framing */
         
@@ -286,14 +288,34 @@ bool transport_recv(transport_t* t,
             return true;
         }
         
-        /* Need to read more data */
+        /* Need to read more data - use poll() for timeout */
+        if (timeout_ms >= 0) {
+            struct pollfd pfd = { .fd = t->sock_fd, .events = POLLIN, .revents = 0 };
+            int poll_ret = poll(&pfd, 1, timeout_ms);
+            
+            if (poll_ret <= 0) {
+                /* Timeout (0) or error (-1) */
+                return false;
+            }
+            
+            if (!(pfd.revents & POLLIN)) {
+                /* No data available (POLLHUP, POLLERR, etc.) */
+                if (pfd.revents & (POLLHUP | POLLERR)) {
+                    t->state = CONN_STATE_DISCONNECTED;
+                }
+                return false;
+            }
+        }
+        
+        /* Now do non-blocking recv */
         char temp_buf[TRANSPORT_RECV_BUFFER_SIZE];
-        ssize_t received = recv(t->sock_fd, temp_buf, sizeof(temp_buf), 0);
+        ssize_t received = recv(t->sock_fd, temp_buf, sizeof(temp_buf), MSG_DONTWAIT);
         
         if (received <= 0) {
             if (received == 0) {
                 t->state = CONN_STATE_DISCONNECTED;  /* Server closed */
             }
+            /* EAGAIN/EWOULDBLOCK is normal for non-blocking - just no data yet */
             return false;
         }
         
@@ -319,7 +341,18 @@ bool transport_recv(transport_t* t,
     }
     else {
         /* UDP: receive single datagram */
-        ssize_t received = recvfrom(t->sock_fd, buffer, buffer_size, 0, NULL, NULL);
+        
+        /* Use poll() for timeout */
+        if (timeout_ms >= 0) {
+            struct pollfd pfd = { .fd = t->sock_fd, .events = POLLIN, .revents = 0 };
+            int poll_ret = poll(&pfd, 1, timeout_ms);
+            
+            if (poll_ret <= 0 || !(pfd.revents & POLLIN)) {
+                return false;
+            }
+        }
+        
+        ssize_t received = recvfrom(t->sock_fd, buffer, buffer_size, MSG_DONTWAIT, NULL, NULL);
         
         if (received <= 0) {
             return false;
@@ -440,6 +473,9 @@ bool multicast_receiver_join(multicast_receiver_t* m,
         return false;
     }
     
+    /* Set non-blocking */
+    set_nonblocking(m->sock_fd);
+    
     m->joined = true;
     return true;
 }
@@ -467,12 +503,17 @@ bool multicast_receiver_recv(multicast_receiver_t* m,
         return false;
     }
     
-    /* Set timeout */
+    /* Use poll() for timeout */
     if (timeout_ms >= 0) {
-        set_recv_timeout(m->sock_fd, (uint32_t)timeout_ms);
+        struct pollfd pfd = { .fd = m->sock_fd, .events = POLLIN, .revents = 0 };
+        int poll_ret = poll(&pfd, 1, timeout_ms);
+        
+        if (poll_ret <= 0 || !(pfd.revents & POLLIN)) {
+            return false;
+        }
     }
     
-    ssize_t received = recvfrom(m->sock_fd, buffer, buffer_size, 0, NULL, NULL);
+    ssize_t received = recvfrom(m->sock_fd, buffer, buffer_size, MSG_DONTWAIT, NULL, NULL);
     
     if (received <= 0) {
         return false;
