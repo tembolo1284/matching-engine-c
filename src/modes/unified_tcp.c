@@ -31,6 +31,7 @@ typedef struct {
 
 static void hex_dump(const char* prefix, const uint8_t* data, size_t len, size_t max_len) {
     // fprintf(stderr, "%s (%zu bytes): ", prefix, len);
+    (void)prefix;
     size_t display = len < max_len ? len : max_len;
     for (size_t i = 0; i < display; i++) {
         fprintf(stderr, "%02X ", data[i]);
