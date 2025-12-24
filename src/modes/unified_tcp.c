@@ -30,7 +30,7 @@ typedef struct {
  * ============================================================================ */
 
 static void hex_dump(const char* prefix, const uint8_t* data, size_t len, size_t max_len) {
-    fprintf(stderr, "%s (%zu bytes): ", prefix, len);
+    // fprintf(stderr, "%s (%zu bytes): ", prefix, len);
     size_t display = len < max_len ? len : max_len;
     for (size_t i = 0; i < display; i++) {
         fprintf(stderr, "%02X ", data[i]);
@@ -217,11 +217,11 @@ static void* tcp_client_handler(void* arg) {
                 input_msg_t input;
                 if (binary_message_parser_parse(&bin_parser, msg_start, msg_len, &input)) {
                     if (!server->config.quiet_mode) {
-                        const char* type_str = 
-                            input.type == INPUT_MSG_NEW_ORDER ? "NEW_ORDER" :
-                            input.type == INPUT_MSG_CANCEL ? "CANCEL" :
-                            input.type == INPUT_MSG_FLUSH ? "FLUSH" : "UNKNOWN";
-                        fprintf(stderr, "[TCP] Client %u: Parsed %s\n", client_id, type_str);
+                        // const char* type_str = 
+                          //   input.type == INPUT_MSG_NEW_ORDER ? "NEW_ORDER" :
+                          //   input.type == INPUT_MSG_CANCEL ? "CANCEL" :
+                          //   input.type == INPUT_MSG_FLUSH ? "FLUSH" : "UNKNOWN";
+                        // fprintf(stderr, "[TCP] Client %u: Parsed %s\n", client_id, type_str);
                     }
                     
                     unified_route_input(server, &input, client_id, NULL);
