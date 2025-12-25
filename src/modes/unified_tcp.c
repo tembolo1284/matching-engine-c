@@ -41,7 +41,7 @@ static void hex_dump(const char* prefix, const uint8_t* data, size_t len, size_t
     if (len > max_len) {
         // fprintf(stderr, "...");
     }
-    fprintf(stderr, "\n");
+    // fprintf(stderr, "\n");
 }
 
 /* ============================================================================

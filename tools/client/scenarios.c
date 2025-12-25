@@ -91,41 +91,97 @@ static void sleep_ms(int ms) {
 }
 
 /**
- * Aggressively drain all pending responses.
- * Keeps trying until no messages received for several attempts,
- * with a hard timeout to prevent infinite hangs.
+ * Simple drain for basic scenarios - just wait for silence.
  */
 static void drain_responses(engine_client_t* client, int initial_delay_ms) {
-    /* Initial delay to let server process */
     sleep_ms(initial_delay_ms);
 
-    /* Hard timeout: max 10 seconds total drain time */
-    uint64_t start_ns = engine_client_now_ns();
-    uint64_t hard_timeout_ns = 12000000000ULL;  /* 10 seconds */
-
-    /* Keep draining until we get several empty attempts in a row */
     int empty_count = 0;
     int total_drained = 0;
 
-    while (empty_count < 10) {
-        /* Check hard timeout */
-        uint64_t elapsed = engine_client_now_ns() - start_ns;
-        if (elapsed > hard_timeout_ns) {
-            if (total_drained > 0) {
-                printf("  [drain timeout after %d messages]\n", total_drained);
-            }
-            break;
-        }
-
+    while (empty_count < 5) {
         int count = engine_client_recv_all(client, 50);
         if (count == 0) {
             empty_count++;
-            sleep_ms(35);
+            sleep_ms(20);
         } else {
             empty_count = 0;
             total_drained += count;
         }
     }
+    (void)total_drained;
+}
+
+/**
+ * Smart drain - knows expected responses, uses adaptive polling.
+ * 
+ * For stress tests:
+ *   - Per order: 1 ACK + variable TOB updates
+ *   - FLUSH: 1 Cancel ACK per order + TOB updates
+ * 
+ * We estimate and drain until we hit the target or timeout.
+ */
+static void drain_responses_smart(engine_client_t* client, 
+                                   uint32_t orders_sent,
+                                   uint32_t already_received,
+                                   bool has_flush) {
+    /* Estimate expected responses:
+     * - Each order: 1 ACK + ~1 TOB (conservative)
+     * - Flush: ~1 Cancel ACK per order + some TOBs
+     */
+    uint32_t expected = orders_sent * 2;  /* ACK + TOB per order */
+    if (has_flush) {
+        expected += orders_sent;  /* Cancel ACKs */
+        expected += 200;          /* TOB updates from flush */
+    }
+    
+    uint32_t target = (expected > already_received) ? (expected - already_received) : 0;
+    
+    printf("  [expecting ~%u more responses, %u total]\n", target, expected);
+    
+    uint64_t start_ns = engine_client_now_ns();
+    uint64_t hard_timeout_ns = 15000000000ULL;  /* 15 seconds max */
+    
+    uint32_t total_drained = 0;
+    int empty_streak = 0;
+    int poll_timeout = 10;  /* Start aggressive */
+    
+    while (total_drained < target && empty_streak < 30) {
+        /* Check hard timeout */
+        uint64_t elapsed = engine_client_now_ns() - start_ns;
+        if (elapsed > hard_timeout_ns) {
+            printf("  [timeout: got %u/%u expected]\n", 
+                   total_drained + already_received, expected);
+            break;
+        }
+        
+        int count = engine_client_recv_all(client, poll_timeout);
+        
+        if (count > 0) {
+            total_drained += count;
+            empty_streak = 0;
+            poll_timeout = 5;  /* Getting data - poll fast */
+            
+            /* Progress every 1000 */
+            if ((total_drained % 1000) < (uint32_t)count) {
+                uint32_t pct = (total_drained + already_received) * 100 / expected;
+                printf("  [received %u/%u (%u%%)...]\n", 
+                       total_drained + already_received, expected, pct);
+            }
+        } else {
+            empty_streak++;
+            /* Exponential backoff: 5 -> 10 -> 20 -> 40 -> 50 max */
+            if (poll_timeout < 50) {
+                poll_timeout = poll_timeout * 2;
+                if (poll_timeout > 50) poll_timeout = 50;
+            }
+            sleep_ms(10);
+        }
+    }
+    
+    uint32_t final_total = total_drained + already_received;
+    uint32_t pct = expected > 0 ? (final_total * 100 / expected) : 100;
+    printf("  [drain complete: %u/%u responses (%u%%)]\n", final_total, expected, pct);
 }
 
 /**
@@ -420,6 +476,9 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     /* Flush first */
     engine_client_send_flush(client);
     drain_responses(client, 100);
+    
+    /* Reset response count after initial flush */
+    if (result) result->responses_received = 0;
 
     /* Progress tracking */
     uint32_t progress_interval = count / 20;
@@ -454,7 +513,9 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 
     printf("\nSending FLUSH to clear book...\n");
     engine_client_send_flush(client);
-    drain_responses(client, 2000);
+    
+    /* Use smart drain - knows we have 'count' orders + flush */
+    drain_responses_smart(client, count, result->responses_received, true);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -479,6 +540,9 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     /* Flush first */
     engine_client_send_flush(client);
     drain_responses(client, 200);
+    
+    /* Reset response count after initial flush */
+    if (result) result->responses_received = 0;
 
     /* Progress tracking - 5% increments */
     uint32_t progress_interval = pairs / 20;
@@ -517,18 +581,12 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
         }
     }
 
-    /* Wait for responses - scale with size */
-    int wait_ms = 500;
-    if (pairs >= 10000000) {
-        wait_ms = 5000;
-    } else if (pairs >= 1000000) {
-        wait_ms = 2000;
-    } else if (pairs >= 100000) {
-        wait_ms = 1000;
-    }
-
-    printf("\nWaiting %d ms for server to finish processing...\n", wait_ms);
-    drain_responses(client, wait_ms);
+    printf("\nDraining responses...\n");
+    
+    /* For matching: 2 ACKs + 1 Trade + ~2 TOBs per pair = ~5 per pair
+     * But orders fully match so no flush needed, no cancel acks */
+    uint32_t orders_sent = pairs * 2;
+    drain_responses_smart(client, orders_sent, result->responses_received, false);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -562,6 +620,9 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     printf("Flushing existing orders...\n");
     engine_client_send_flush(client);
     drain_responses(client, 500);
+    
+    /* Reset response count after initial flush */
+    if (result) result->responses_received = 0;
 
     printf("Starting benchmark...\n\n");
 
@@ -647,16 +708,11 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
            (result ? result->orders_sent : 0) / send_elapsed_sec / 1e6);
     printf("============================================================\n\n");
 
-    /* Wait for server to finish processing */
-    int wait_ms = 5000;
-    if (pairs >= 100000000) {
-        wait_ms = 30000;
-    } else if (pairs >= 10000000) {
-        wait_ms = 10000;
-    }
-
-    printf("Waiting %d ms for server to finish processing...\n", wait_ms);
-    drain_responses(client, wait_ms);
+    printf("Draining responses...\n");
+    
+    /* For matching: orders fully match so no flush needed */
+    uint32_t orders_sent = pairs * 2;
+    drain_responses_smart(client, orders_sent, result->responses_received, false);
 
     finalize_result(result, client);
     scenario_print_result(result);
