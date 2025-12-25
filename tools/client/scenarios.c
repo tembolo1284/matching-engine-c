@@ -97,7 +97,6 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
     sleep_ms(initial_delay_ms);
 
     int empty_count = 0;
-    int total_drained = 0;
 
     while (empty_count < 5) {
         int count = engine_client_recv_all(client, 50);
@@ -106,52 +105,61 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
             sleep_ms(20);
         } else {
             empty_count = 0;
-            total_drained += count;
         }
     }
-    (void)total_drained;
 }
 
 /**
- * Smart drain - knows expected responses, uses adaptive polling.
+ * Drain with adaptive polling and optional progress output.
  * 
- * For stress tests:
- *   - Per order: 1 ACK + variable TOB updates
- *   - FLUSH: 1 Cancel ACK per order + TOB updates
- * 
- * We estimate and drain until we hit the target or timeout.
+ * Expected responses estimate:
+ * - Stress (non-matching): ACK per order + ~20% TOB + Cancel ACKs + ~20% TOB
+ * - Matching: ACK per order + Trade per pair + ~20% TOB (no cancels since matched)
  */
-static void drain_responses_smart(engine_client_t* client, 
-                                   uint32_t orders_sent,
-                                   uint32_t already_received,
-                                   bool has_flush) {
-    /* Estimate expected responses:
-     * - Each order: 1 ACK + ~1 TOB (conservative)
-     * - Flush: ~1 Cancel ACK per order + some TOBs
-     */
-    uint32_t expected = orders_sent * 2;  /* ACK + TOB per order */
-    if (has_flush) {
-        expected += orders_sent;  /* Cancel ACKs */
-        expected += 200;          /* TOB updates from flush */
+static void drain_responses_adaptive(engine_client_t* client, 
+                                      uint32_t orders_sent,
+                                      uint32_t already_received,
+                                      bool has_flush,
+                                      bool is_matching,
+                                      bool verbose) {
+    /* Estimate expected responses */
+    uint32_t expected;
+    
+    if (is_matching) {
+        /* Matching: ACK per order + 1 Trade per pair + ~20% TOB */
+        uint32_t pairs = orders_sent / 2;
+        expected = orders_sent;              /* ACKs */
+        expected += pairs;                   /* Trades */
+        expected += orders_sent / 5;         /* ~20% TOB changes */
+    } else {
+        /* Non-matching stress: ACK + ~20% TOB, plus flush responses */
+        expected = orders_sent;              /* ACKs */
+        expected += orders_sent / 5;         /* ~20% TOB during entry */
+        if (has_flush) {
+            expected += orders_sent;         /* Cancel ACKs */
+            expected += orders_sent / 5;     /* ~20% TOB during flush */
+        }
     }
     
     uint32_t target = (expected > already_received) ? (expected - already_received) : 0;
     
-    printf("  [expecting ~%u more responses, %u total]\n", target, expected);
+    if (verbose) {
+        printf("  [expecting ~%u more responses, ~%u total]\n", target, expected);
+    }
     
     uint64_t start_ns = engine_client_now_ns();
     uint64_t hard_timeout_ns = 15000000000ULL;  /* 15 seconds max */
     
     uint32_t total_drained = 0;
     int empty_streak = 0;
-    int poll_timeout = 10;  /* Start aggressive */
+    int poll_timeout = 10;
     
-    while (total_drained < target && empty_streak < 30) {
-        /* Check hard timeout */
+    while (empty_streak < 30) {
         uint64_t elapsed = engine_client_now_ns() - start_ns;
         if (elapsed > hard_timeout_ns) {
-            printf("  [timeout: got %u/%u expected]\n", 
-                   total_drained + already_received, expected);
+            if (verbose) {
+                printf("  [timeout: got %u responses]\n", total_drained + already_received);
+            }
             break;
         }
         
@@ -160,17 +168,13 @@ static void drain_responses_smart(engine_client_t* client,
         if (count > 0) {
             total_drained += count;
             empty_streak = 0;
-            poll_timeout = 5;  /* Getting data - poll fast */
+            poll_timeout = 5;
             
-            /* Progress every 1000 */
-            if ((total_drained % 1000) < (uint32_t)count) {
-                uint32_t pct = (total_drained + already_received) * 100 / expected;
-                printf("  [received %u/%u (%u%%)...]\n", 
-                       total_drained + already_received, expected, pct);
+            if (verbose && (total_drained % 1000) < (uint32_t)count) {
+                printf("  [received %u...]\n", total_drained + already_received);
             }
         } else {
             empty_streak++;
-            /* Exponential backoff: 5 -> 10 -> 20 -> 40 -> 50 max */
             if (poll_timeout < 50) {
                 poll_timeout = poll_timeout * 2;
                 if (poll_timeout > 50) poll_timeout = 50;
@@ -179,9 +183,10 @@ static void drain_responses_smart(engine_client_t* client,
         }
     }
     
-    uint32_t final_total = total_drained + already_received;
-    uint32_t pct = expected > 0 ? (final_total * 100 / expected) : 100;
-    printf("  [drain complete: %u/%u responses (%u%%)]\n", final_total, expected, pct);
+    if (verbose) {
+        uint32_t final_total = total_drained + already_received;
+        printf("  [drain complete: %u responses]\n", final_total);
+    }
 }
 
 /**
@@ -305,7 +310,6 @@ void scenario_print_result(const scenario_result_t* result) {
 
     /* Format time nicely */
     if (result->total_time_ns >= 60000000000ULL) {
-        /* More than 1 minute */
         double minutes = (double)result->total_time_ns / 6e10;
         printf("Time:                %.2f min\n", minutes);
     } else if (result->total_time_ns >= 1000000000ULL) {
@@ -364,7 +368,6 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     callback_context_t ctx = { .result = result, .verbose = true };
     engine_client_set_response_callback(client, response_counter, &ctx);
 
-    /* Buy order */
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid == 0) {
@@ -373,10 +376,8 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
         if (result) result->orders_sent++;
     }
 
-    /* Wait for ACK + TOB */
     drain_responses(client, 150);
 
-    /* Sell order at different price (no match) */
     printf("\nSending: SELL IBM 50@105\n");
     oid = engine_client_send_order(client, "IBM", 105, 50, SIDE_SELL, 0);
     if (oid == 0) {
@@ -385,15 +386,12 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
         if (result) result->orders_sent++;
     }
 
-    /* Wait for ACK + TOB */
     drain_responses(client, 150);
 
-    /* Flush */
     printf("\nSending: FLUSH\n");
     engine_client_send_flush(client);
     if (result) result->orders_sent++;
 
-    /* Wait for Cancel ACKs + TOBs (flush generates multiple responses) */
     drain_responses(client, 250);
 
     finalize_result(result, client);
@@ -409,20 +407,16 @@ bool scenario_matching_trade(engine_client_t* client, scenario_result_t* result)
     callback_context_t ctx = { .result = result, .verbose = true };
     engine_client_set_response_callback(client, response_counter, &ctx);
 
-    /* Buy order */
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
 
-    /* Wait for ACK + TOB */
     drain_responses(client, 150);
 
-    /* Matching sell order */
     printf("\nSending: SELL IBM 50@100 (should match!)\n");
     oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_SELL, 0);
     if (oid > 0 && result) result->orders_sent++;
 
-    /* Wait for ACK + Trade + TOBs */
     drain_responses(client, 200);
 
     finalize_result(result, client);
@@ -438,19 +432,15 @@ bool scenario_cancel_order(engine_client_t* client, scenario_result_t* result) {
     callback_context_t ctx = { .result = result, .verbose = true };
     engine_client_set_response_callback(client, response_counter, &ctx);
 
-    /* Buy order */
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
 
-    /* Wait for ACK + TOB */
     drain_responses(client, 150);
 
-    /* Cancel */
     printf("\nSending: CANCEL order %u\n", oid);
     engine_client_send_cancel(client, oid);
 
-    /* Wait for Cancel ACK + TOB */
     drain_responses(client, 150);
 
     finalize_result(result, client);
@@ -476,8 +466,6 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     /* Flush first */
     engine_client_send_flush(client);
     drain_responses(client, 100);
-    
-    /* Reset response count after initial flush */
     if (result) result->responses_received = 0;
 
     /* Progress tracking */
@@ -486,7 +474,6 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
 
-    /* Send orders - INTERLEAVED with receives to prevent TCP deadlock */
     for (uint32_t i = 0; i < count; i++) {
         uint32_t price = 100 + (i % 100);
         uint32_t oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
@@ -496,10 +483,8 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
             if (result) result->orders_failed++;
         }
 
-        /* INTERLEAVE: Try to receive after EVERY send (non-blocking) */
         engine_client_recv_all(client, 0);
 
-        /* Progress indicator */
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (i * 100) / count;
@@ -514,8 +499,8 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     printf("\nSending FLUSH to clear book...\n");
     engine_client_send_flush(client);
     
-    /* Use smart drain - knows we have 'count' orders + flush */
-    drain_responses_smart(client, count, result->responses_received, true);
+    /* Quiet drain for stress tests */
+    drain_responses_adaptive(client, count, result->responses_received, true, false, false);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -526,8 +511,8 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
  * Matching Stress (Single Symbol)
  * ============================================================ */
 
-bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
-                              scenario_result_t* result) {
+static bool scenario_matching_stress_impl(engine_client_t* client, uint32_t pairs,
+                                          scenario_result_t* result, bool verbose) {
     printf("=== Matching Stress Test: %u Trade Pairs ===\n\n", pairs);
     printf("Sending %u buy/sell pairs (should generate %u trades)...\n\n", pairs, pairs);
 
@@ -540,35 +525,27 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     /* Flush first */
     engine_client_send_flush(client);
     drain_responses(client, 200);
-    
-    /* Reset response count after initial flush */
     if (result) result->responses_received = 0;
 
-    /* Progress tracking - 5% increments */
+    /* Progress tracking */
     uint32_t progress_interval = pairs / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
 
-    /* Send matching pairs - INTERLEAVED with receives */
     for (uint32_t i = 0; i < pairs; i++) {
         uint32_t price = 100 + (i % 50);
 
-        /* Buy order */
         uint32_t buy_oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
         if (buy_oid > 0 && result) result->orders_sent++;
 
-        /* INTERLEAVE: receive after buy */
         engine_client_recv_all(client, 0);
 
-        /* Matching sell order */
         uint32_t sell_oid = engine_client_send_order(client, "IBM", price, 10, SIDE_SELL, 0);
         if (sell_oid > 0 && result) result->orders_sent++;
 
-        /* INTERLEAVE: receive after sell */
         engine_client_recv_all(client, 0);
 
-        /* Progress indicator */
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
@@ -583,14 +560,25 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 
     printf("\nDraining responses...\n");
     
-    /* For matching: 2 ACKs + 1 Trade + ~2 TOBs per pair = ~5 per pair
-     * But orders fully match so no flush needed, no cancel acks */
     uint32_t orders_sent = pairs * 2;
-    drain_responses_smart(client, orders_sent, result->responses_received, false);
+    drain_responses_adaptive(client, orders_sent, result->responses_received, false, true, verbose);
 
     finalize_result(result, client);
     scenario_print_result(result);
+    
+    /* Validation for scenario 20 */
+    if (verbose && result->trades_executed != pairs) {
+        printf("WARNING: Expected %u trades, got %u\n", pairs, result->trades_executed);
+    }
+    
     return true;
+}
+
+bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
+                              scenario_result_t* result) {
+    /* Only verbose for 1K pairs (scenario 20) */
+    bool verbose = (pairs == 1000);
+    return scenario_matching_stress_impl(client, pairs, result, verbose);
 }
 
 /* ============================================================
@@ -616,35 +604,27 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     callback_context_t ctx = { .result = result, .verbose = false };
     engine_client_set_response_callback(client, response_counter, &ctx);
 
-    /* Flush first */
     printf("Flushing existing orders...\n");
     engine_client_send_flush(client);
     drain_responses(client, 500);
-    
-    /* Reset response count after initial flush */
     if (result) result->responses_received = 0;
 
     printf("Starting benchmark...\n\n");
 
-    /* Progress tracking - 5% increments */
     uint32_t progress_interval = pairs / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
 
-    /* Track processor distribution */
     uint32_t proc0_count = 0;
     uint32_t proc1_count = 0;
 
     uint64_t start_time = engine_client_now_ns();
 
-    /* Send matching pairs across all symbols - INTERLEAVED with receives */
     for (uint32_t i = 0; i < pairs; i++) {
-        /* Rotate through symbols to balance load */
         int symbol_idx = i % NUM_DUAL_PROC_SYMBOLS;
         const char* symbol = DUAL_PROC_SYMBOLS[symbol_idx];
         uint32_t price = 100 + (i % 50);
 
-        /* Buy order */
         uint32_t buy_oid = engine_client_send_order(client, symbol, price, 10, SIDE_BUY, 0);
         if (buy_oid > 0) {
             if (result) result->orders_sent++;
@@ -652,10 +632,8 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             else proc1_count++;
         }
 
-        /* INTERLEAVE: receive after buy */
         engine_client_recv_all(client, 0);
 
-        /* Matching sell order */
         uint32_t sell_oid = engine_client_send_order(client, symbol, price, 10, SIDE_SELL, 0);
         if (sell_oid > 0) {
             if (result) result->orders_sent++;
@@ -663,10 +641,8 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             else proc1_count++;
         }
 
-        /* INTERLEAVE: receive after sell */
         engine_client_recv_all(client, 0);
 
-        /* Progress indicator */
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
@@ -688,13 +664,11 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
         }
     }
 
-    /* Store processor distribution */
     if (result) {
         result->proc0_orders = proc0_count;
         result->proc1_orders = proc1_count;
     }
 
-    /* Final timing */
     uint64_t send_elapsed_ns = engine_client_now_ns() - start_time;
     double send_elapsed_sec = (double)send_elapsed_ns / 1e9;
 
@@ -710,9 +684,8 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
 
     printf("Draining responses...\n");
     
-    /* For matching: orders fully match so no flush needed */
     uint32_t orders_sent = pairs * 2;
-    drain_responses_smart(client, orders_sent, result->responses_received, false);
+    drain_responses_adaptive(client, orders_sent, result->responses_received, false, true, false);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -742,22 +715,18 @@ bool scenario_run(engine_client_t* client,
         return false;
     }
 
-    /* Reset client stats */
     engine_client_reset_stats(client);
     engine_client_reset_order_id(client, 1);
 
     switch (scenario_id) {
-        /* Basic */
         case 1:  return scenario_simple_orders(client, result);
         case 2:  return scenario_matching_trade(client, result);
         case 3:  return scenario_cancel_order(client, result);
 
-        /* Small stress (non-matching, up to 100K) */
         case 10: return scenario_stress_test(client, 1000, danger_burst, result);
         case 11: return scenario_stress_test(client, 10000, danger_burst, result);
         case 12: return scenario_stress_test(client, 100000, danger_burst, result);
 
-        /* Matching - single symbol */
         case 20: return scenario_matching_stress(client, 1000, result);
         case 21: return scenario_matching_stress(client, 10000, result);
         case 22: return scenario_matching_stress(client, 100000, result);
@@ -765,7 +734,6 @@ bool scenario_run(engine_client_t* client,
         case 24: return scenario_matching_stress(client, 10000000, result);
         case 25: return scenario_matching_stress(client, 50000000, result);
 
-        /* Matching - multi-symbol (dual processor) */
         case 26: return scenario_multi_symbol_matching_stress(client, 250000000, result);
         case 27: return scenario_multi_symbol_matching_stress(client, 500000000, result);
 
