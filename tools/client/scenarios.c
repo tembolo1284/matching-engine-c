@@ -101,13 +101,13 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
 
     /* Hard timeout: max 10 seconds total drain time */
     uint64_t start_ns = engine_client_now_ns();
-    uint64_t hard_timeout_ns = 10000000000ULL;  /* 10 seconds */
+    uint64_t hard_timeout_ns = 12000000000ULL;  /* 10 seconds */
 
     /* Keep draining until we get several empty attempts in a row */
     int empty_count = 0;
     int total_drained = 0;
 
-    while (empty_count < 3) {
+    while (empty_count < 10) {
         /* Check hard timeout */
         uint64_t elapsed = engine_client_now_ns() - start_ns;
         if (elapsed > hard_timeout_ns) {
@@ -120,7 +120,7 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
         int count = engine_client_recv_all(client, 50);
         if (count == 0) {
             empty_count++;
-            sleep_ms(25);
+            sleep_ms(35);
         } else {
             empty_count = 0;
             total_drained += count;
