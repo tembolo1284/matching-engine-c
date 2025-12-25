@@ -110,113 +110,41 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
 }
 
 /**
- * Drain for stress tests (non-matching) - quiet, adaptive timeout.
+ * Aggressive drain - keep receiving until we hit target trades or stall.
+ * Used at end of matching scenarios to ensure all trades received.
  */
-static void drain_responses_stress(engine_client_t* client, uint32_t orders_sent) {
-    /* Timeout scales with order count: 5 seconds base + 1 second per 10K orders */
-    uint64_t timeout_sec = 5 + (orders_sent / 10000);
-    if (timeout_sec > 60) timeout_sec = 60;
-    
+static void drain_until_complete(engine_client_t* client,
+                                  scenario_result_t* result,
+                                  uint32_t expected_trades) {
     uint64_t start_ns = engine_client_now_ns();
-    uint64_t hard_timeout_ns = timeout_sec * 1000000000ULL;
-    
-    int empty_streak = 0;
-    int poll_timeout = 10;
-    
-    while (empty_streak < 50) {
-        uint64_t elapsed = engine_client_now_ns() - start_ns;
-        if (elapsed > hard_timeout_ns) break;
-        
-        int count = engine_client_recv_all(client, poll_timeout);
-        
-        if (count > 0) {
-            empty_streak = 0;
-            poll_timeout = 5;
-        } else {
-            empty_streak++;
-            if (poll_timeout < 100) poll_timeout += 10;
-            sleep_ms(10);
-        }
-    }
-}
-
-/**
- * Drain for matching scenarios - keeps going until we have all expected trades.
- * 
- * For matching scenarios, we know EXACTLY how many trades to expect,
- * so we keep draining until we get them all or hit a hard timeout.
- */
-static void drain_responses_matching(engine_client_t* client,
-                                      scenario_result_t* result,
-                                      uint32_t expected_trades) {
-    /* Timeout scales with trade count: 10 seconds base + 1 second per 5K trades */
-    uint64_t timeout_sec = 10 + (expected_trades / 5000);
-    if (timeout_sec > 120) timeout_sec = 120;  /* Max 2 minutes */
-    
-    uint64_t start_ns = engine_client_now_ns();
-    uint64_t hard_timeout_ns = timeout_sec * 1000000000ULL;
+    uint64_t timeout_ns = 30000000000ULL;  /* 30 second hard timeout */
     
     uint32_t last_trade_count = result->trades_executed;
-    int stall_count = 0;
-    int poll_timeout = 10;
-    
-    /* Progress tracking */
-    uint32_t last_progress = 0;
-    uint32_t progress_interval = expected_trades / 10;  /* Every 10% */
-    if (progress_interval == 0) progress_interval = 1;
-    
-    printf("  [waiting for %u trades, timeout %lu sec]\n", 
-           expected_trades, (unsigned long)timeout_sec);
+    int stall_iterations = 0;
     
     while (result->trades_executed < expected_trades) {
         uint64_t elapsed = engine_client_now_ns() - start_ns;
-        if (elapsed > hard_timeout_ns) {
-            printf("  [timeout after %.1f sec]\n", (double)elapsed / 1e9);
+        if (elapsed > timeout_ns) {
+            printf("  [timeout]\n");
             break;
         }
         
-        int count = engine_client_recv_all(client, poll_timeout);
+        int count = engine_client_recv_all(client, 50);
         
         if (count > 0) {
-            stall_count = 0;
-            poll_timeout = 5;  /* Got data, poll fast */
-            
-            /* Progress report */
-            if (result->trades_executed / progress_interval > last_progress) {
-                last_progress = result->trades_executed / progress_interval;
-                uint32_t pct = (result->trades_executed * 100) / expected_trades;
-                printf("  [trades: %u/%u (%u%%)]\n", 
-                       result->trades_executed, expected_trades, pct);
-            }
+            stall_iterations = 0;
         } else {
-            /* No data this round - check if we're stalled */
             if (result->trades_executed == last_trade_count) {
-                stall_count++;
-                
-                /* If stalled for too long with no new trades, give up */
-                if (stall_count > 100) {  /* ~5 seconds of no progress */
-                    printf("  [stalled - no new trades for 5+ seconds]\n");
+                stall_iterations++;
+                if (stall_iterations > 50) {  /* ~2.5 seconds stall */
                     break;
                 }
-                
-                /* Backoff polling */
-                if (poll_timeout < 100) poll_timeout += 5;
-                sleep_ms(20);
             } else {
-                /* Got trades since last check, reset stall counter */
                 last_trade_count = result->trades_executed;
-                stall_count = 0;
+                stall_iterations = 0;
             }
+            sleep_ms(20);
         }
-    }
-    
-    if (result->trades_executed >= expected_trades) {
-        printf("  [complete: %u/%u trades (100%%)]\n", 
-               result->trades_executed, expected_trades);
-    } else {
-        printf("  [incomplete: %u/%u trades (%u%%)]\n",
-               result->trades_executed, expected_trades,
-               (result->trades_executed * 100) / expected_trades);
     }
 }
 
@@ -514,6 +442,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
             if (result) result->orders_failed++;
         }
 
+        /* Interleave receives */
         engine_client_recv_all(client, 0);
 
         if (i > 0 && i / progress_interval > last_progress) {
@@ -530,7 +459,17 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     printf("\nSending FLUSH to clear book...\n");
     engine_client_send_flush(client);
     
-    drain_responses_stress(client, count);
+    /* Simple drain for stress tests */
+    int empty_count = 0;
+    while (empty_count < 30) {
+        int count_recv = engine_client_recv_all(client, 50);
+        if (count_recv == 0) {
+            empty_count++;
+            sleep_ms(20);
+        } else {
+            empty_count = 0;
+        }
+    }
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -538,7 +477,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 }
 
 /* ============================================================
- * Matching Stress (Single Symbol)
+ * Matching Stress (Single Symbol) - PACED SENDING
  * ============================================================ */
 
 bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
@@ -562,20 +501,41 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
+    
+    /* Pacing: drain aggressively every N pairs to prevent buffer overflow */
+    uint32_t drain_interval = 1000;  /* Drain every 1000 pairs */
+    if (pairs >= 1000000) drain_interval = 10000;
+    else if (pairs >= 100000) drain_interval = 5000;
 
     for (uint32_t i = 0; i < pairs; i++) {
         uint32_t price = 100 + (i % 50);
 
+        /* Send buy */
         uint32_t buy_oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
         if (buy_oid > 0 && result) result->orders_sent++;
 
+        /* Quick non-blocking receive */
         engine_client_recv_all(client, 0);
 
+        /* Send matching sell */
         uint32_t sell_oid = engine_client_send_order(client, "IBM", price, 10, SIDE_SELL, 0);
         if (sell_oid > 0 && result) result->orders_sent++;
 
+        /* Quick non-blocking receive */
         engine_client_recv_all(client, 0);
 
+        /* Periodic aggressive drain to keep up with server */
+        if ((i + 1) % drain_interval == 0) {
+            /* Drain until we've caught up somewhat */
+            int drain_rounds = 0;
+            while (drain_rounds < 20) {
+                int count = engine_client_recv_all(client, 10);
+                if (count == 0) break;
+                drain_rounds++;
+            }
+        }
+
+        /* Progress indicator */
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
@@ -583,13 +543,18 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
             uint64_t elapsed_ms = elapsed_ns / 1000000;
             uint64_t orders_sent = (uint64_t)i * 2;
             uint64_t rate = (elapsed_ms > 0) ? (orders_sent * 1000 / elapsed_ms) : 0;
-            printf("  %u%% (%u pairs, %lu ms, %lu orders/sec)\n",
-                   pct, i, (unsigned long)elapsed_ms, (unsigned long)rate);
+            printf("  %u%% (%u pairs, %lu ms, %lu orders/sec, %u trades so far)\n",
+                   pct, i, (unsigned long)elapsed_ms, (unsigned long)rate,
+                   result->trades_executed);
         }
     }
 
-    printf("\nDraining responses...\n");
-    drain_responses_matching(client, result, pairs);
+    /* Final drain - keep going until all trades received or stalled */
+    printf("\nDraining remaining responses...\n");
+    printf("  [sent %u pairs, received %u trades so far]\n", 
+           pairs, result->trades_executed);
+    
+    drain_until_complete(client, result, pairs);
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -607,7 +572,7 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 }
 
 /* ============================================================
- * Multi-Symbol Matching Stress (Dual Processor)
+ * Multi-Symbol Matching Stress (Dual Processor) - PACED SENDING
  * ============================================================ */
 
 bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pairs,
@@ -644,6 +609,11 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     uint32_t proc1_count = 0;
 
     uint64_t start_time = engine_client_now_ns();
+    
+    /* Pacing interval */
+    uint32_t drain_interval = 10000;
+    if (pairs >= 100000000) drain_interval = 50000;
+    else if (pairs >= 10000000) drain_interval = 25000;
 
     for (uint32_t i = 0; i < pairs; i++) {
         int symbol_idx = i % NUM_DUAL_PROC_SYMBOLS;
@@ -668,6 +638,16 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
 
         engine_client_recv_all(client, 0);
 
+        /* Periodic aggressive drain */
+        if ((i + 1) % drain_interval == 0) {
+            int drain_rounds = 0;
+            while (drain_rounds < 30) {
+                int count = engine_client_recv_all(client, 10);
+                if (count == 0) break;
+                drain_rounds++;
+            }
+        }
+
         if (i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
@@ -680,11 +660,13 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             if (elapsed_sec >= 60) {
                 uint64_t mins = elapsed_sec / 60;
                 uint64_t secs = elapsed_sec % 60;
-                printf("  %3u%% | %10u pairs | %2lu:%02lu elapsed | %lu orders/sec\n",
-                       pct, i, (unsigned long)mins, (unsigned long)secs, (unsigned long)rate);
+                printf("  %3u%% | %10u pairs | %2lu:%02lu | %lu/s | %u trades\n",
+                       pct, i, (unsigned long)mins, (unsigned long)secs, 
+                       (unsigned long)rate, result->trades_executed);
             } else {
-                printf("  %3u%% | %10u pairs | %5lu ms | %lu orders/sec\n",
-                       pct, i, (unsigned long)elapsed_ms, (unsigned long)rate);
+                printf("  %3u%% | %10u pairs | %5lums | %lu/s | %u trades\n",
+                       pct, i, (unsigned long)elapsed_ms, 
+                       (unsigned long)rate, result->trades_executed);
             }
         }
     }
@@ -705,15 +687,15 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     printf("Send time:       %.2f sec\n", send_elapsed_sec);
     printf("Send rate:       %.2fM orders/sec\n",
            (result ? result->orders_sent : 0) / send_elapsed_sec / 1e6);
+    printf("Trades so far:   %u\n", result->trades_executed);
     printf("============================================================\n\n");
 
-    printf("Draining responses...\n");
-    drain_responses_matching(client, result, pairs);
+    printf("Draining remaining responses...\n");
+    drain_until_complete(client, result, pairs);
 
     finalize_result(result, client);
     scenario_print_result(result);
     
-    /* Validation */
     if (result->trades_executed != pairs) {
         printf("⚠ WARNING: Expected %u trades, got %u (%.1f%%)\n\n", 
                pairs, result->trades_executed,
