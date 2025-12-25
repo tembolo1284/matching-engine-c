@@ -2,8 +2,7 @@
  * scenarios.c - Test scenarios implementation
  *
  * Focused on matching throughput - the real strength of a matching engine.
- * Large one-sided stress tests removed since they just fill the pool.
- * Small stress tests (up to 100K) kept for quick validation.
+ * Uses adaptive pacing to prevent TCP buffer overflow on large tests.
  */
 #include "client/scenarios.h"
 #include <stdio.h>
@@ -110,40 +109,38 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
 }
 
 /**
- * Aggressive drain - keep receiving until we hit target trades or stall.
- * Used at end of matching scenarios to ensure all trades received.
+ * Aggressive drain until target trades reached or stalled.
  */
-static void drain_until_complete(engine_client_t* client,
-                                  scenario_result_t* result,
-                                  uint32_t expected_trades) {
-    uint64_t start_ns = engine_client_now_ns();
-    uint64_t timeout_ns = 30000000000ULL;  /* 30 second hard timeout */
-    
+static void drain_until_trades(engine_client_t* client,
+                                scenario_result_t* result,
+                                uint32_t target_trades,
+                                int max_stall_ms) {
     uint32_t last_trade_count = result->trades_executed;
-    int stall_iterations = 0;
+    uint64_t stall_start = 0;
+    bool stalling = false;
     
-    while (result->trades_executed < expected_trades) {
-        uint64_t elapsed = engine_client_now_ns() - start_ns;
-        if (elapsed > timeout_ns) {
-            printf("  [timeout]\n");
-            break;
-        }
-        
-        int count = engine_client_recv_all(client, 50);
+    while (result->trades_executed < target_trades) {
+        int count = engine_client_recv_all(client, 20);
         
         if (count > 0) {
-            stall_iterations = 0;
+            stalling = false;
         } else {
-            if (result->trades_executed == last_trade_count) {
-                stall_iterations++;
-                if (stall_iterations > 50) {  /* ~2.5 seconds stall */
-                    break;
-                }
-            } else {
+            if (result->trades_executed != last_trade_count) {
+                /* Got new trades since last check, reset */
                 last_trade_count = result->trades_executed;
-                stall_iterations = 0;
+                stalling = false;
+            } else if (!stalling) {
+                /* Start stall timer */
+                stalling = true;
+                stall_start = engine_client_now_ns();
+            } else {
+                /* Check if stalled too long */
+                uint64_t stall_ns = engine_client_now_ns() - stall_start;
+                if (stall_ns > (uint64_t)max_stall_ms * 1000000ULL) {
+                    break;  /* Stalled too long, give up */
+                }
+                sleep_ms(5);
             }
-            sleep_ms(20);
         }
     }
 }
@@ -459,7 +456,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     printf("\nSending FLUSH to clear book...\n");
     engine_client_send_flush(client);
     
-    /* Simple drain for stress tests */
+    /* Simple drain */
     int empty_count = 0;
     while (empty_count < 30) {
         int count_recv = engine_client_recv_all(client, 50);
@@ -477,7 +474,11 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 }
 
 /* ============================================================
- * Matching Stress (Single Symbol) - PACED SENDING
+ * Matching Stress (Single Symbol) - ADAPTIVE PACING
+ * 
+ * Key insight: We know exactly how many trades we expect (1 per pair).
+ * If we fall too far behind, pause sending and drain until caught up.
+ * This creates natural flow control and prevents buffer overflow.
  * ============================================================ */
 
 bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
@@ -502,10 +503,9 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
     
-    /* Pacing: drain aggressively every N pairs to prevent buffer overflow */
-    uint32_t drain_interval = 1000;  /* Drain every 1000 pairs */
-    if (pairs >= 1000000) drain_interval = 10000;
-    else if (pairs >= 100000) drain_interval = 5000;
+    /* Adaptive pacing parameters */
+    uint32_t max_deficit = 5000;   /* Max trades we can fall behind */
+    uint32_t catchup_target = 1000; /* Drain until only this far behind */
 
     for (uint32_t i = 0; i < pairs; i++) {
         uint32_t price = 100 + (i % 50);
@@ -524,15 +524,14 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
         /* Quick non-blocking receive */
         engine_client_recv_all(client, 0);
 
-        /* Periodic aggressive drain to keep up with server */
-        if ((i + 1) % drain_interval == 0) {
-            /* Drain until we've caught up somewhat */
-            int drain_rounds = 0;
-            while (drain_rounds < 20) {
-                int count = engine_client_recv_all(client, 10);
-                if (count == 0) break;
-                drain_rounds++;
-            }
+        /* ADAPTIVE PACING: If falling too far behind on trades, pause and drain */
+        uint32_t pairs_sent = i + 1;
+        uint32_t expected_trades = pairs_sent;  /* 1 trade per pair */
+        
+        if (expected_trades > result->trades_executed + max_deficit) {
+            /* We're too far behind - drain until caught up */
+            uint32_t target = expected_trades - catchup_target;
+            drain_until_trades(client, result, target, 5000);  /* 5 sec max stall */
         }
 
         /* Progress indicator */
@@ -543,18 +542,20 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
             uint64_t elapsed_ms = elapsed_ns / 1000000;
             uint64_t orders_sent = (uint64_t)i * 2;
             uint64_t rate = (elapsed_ms > 0) ? (orders_sent * 1000 / elapsed_ms) : 0;
-            printf("  %u%% (%u pairs, %lu ms, %lu orders/sec, %u trades so far)\n",
+            uint32_t deficit = pairs_sent - result->trades_executed;
+            printf("  %u%% | %u pairs | %lums | %lu/s | %u trades | deficit %u\n",
                    pct, i, (unsigned long)elapsed_ms, (unsigned long)rate,
-                   result->trades_executed);
+                   result->trades_executed, deficit);
         }
     }
 
-    /* Final drain - keep going until all trades received or stalled */
+    /* Final drain - keep going until all trades received */
     printf("\nDraining remaining responses...\n");
-    printf("  [sent %u pairs, received %u trades so far]\n", 
-           pairs, result->trades_executed);
+    printf("  [sent %u pairs, have %u trades, need %u more]\n", 
+           pairs, result->trades_executed, pairs - result->trades_executed);
     
-    drain_until_complete(client, result, pairs);
+    /* Give it plenty of time for final drain */
+    drain_until_trades(client, result, pairs, 30000);  /* 30 sec max */
 
     finalize_result(result, client);
     scenario_print_result(result);
@@ -572,7 +573,7 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 }
 
 /* ============================================================
- * Multi-Symbol Matching Stress (Dual Processor) - PACED SENDING
+ * Multi-Symbol Matching Stress (Dual Processor) - ADAPTIVE PACING
  * ============================================================ */
 
 bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pairs,
@@ -610,10 +611,9 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
 
     uint64_t start_time = engine_client_now_ns();
     
-    /* Pacing interval */
-    uint32_t drain_interval = 10000;
-    if (pairs >= 100000000) drain_interval = 50000;
-    else if (pairs >= 10000000) drain_interval = 25000;
+    /* Adaptive pacing - larger buffers for multi-symbol */
+    uint32_t max_deficit = 10000;
+    uint32_t catchup_target = 2000;
 
     for (uint32_t i = 0; i < pairs; i++) {
         int symbol_idx = i % NUM_DUAL_PROC_SYMBOLS;
@@ -638,14 +638,11 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
 
         engine_client_recv_all(client, 0);
 
-        /* Periodic aggressive drain */
-        if ((i + 1) % drain_interval == 0) {
-            int drain_rounds = 0;
-            while (drain_rounds < 30) {
-                int count = engine_client_recv_all(client, 10);
-                if (count == 0) break;
-                drain_rounds++;
-            }
+        /* Adaptive pacing */
+        uint32_t pairs_sent = i + 1;
+        if (pairs_sent > result->trades_executed + max_deficit) {
+            uint32_t target = pairs_sent - catchup_target;
+            drain_until_trades(client, result, target, 5000);
         }
 
         if (i > 0 && i / progress_interval > last_progress) {
@@ -656,17 +653,18 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             uint64_t elapsed_sec = elapsed_ms / 1000;
             uint64_t orders_sent = (uint64_t)i * 2;
             uint64_t rate = (elapsed_ms > 0) ? (orders_sent * 1000 / elapsed_ms) : 0;
+            uint32_t deficit = pairs_sent - result->trades_executed;
 
             if (elapsed_sec >= 60) {
                 uint64_t mins = elapsed_sec / 60;
                 uint64_t secs = elapsed_sec % 60;
-                printf("  %3u%% | %10u pairs | %2lu:%02lu | %lu/s | %u trades\n",
+                printf("  %3u%% | %9u pairs | %2lu:%02lu | %6lu/s | %u trades | def %u\n",
                        pct, i, (unsigned long)mins, (unsigned long)secs, 
-                       (unsigned long)rate, result->trades_executed);
+                       (unsigned long)rate, result->trades_executed, deficit);
             } else {
-                printf("  %3u%% | %10u pairs | %5lums | %lu/s | %u trades\n",
+                printf("  %3u%% | %9u pairs | %5lums | %6lu/s | %u trades | def %u\n",
                        pct, i, (unsigned long)elapsed_ms, 
-                       (unsigned long)rate, result->trades_executed);
+                       (unsigned long)rate, result->trades_executed, deficit);
             }
         }
     }
@@ -691,7 +689,7 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     printf("============================================================\n\n");
 
     printf("Draining remaining responses...\n");
-    drain_until_complete(client, result, pairs);
+    drain_until_trades(client, result, pairs, 60000);  /* 60 sec max */
 
     finalize_result(result, client);
     scenario_print_result(result);
