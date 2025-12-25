@@ -99,9 +99,9 @@ static void* tcp_client_handler(void* arg) {
     char addr_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &ctx->client_addr.sin_addr, addr_str, sizeof(addr_str));
     uint16_t port = ntohs(ctx->client_addr.sin_port);
-    // (void)port;  //remove when you bring the debug print back.
-    fprintf(stderr, "[TCP] Client %u connected from %s:%u (fd=%d)\n", 
-            client_id, addr_str, port, fd);
+    (void)port;  //remove when you bring the debug print back.
+    // fprintf(stderr, "[TCP] Client %u connected from %s:%u (fd=%d)\n", 
+            // client_id, addr_str, port, fd);
     
     /* Allocate receive buffer */
     uint8_t* recv_buffer = malloc(TCP_RECV_BUFFER_SIZE);
@@ -146,8 +146,8 @@ static void* tcp_client_handler(void* arg) {
         buffer_used += n;
         
         if (!server->config.quiet_mode) {
-            fprintf(stderr, "[TCP] Client %u: Received %zd bytes (buffer: %zu)\n", 
-                    client_id, n, buffer_used);
+            // fprintf(stderr, "[TCP] Client %u: Received %zd bytes (buffer: %zu)\n", 
+                    // client_id, n, buffer_used);
             hex_dump("[TCP] Data", recv_buffer, buffer_used, 48);
         }
         
@@ -205,7 +205,7 @@ static void* tcp_client_handler(void* arg) {
                 const uint8_t* msg_start = ptr + 4;
                 
                 if (!server->config.quiet_mode) {
-                    fprintf(stderr, "[TCP] Client %u: Processing msg len=%u\n", client_id, msg_len);
+                    // fprintf(stderr, "[TCP] Client %u: Processing msg len=%u\n", client_id, msg_len);
                     hex_dump("[TCP] Msg", msg_start, msg_len, 32);
                 }
                 
@@ -220,11 +220,11 @@ static void* tcp_client_handler(void* arg) {
                 input_msg_t input;
                 if (binary_message_parser_parse(&bin_parser, msg_start, msg_len, &input)) {
                     if (!server->config.quiet_mode) {
-                        const char* type_str = 
-                            input.type == INPUT_MSG_NEW_ORDER ? "NEW_ORDER" :
-                            input.type == INPUT_MSG_CANCEL ? "CANCEL" :
-                            input.type == INPUT_MSG_FLUSH ? "FLUSH" : "UNKNOWN";
-                        fprintf(stderr, "[TCP] Client %u: Parsed %s\n", client_id, type_str);
+                        // const char* type_str = 
+                            // input.type == INPUT_MSG_NEW_ORDER ? "NEW_ORDER" :
+                            // input.type == INPUT_MSG_CANCEL ? "CANCEL" :
+                            // input.type == INPUT_MSG_FLUSH ? "FLUSH" : "UNKNOWN";
+                        // fprintf(stderr, "[TCP] Client %u: Parsed %s\n", client_id, type_str);
                     }
                     
                     unified_route_input(server, &input, client_id, NULL);
