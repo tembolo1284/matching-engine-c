@@ -143,6 +143,20 @@ static void drain_until_trades(engine_client_t* client,
             }
         }
     }
+    
+    /* Final squeeze: if very close to target, try harder */
+    uint32_t remaining = target_trades - result->trades_executed;
+    if (remaining > 0 && remaining < 1000) {
+        /* We're so close - give it extra attempts */
+        for (int attempt = 0; attempt < 10 && result->trades_executed < target_trades; attempt++) {
+            sleep_ms(100);  /* Give server time */
+            int got = 0;
+            for (int i = 0; i < 50; i++) {
+                got += engine_client_recv_all(client, 50);
+            }
+            if (got == 0) break;  /* Nothing coming */
+        }
+    }
 }
 
 /**
@@ -551,11 +565,17 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
 
     /* Final drain - keep going until all trades received */
     printf("\nDraining remaining responses...\n");
+    uint32_t remaining = pairs - result->trades_executed;
     printf("  [sent %u pairs, have %u trades, need %u more]\n", 
-           pairs, result->trades_executed, pairs - result->trades_executed);
+           pairs, result->trades_executed, remaining);
     
-    /* Give it plenty of time for final drain */
-    drain_until_trades(client, result, pairs, 30000);  /* 30 sec max */
+    /* Give it plenty of time for final drain - 60 sec stall timeout */
+    drain_until_trades(client, result, pairs, 60000);
+    
+    /* Report final status */
+    if (result->trades_executed < pairs) {
+        printf("  [final: %u/%u trades]\n", result->trades_executed, pairs);
+    }
 
     finalize_result(result, client);
     scenario_print_result(result);
