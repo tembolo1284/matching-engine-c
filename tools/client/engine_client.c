@@ -12,7 +12,7 @@
 
 /* Maximum iterations for drain loops - prevents runaway */
 #define MAX_DRAIN_ITERATIONS 100
-#define MAX_RECV_ATTEMPTS    50
+#define MAX_RECV_ATTEMPTS    1000   /* Increased from 50 - need to handle large bursts */
 #define MAX_POLL_FDS         2
 
 /* ============================================================
@@ -221,7 +221,6 @@ bool engine_client_connect(engine_client_t* client) {
         client->codec.detected_encoding = ENCODING_CSV;
         client->codec.send_encoding = ENCODING_CSV;  /* Must set send_encoding too! */
         client->codec.encoding_detected = true;
-
         if (!cfg->quiet) {
             printf("UDP mode: defaulting to CSV (server outputs to stdout)\n");
         }
@@ -270,7 +269,6 @@ void engine_client_destroy(engine_client_t* client) {
     if (client == NULL) {
         return;
     }
-
     engine_client_disconnect(client);
 }
 
@@ -278,7 +276,6 @@ bool engine_client_is_connected(const engine_client_t* client) {
     if (client == NULL) {
         return false;
     }
-
     return client->connected && transport_is_connected(&client->transport);
 }
 
@@ -342,7 +339,6 @@ void engine_client_set_response_callback(engine_client_t* client,
     if (client == NULL) {
         return;
     }
-
     client->response_callback = callback;
     client->response_user_data = user_data;
 }
@@ -353,7 +349,6 @@ void engine_client_set_multicast_callback(engine_client_t* client,
     if (client == NULL) {
         return;
     }
-
     client->multicast_callback = callback;
     client->multicast_user_data = user_data;
 }
@@ -519,6 +514,7 @@ int engine_client_poll(engine_client_t* client) {
             if (!transport_recv(&client->transport, buffer, sizeof(buffer), &len, 0)) {
                 break;
             }
+
             if (codec_decode_response(&client->codec, buffer, len, &msg)) {
                 process_response(client, &msg, false);
                 count++;
@@ -537,6 +533,7 @@ int engine_client_poll(engine_client_t* client) {
             if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN)) {
                 break;
             }
+
             if (!multicast_receiver_recv(&client->multicast, buffer,
                                          sizeof(buffer), &len, 0)) {
                 break;
@@ -670,7 +667,7 @@ int engine_client_recv_all(engine_client_t* client, int timeout_ms) {
             break;
         }
         count++;
-        timeout_ms = 10;  /* Shorter timeout after first */
+        timeout_ms = 1;  /* Very short timeout after first - just check for more */
     }
 
     return count;
@@ -748,7 +745,6 @@ void engine_client_reset_stats(engine_client_t* client) {
     if (client == NULL) {
         return;
     }
-
     client->orders_sent = 0;
     client->cancels_sent = 0;
     client->flushes_sent = 0;

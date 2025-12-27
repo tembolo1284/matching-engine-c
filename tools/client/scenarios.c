@@ -10,6 +10,16 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <signal.h>
+
+/* Global flag for graceful shutdown */
+static volatile sig_atomic_t g_running = 1;
+
+static void signal_handler(int sig) {
+    (void)sig;
+    g_running = 0;
+    printf("\n[interrupted - shutting down]\n");
+}
 
 /* ============================================================
  * Scenario Registry
@@ -97,7 +107,7 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
 
     int empty_count = 0;
 
-    while (empty_count < 5) {
+    while (empty_count < 5 && g_running) {
         int count = engine_client_recv_all(client, 50);
         if (count == 0) {
             empty_count++;
@@ -119,7 +129,7 @@ static void drain_until_trades(engine_client_t* client,
     uint64_t stall_start = 0;
     bool stalling = false;
     
-    while (result->trades_executed < target_trades) {
+    while (result->trades_executed < target_trades && g_running) {
         int count = engine_client_recv_all(client, 20);
         
         if (count > 0) {
@@ -146,12 +156,12 @@ static void drain_until_trades(engine_client_t* client,
     
     /* Final squeeze: if very close to target, try harder */
     uint32_t remaining = target_trades - result->trades_executed;
-    if (remaining > 0 && remaining < 1000) {
+    if (remaining > 0 && remaining < 1000 && g_running) {
         /* We're so close - give it extra attempts */
-        for (int attempt = 0; attempt < 10 && result->trades_executed < target_trades; attempt++) {
+        for (int attempt = 0; attempt < 10 && result->trades_executed < target_trades && g_running; attempt++) {
             sleep_ms(100);  /* Give server time */
             int got = 0;
-            for (int i = 0; i < 50; i++) {
+            for (int i = 0; i < 50 && g_running; i++) {
                 got += engine_client_recv_all(client, 50);
             }
             if (got == 0) break;  /* Nothing coming */
@@ -427,6 +437,11 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
 
     printf("=== Stress Test: %u Orders (non-matching) ===\n\n", count);
 
+    /* Setup signal handler */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    g_running = 1;
+
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
 
@@ -444,7 +459,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
 
-    for (uint32_t i = 0; i < count; i++) {
+    for (uint32_t i = 0; i < count && g_running; i++) {
         uint32_t price = 100 + (i % 100);
         uint32_t oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
         if (oid > 0) {
@@ -472,7 +487,7 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
     
     /* Simple drain */
     int empty_count = 0;
-    while (empty_count < 30) {
+    while (empty_count < 30 && g_running) {
         int count_recv = engine_client_recv_all(client, 50);
         if (count_recv == 0) {
             empty_count++;
@@ -500,6 +515,11 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     printf("=== Matching Stress Test: %u Trade Pairs ===\n\n", pairs);
     printf("Sending %u buy/sell pairs (should generate %u trades)...\n\n", pairs, pairs);
 
+    /* Setup signal handler for Ctrl+C */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    g_running = 1;
+
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
 
@@ -521,7 +541,7 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     uint32_t max_deficit = 5000;   /* Max trades we can fall behind */
     uint32_t catchup_target = 1000; /* Drain until only this far behind */
 
-    for (uint32_t i = 0; i < pairs; i++) {
+    for (uint32_t i = 0; i < pairs && g_running; i++) {
         uint32_t price = 100 + (i % 50);
 
         /* Send buy */
@@ -561,6 +581,10 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
                    pct, i, (unsigned long)elapsed_ms, (unsigned long)rate,
                    result->trades_executed, deficit);
         }
+    }
+
+    if (!g_running) {
+        printf("\n[interrupted at %u pairs]\n", result->orders_sent / 2);
     }
 
     /* Final drain - keep going until all trades received */
@@ -622,6 +646,11 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
 
     printf("Starting benchmark...\n\n");
 
+    /* Setup signal handler */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    g_running = 1;
+
     uint32_t progress_interval = pairs / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
@@ -635,7 +664,7 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     uint32_t max_deficit = 10000;
     uint32_t catchup_target = 2000;
 
-    for (uint32_t i = 0; i < pairs; i++) {
+    for (uint32_t i = 0; i < pairs && g_running; i++) {
         int symbol_idx = i % NUM_DUAL_PROC_SYMBOLS;
         const char* symbol = DUAL_PROC_SYMBOLS[symbol_idx];
         uint32_t price = 100 + (i % 50);
@@ -692,6 +721,10 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     if (result) {
         result->proc0_orders = proc0_count;
         result->proc1_orders = proc1_count;
+    }
+
+    if (!g_running) {
+        printf("\n[interrupted at %u pairs]\n", result->orders_sent / 2);
     }
 
     uint64_t send_elapsed_ns = engine_client_now_ns() - start_time;

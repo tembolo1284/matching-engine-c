@@ -233,7 +233,7 @@ bool transport_send(transport_t* t, const void* data, size_t len) {
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     /* Would block - poll for writability */
                     struct pollfd pfd = { .fd = t->sock_fd, .events = POLLOUT };
-                    if (poll(&pfd, 1, 1000) <= 0) {
+                    if (poll(&pfd, 1, 100) <= 0) {  /* 100ms - allows Ctrl+C */
                         return false;  /* Timeout or error */
                     }
                     continue;
