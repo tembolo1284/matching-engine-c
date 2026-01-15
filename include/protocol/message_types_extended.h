@@ -301,7 +301,7 @@ create_output_envelope(const output_msg_t* msg,
     assert(output_msg_type_is_valid(msg->type) && "Invalid message type");
 
     output_msg_envelope_t envelope;
-    /* Note: Don't memset - struct has explicit layout */
+    memset(&envelope, 0, sizeof(envelope));
 
     envelope.msg = *msg;
     envelope.client_id = client_id;

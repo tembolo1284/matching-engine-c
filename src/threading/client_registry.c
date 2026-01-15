@@ -47,8 +47,43 @@ static inline uint32_t hash_client_id(uint32_t client_id) {
 }
 
 /**
+ * Safe snapshot copy of a registry entry into out_entry.
+ *
+ * IMPORTANT:
+ * - Do NOT raw-copy the struct because it contains atomics.
+ * - Atomics must be read via atomic_load to avoid tearing/TSAN races,
+ *   especially under -O3 where the compiler may vectorize copies.
+ *
+ * Caller must hold registry lock (read or write) while calling.
+ */
+static inline void snapshot_entry(const client_entry_t* src, client_entry_t* dst) {
+    assert(src != NULL && "NULL src in snapshot_entry");
+    assert(dst != NULL && "NULL dst in snapshot_entry");
+
+    /* Copy stable, non-atomic fields */
+    dst->last_seen  = src->last_seen;
+    dst->handle     = src->handle;
+    dst->client_id  = src->client_id;
+    dst->transport  = src->transport;
+    dst->protocol   = src->protocol;
+    dst->active     = src->active;
+
+    /* Copy atomic counters using atomic_load (relaxed is fine for stats) */
+    atomic_store_explicit(&dst->messages_sent,
+                          atomic_load_explicit(&src->messages_sent, memory_order_relaxed),
+                          memory_order_relaxed);
+
+    atomic_store_explicit(&dst->messages_received,
+                          atomic_load_explicit(&src->messages_received, memory_order_relaxed),
+                          memory_order_relaxed);
+
+    /* Keep padding deterministic */
+    memset(dst->_pad, 0, sizeof(dst->_pad));
+}
+
+/**
  * Find slot for client_id using linear probing
- * 
+ *
  * @param registry    Client registry
  * @param client_id   Client ID to find
  * @param find_empty  If true, return first empty slot; if false, return matching slot
@@ -75,6 +110,9 @@ static int find_slot_by_id(client_registry_t* registry, uint32_t client_id, bool
             if (find_empty) {
                 return (int)idx;
             }
+            /* NOTE: We continue probing because we do not maintain tombstones.
+             * This avoids false negatives after deletions at the cost of extra probes.
+             */
             continue;
         }
 
@@ -88,7 +126,7 @@ static int find_slot_by_id(client_registry_t* registry, uint32_t client_id, bool
 
 /**
  * Find slot for UDP address (linear scan)
- * 
+ *
  * NOTE: This is O(n) - acceptable for small client counts.
  * For high client counts, consider a separate UDP address hash table.
  */
@@ -346,8 +384,16 @@ bool client_registry_remove(client_registry_t* registry, uint32_t client_id) {
         atomic_fetch_sub(&registry->udp_client_count, 1);
     }
 
+    /* Clear entry deterministically */
     entry->active = false;
     entry->client_id = 0;
+    entry->transport = TRANSPORT_UNKNOWN;
+    entry->protocol = CLIENT_PROTOCOL_UNKNOWN;
+    entry->handle.tcp_fd = -1;
+    entry->last_seen = 0;
+    atomic_store(&entry->messages_sent, 0);
+    atomic_store(&entry->messages_received, 0);
+    memset(entry->_pad, 0, sizeof(entry->_pad));
 
     rc = pthread_rwlock_unlock(&registry->lock);
     assert(rc == 0 && "pthread_rwlock_unlock failed");
@@ -379,7 +425,8 @@ bool client_registry_find(client_registry_t* registry, uint32_t client_id,
     }
 
     if (out_entry) {
-        *out_entry = registry->entries[slot];
+        /* SAFE snapshot copy (no raw struct assignment over atomics) */
+        snapshot_entry(&registry->entries[slot], out_entry);
     }
 
     rc = pthread_rwlock_unlock(&registry->lock);
@@ -512,14 +559,12 @@ void client_registry_touch(client_registry_t* registry, uint32_t client_id) {
         return;
     }
 
-    int rc = pthread_rwlock_rdlock(&registry->lock);
-    assert(rc == 0 && "pthread_rwlock_rdlock failed");
+    /* FIX: Must not write under read lock (was UB, and can crash under -O3). */
+    int rc = pthread_rwlock_wrlock(&registry->lock);
+    assert(rc == 0 && "pthread_rwlock_wrlock failed");
 
     int slot = find_slot_by_id(registry, client_id, false);
     if (slot >= 0 && registry->entries[slot].active) {
-        /* Note: Writing under read lock is technically UB, but last_seen is
-         * only used for monitoring and doesn't affect correctness.
-         * For strict correctness, would need write lock here. */
         registry->entries[slot].last_seen = get_timestamp_ns();
     }
 
@@ -541,8 +586,8 @@ void client_registry_inc_received(client_registry_t* registry, uint32_t client_i
 
     int slot = find_slot_by_id(registry, client_id, false);
     if (slot >= 0 && registry->entries[slot].active) {
-        /* Atomic increment - safe under read lock */
-        atomic_fetch_add(&registry->entries[slot].messages_received, 1);
+        atomic_fetch_add_explicit(&registry->entries[slot].messages_received, 1,
+                                 memory_order_relaxed);
     }
 
     rc = pthread_rwlock_unlock(&registry->lock);
@@ -563,8 +608,8 @@ void client_registry_inc_sent(client_registry_t* registry, uint32_t client_id) {
 
     int slot = find_slot_by_id(registry, client_id, false);
     if (slot >= 0 && registry->entries[slot].active) {
-        /* Atomic increment - safe under read lock */
-        atomic_fetch_add(&registry->entries[slot].messages_sent, 1);
+        atomic_fetch_add_explicit(&registry->entries[slot].messages_sent, 1,
+                                 memory_order_relaxed);
     }
 
     rc = pthread_rwlock_unlock(&registry->lock);
@@ -727,3 +772,4 @@ void client_registry_print_stats(client_registry_t* registry) {
     fprintf(stderr, "UDP connections total:  %llu\n",
             (unsigned long long)stats.udp_connections_total);
 }
+
