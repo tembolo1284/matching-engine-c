@@ -1,5 +1,9 @@
 /**
  * transport.c - Transport layer implementation
+ *
+ * FIX: Capped recv() to framing buffer capacity to prevent silent TCP
+ *      stream desync when recv returns more bytes than framing_read_append
+ *      can accept (8192 > 4356).
  */
 #include "client/transport.h"
 #include "protocol/binary/binary_protocol.h"
@@ -16,31 +20,26 @@
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <netdb.h>
-
 /* ============================================================
  * Utility Functions
  * ============================================================ */
-
 bool set_nonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) return false;
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK) != -1;
 }
-
 bool set_recv_timeout(int fd, uint32_t timeout_ms) {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
 }
-
 bool set_send_timeout(int fd, uint32_t timeout_ms) {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
     return setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv)) == 0;
 }
-
 bool resolve_host(const char* host, struct sockaddr_in* addr) {
     memset(addr, 0, sizeof(*addr));
     addr->sin_family = AF_INET;
@@ -59,11 +58,9 @@ bool resolve_host(const char* host, struct sockaddr_in* addr) {
     memcpy(&addr->sin_addr, he->h_addr_list[0], sizeof(addr->sin_addr));
     return true;
 }
-
 /* ============================================================
  * Transport Implementation
  * ============================================================ */
-
 void transport_init(transport_t* t) {
     memset(t, 0, sizeof(*t));
     t->sock_fd = -1;
@@ -72,7 +69,6 @@ void transport_init(transport_t* t) {
     t->recv_timeout_ms = CLIENT_DEFAULT_TIMEOUT_MS;
     framing_read_state_init(&t->read_state);
 }
-
 /**
  * Try TCP connection with timeout
  */
@@ -145,7 +141,6 @@ static bool try_tcp_connect(transport_t* t, uint32_t timeout_ms) {
     t->state = CONN_STATE_CONNECTED;
     return true;
 }
-
 /**
  * Setup UDP socket
  */
@@ -162,7 +157,6 @@ static bool setup_udp(transport_t* t) {
     t->state = CONN_STATE_CONNECTED;
     return true;
 }
-
 bool transport_connect(transport_t* t,
                        const char* host,
                        uint16_t port,
@@ -201,7 +195,6 @@ bool transport_connect(transport_t* t,
         return setup_udp(t);
     }
 }
-
 void transport_disconnect(transport_t* t) {
     if (t->sock_fd >= 0) {
         close(t->sock_fd);
@@ -209,7 +202,6 @@ void transport_disconnect(transport_t* t) {
     }
     t->state = CONN_STATE_DISCONNECTED;
 }
-
 bool transport_send(transport_t* t, const void* data, size_t len) {
     if (t->state != CONN_STATE_CONNECTED || t->sock_fd < 0) {
         return false;
@@ -260,7 +252,6 @@ bool transport_send(transport_t* t, const void* data, size_t len) {
     t->messages_sent++;
     return true;
 }
-
 bool transport_recv(transport_t* t,
                     void* buffer,
                     size_t buffer_size,
@@ -307,9 +298,34 @@ bool transport_recv(transport_t* t,
             }
         }
         
-        /* Now do non-blocking recv */
+        /* Now do non-blocking recv.
+         *
+         * CRITICAL FIX: Cap recv size to available framing buffer space.
+         *
+         * FRAMING_BUFFER_SIZE (4356) < TRANSPORT_RECV_BUFFER_SIZE (8192).
+         * Without this cap, recv() can return more bytes than
+         * framing_read_append() can accept. The excess bytes are silently
+         * dropped, desynchronizing the length-prefixed framing state.
+         * Once desynced, the client reads mid-message bytes as length
+         * prefixes, producing garbage lengths that swallow valid messages.
+         *
+         * By limiting recv to available space, any excess data stays in
+         * the kernel's TCP receive buffer for the next recv() call.
+         */
+        size_t space_available = FRAMING_BUFFER_SIZE - t->read_state.buffer_pos;
+        if (space_available == 0) {
+            /* Buffer full but no complete message extractable.
+             * This indicates a framing protocol error (e.g., a claimed
+             * message length larger than MAX_FRAMED_MESSAGE_SIZE).
+             * Reset the framing state to recover. */
+            fprintf(stderr, "[TRANSPORT] Framing buffer full with no complete message "
+                    "(buffer_pos=%zu) - resetting\n", t->read_state.buffer_pos);
+            framing_read_state_init(&t->read_state);
+            return false;
+        }
         char temp_buf[TRANSPORT_RECV_BUFFER_SIZE];
-        ssize_t received = recv(t->sock_fd, temp_buf, sizeof(temp_buf), MSG_DONTWAIT);
+        size_t recv_limit = space_available < sizeof(temp_buf) ? space_available : sizeof(temp_buf);
+        ssize_t received = recv(t->sock_fd, temp_buf, recv_limit, MSG_DONTWAIT);
         
         if (received <= 0) {
             if (received == 0) {
@@ -321,7 +337,7 @@ bool transport_recv(transport_t* t,
         
         t->bytes_received += received;
         
-        /* Append to framing buffer */
+        /* Append to framing buffer - now guaranteed to fit */
         framing_read_append(&t->read_state, temp_buf, (size_t)received);
         
         /* Try to extract message again */
@@ -364,7 +380,6 @@ bool transport_recv(transport_t* t,
         return true;
     }
 }
-
 bool transport_has_data(transport_t* t) {
     if (t->state != CONN_STATE_CONNECTED || t->sock_fd < 0) {
         return false;
@@ -384,19 +399,15 @@ bool transport_has_data(transport_t* t) {
     
     return poll(&pfd, 1, 0) > 0 && (pfd.revents & POLLIN);
 }
-
 transport_type_t transport_get_type(const transport_t* t) {
     return t->type;
 }
-
 bool transport_is_connected(const transport_t* t) {
     return t->state == CONN_STATE_CONNECTED;
 }
-
 int transport_get_fd(const transport_t* t) {
     return t->sock_fd;
 }
-
 void transport_print_stats(const transport_t* t) {
     printf("Transport Statistics:\n");
     printf("  Type:              %s\n", transport_type_str(t->type));
@@ -407,17 +418,14 @@ void transport_print_stats(const transport_t* t) {
     printf("  Bytes sent:        %lu\n", (unsigned long)t->bytes_sent);
     printf("  Bytes received:    %lu\n", (unsigned long)t->bytes_received);
 }
-
 /* ============================================================
  * Multicast Receiver Implementation
  * ============================================================ */
-
 void multicast_receiver_init(multicast_receiver_t* m) {
     memset(m, 0, sizeof(*m));
     m->sock_fd = -1;
     m->joined = false;
 }
-
 bool multicast_receiver_join(multicast_receiver_t* m,
                              const char* group,
                              uint16_t port) {
@@ -479,7 +487,6 @@ bool multicast_receiver_join(multicast_receiver_t* m,
     m->joined = true;
     return true;
 }
-
 void multicast_receiver_leave(multicast_receiver_t* m) {
     if (m->sock_fd >= 0) {
         if (m->joined) {
@@ -493,7 +500,6 @@ void multicast_receiver_leave(multicast_receiver_t* m) {
     }
     m->joined = false;
 }
-
 bool multicast_receiver_recv(multicast_receiver_t* m,
                              void* buffer,
                              size_t buffer_size,
@@ -524,11 +530,9 @@ bool multicast_receiver_recv(multicast_receiver_t* m,
     m->bytes_received += received;
     return true;
 }
-
 int multicast_receiver_get_fd(const multicast_receiver_t* m) {
     return m->sock_fd;
 }
-
 void multicast_receiver_print_stats(const multicast_receiver_t* m) {
     printf("Multicast Statistics:\n");
     printf("  Group:             %s:%u\n", m->group, m->port);

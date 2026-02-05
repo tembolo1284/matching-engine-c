@@ -1,5 +1,4 @@
 #include "unified_internal.h"
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,26 +8,21 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-
 #include "protocol/csv/message_parser.h"
 #include "protocol/binary/binary_message_parser.h"
 #include "protocol/binary/binary_protocol.h"
-
 /* ============================================================================
  * TCP Client Handler Context
  * ============================================================================ */
-
 typedef struct {
     unified_server_t* server;
     int client_fd;
     uint32_t client_id;
     struct sockaddr_in client_addr;
 } tcp_client_ctx_t;
-
 /* ============================================================================
  * Debug Helper - Hex Dump
  * ============================================================================ */
-
 static void hex_dump(const char* prefix, const uint8_t* data, size_t len, size_t max_len) {
     // fprintf(stderr, "%s (%zu bytes): ", prefix, len);
     (void)prefix;
@@ -43,18 +37,15 @@ static void hex_dump(const char* prefix, const uint8_t* data, size_t len, size_t
     }
     // fprintf(stderr, "\n");
 }
-
 /* ============================================================================
  * Detect if client uses length-prefixed framing
  * ============================================================================ */
-
 typedef enum {
     FRAMING_UNKNOWN,
     FRAMING_LENGTH_PREFIXED,  /* 4-byte big-endian length + message */
     FRAMING_RAW_BINARY,       /* Raw binary messages (magic byte first) */
     FRAMING_CSV               /* Newline-delimited CSV */
 } framing_type_t;
-
 static framing_type_t detect_framing(const uint8_t* data, size_t len) {
     if (len < 4) return FRAMING_UNKNOWN;
     
@@ -85,11 +76,9 @@ static framing_type_t detect_framing(const uint8_t* data, size_t len) {
     
     return FRAMING_UNKNOWN;
 }
-
 /* ============================================================================
  * TCP Client Handler Thread
  * ============================================================================ */
-
 static void* tcp_client_handler(void* arg) {
     tcp_client_ctx_t* ctx = (tcp_client_ctx_t*)arg;
     unified_server_t* server = ctx->server;
@@ -303,6 +292,44 @@ static void* tcp_client_handler(void* arg) {
         }
     }
     
+    /* =========================================================================
+     * DRAIN LOOP: After client closes connection, keep the fd open so the
+     * output router can finish sending any remaining responses.
+     *
+     * Without this, the handler exits immediately on "Connection closed by peer"
+     * and closes the fd. Any output the router hasn't sent yet is lost.
+     *
+     * Strategy: Wait up to 2 seconds (200 x 10ms), exit early if no output
+     * arrives for 500ms (50 consecutive idle polls). The router thread is
+     * still running and will writev() to our fd if output arrives - we just
+     * need to keep the fd alive long enough.
+     *
+     * This mirrors the fix in the Odin version's listener.odin.
+     * ========================================================================= */
+    fprintf(stderr, "[TCP] Client %u: Connection closed by peer, draining output...\n", client_id);
+    
+    {
+        int no_output_count = 0;
+        int drain_iter = 0;
+        for (drain_iter = 0; drain_iter < 200 && !atomic_load(&g_shutdown); drain_iter++) {
+            struct timespec ts = { 0, 10000000L };  /* 10ms */
+            nanosleep(&ts, NULL);
+            
+            /* The router thread sends directly via writev() on our fd.
+             * We can't easily check "did the router send something this tick"
+             * without adding shared state. Instead, use a simple timeout:
+             * the router processes output within microseconds of it arriving
+             * in the queue, so 500ms of silence means it's done. */
+            no_output_count++;
+            if (no_output_count > 50) {  /* 50 x 10ms = 500ms silence */
+                break;
+            }
+        }
+        
+        fprintf(stderr, "[TCP] Client %u: Drain complete after %d iterations\n",
+                client_id, drain_iter);
+    }
+    
     fprintf(stderr, "[TCP] Client %u: Exiting handler\n", client_id);
     
     free(recv_buffer);
@@ -312,11 +339,9 @@ static void* tcp_client_handler(void* arg) {
     
     return NULL;
 }
-
 /* ============================================================================
  * TCP Listener Thread
  * ============================================================================ */
-
 void* unified_tcp_listener_thread(void* arg) {
     unified_server_t* server = (unified_server_t*)arg;
     
