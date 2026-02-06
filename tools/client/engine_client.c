@@ -2,6 +2,7 @@
  * engine_client.c - High-level matching engine client implementation
  *
  * DEBUG: Instrumented recv paths for drain bottleneck diagnosis.
+ *        Debug prints are suppressed when config.quiet is true.
  */
 #include "client/engine_client.h"
 #include <stdio.h>
@@ -10,12 +11,10 @@
 #include <time.h>
 #include <poll.h>
 #include <unistd.h>
-
 /* Maximum iterations for drain loops - prevents runaway */
 #define MAX_DRAIN_ITERATIONS 100
 #define MAX_RECV_ATTEMPTS    1000   /* Increased from 50 - need to handle large bursts */
 #define MAX_POLL_FDS         2
-
 /* ============================================================
  * DEBUG: Recv path instrumentation
  * ============================================================ */
@@ -26,9 +25,10 @@ static uint64_t dbg_recv_poll_ok = 0;
 static uint64_t dbg_recv_buffered_ok = 0;
 static uint64_t dbg_recv_total_ok = 0;
 static uint64_t dbg_recv_last_print = 0;
-
-/* Call this to print debug recv stats periodically */
-static void dbg_recv_maybe_print(void) {
+/* Call this to print debug recv stats periodically (only if not quiet) */
+static void dbg_recv_maybe_print(bool quiet) {
+    if (quiet) return;  /* Suppress in quiet mode */
+    
     uint64_t now = engine_client_now_ns();
     if (dbg_recv_last_print == 0) {
         dbg_recv_last_print = now;
@@ -46,7 +46,6 @@ static void dbg_recv_maybe_print(void) {
         dbg_recv_last_print = now;
     }
 }
-
 /* ============================================================
  * Timing
  * ============================================================ */
@@ -57,11 +56,9 @@ uint64_t engine_client_now_ns(void) {
     }
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
-
 /* ============================================================
  * Internal Helpers
  * ============================================================ */
-
 /**
  * Drain all pending messages from transport buffer.
  * Used after probe to clear any leftover responses.
@@ -73,7 +70,6 @@ static int drain_transport_buffer(transport_t* transport, int timeout_ms) {
     size_t len = 0;
     int count = 0;
     int empty_polls = 0;
-
     /* Bounded loop: drain at most MAX_DRAIN_ITERATIONS messages */
     for (int i = 0; i < MAX_DRAIN_ITERATIONS; i++) {
         /* Check for buffered data first (zero timeout) */
@@ -84,7 +80,6 @@ static int drain_transport_buffer(transport_t* transport, int timeout_ms) {
                 continue;
             }
         }
-
         /* Poll socket with timeout */
         if (transport_recv(transport, buf, sizeof(buf), &len, timeout_ms)) {
             count++;
@@ -98,10 +93,8 @@ static int drain_transport_buffer(transport_t* transport, int timeout_ms) {
             timeout_ms = 10;
         }
     }
-
     return count;
 }
-
 /**
  * Send probe order, detect encoding, flush, drain completely.
  * Returns true if encoding was detected, false on error.
@@ -121,11 +114,9 @@ static bool probe_server_encoding(engine_client_t* client) {
     char recv_buf[4096];
     size_t recv_len = 0;
     bool success = false;
-
     /* Use binary encoding for probe */
     encoding_type_t saved_encoding = client->codec.send_encoding;
     client->codec.send_encoding = ENCODING_BINARY;
-
     /* Send probe order - use Z-prefix symbol to route to processor 1 */
     if (!codec_encode_new_order(&client->codec, cfg->user_id, "ZPROBE",
                                 1, 1, SIDE_BUY, 1, &data, &len)) {
@@ -134,7 +125,6 @@ static bool probe_server_encoding(engine_client_t* client) {
     if (!transport_send(&client->transport, data, len)) {
         goto cleanup;
     }
-
     /* Wait for first response to detect encoding */
     if (transport_recv(&client->transport, recv_buf, sizeof(recv_buf),
                        &recv_len, CLIENT_PROBE_TIMEOUT_MS)) {
@@ -149,12 +139,10 @@ static bool probe_server_encoding(engine_client_t* client) {
         success = false;
         goto cleanup;
     }
-
     /* Send flush - this cancels the probe order */
     if (codec_encode_flush(&client->codec, &data, &len)) {
         (void)transport_send(&client->transport, data, len);
     }
-
     /*
      * CRITICAL: Wait for server to fully process flush across all processors.
      * The dual-processor architecture means messages route through queues
@@ -174,12 +162,10 @@ static bool probe_server_encoding(engine_client_t* client) {
             break;
         }
     }
-
 cleanup:
     client->codec.send_encoding = saved_encoding;
     return success;
 }
-
 /* ============================================================
  * Lifecycle
  * ============================================================ */
@@ -198,35 +184,29 @@ void engine_client_init(engine_client_t* client, const client_config_t* config) 
     client->min_latency = UINT64_MAX;
     client->max_latency = 0;
 }
-
 bool engine_client_connect(engine_client_t* client) {
     if (client == NULL) {
         return false;
     }
     client_config_t* cfg = &client->config;
-
     /* Multicast-only mode needs no TCP/UDP connection */
     if (cfg->mode == MODE_MULTICAST_ONLY) {
         client->connected = true;
         return true;
     }
-
     if (!cfg->quiet) {
         printf("Connecting to %s:%u...\n", cfg->host, cfg->port);
     }
-
     /* Connect transport */
     if (!transport_connect(&client->transport, cfg->host, cfg->port,
                            cfg->transport, cfg->connect_timeout_ms)) {
         fprintf(stderr, "Failed to connect to %s:%u\n", cfg->host, cfg->port);
         return false;
     }
-
     cfg->detected_transport = transport_get_type(&client->transport);
     if (!cfg->quiet) {
         printf("Connected via %s\n", transport_type_str(cfg->detected_transport));
     }
-
     /* Determine encoding */
     if (cfg->encoding != ENCODING_AUTO) {
         /* Explicit encoding specified - use directly */
@@ -262,9 +242,7 @@ bool engine_client_connect(engine_client_t* client) {
                    encoding_type_str(cfg->detected_encoding));
         }
     }
-
     client->connected = true;
-
     /* Join multicast if configured */
     if (cfg->multicast.enabled) {
         if (!engine_client_join_multicast(client, cfg->multicast.group,
@@ -273,10 +251,8 @@ bool engine_client_connect(engine_client_t* client) {
             fprintf(stderr, "Warning: multicast join failed\n");
         }
     }
-
     return true;
 }
-
 void engine_client_disconnect(engine_client_t* client) {
     if (client == NULL) {
         return;
@@ -287,21 +263,18 @@ void engine_client_disconnect(engine_client_t* client) {
     transport_disconnect(&client->transport);
     client->connected = false;
 }
-
 void engine_client_destroy(engine_client_t* client) {
     if (client == NULL) {
         return;
     }
     engine_client_disconnect(client);
 }
-
 bool engine_client_is_connected(const engine_client_t* client) {
     if (client == NULL) {
         return false;
     }
     return client->connected && transport_is_connected(&client->transport);
 }
-
 /* ============================================================
  * Multicast
  * ============================================================ */
@@ -313,18 +286,14 @@ bool engine_client_join_multicast(engine_client_t* client,
     if (client->multicast_active) {
         return true;
     }
-
     if (!client->config.quiet) {
         printf("Joining multicast group %s:%u...\n", group, port);
     }
-
     if (!multicast_receiver_join(&client->multicast, group, port)) {
         fprintf(stderr, "Failed to join multicast group\n");
         return false;
     }
-
     client->multicast_active = true;
-
     /* Copy group string safely */
     size_t group_len = strlen(group);
     size_t max_len = sizeof(client->config.multicast.group) - 1;
@@ -335,10 +304,8 @@ bool engine_client_join_multicast(engine_client_t* client,
     client->config.multicast.group[group_len] = '\0';
     client->config.multicast.port = port;
     client->config.multicast.enabled = true;
-
     return true;
 }
-
 void engine_client_leave_multicast(engine_client_t* client) {
     if (client == NULL) {
         return;
@@ -348,7 +315,6 @@ void engine_client_leave_multicast(engine_client_t* client) {
         client->multicast_active = false;
     }
 }
-
 /* ============================================================
  * Callbacks
  * ============================================================ */
@@ -361,7 +327,6 @@ void engine_client_set_response_callback(engine_client_t* client,
     client->response_callback = callback;
     client->response_user_data = user_data;
 }
-
 void engine_client_set_multicast_callback(engine_client_t* client,
                                           multicast_callback_t callback,
                                           void* user_data) {
@@ -371,7 +336,6 @@ void engine_client_set_multicast_callback(engine_client_t* client,
     client->multicast_callback = callback;
     client->multicast_user_data = user_data;
 }
-
 /* ============================================================
  * Order Entry
  * ============================================================ */
@@ -384,14 +348,12 @@ uint32_t engine_client_send_order(engine_client_t* client,
     if (client == NULL || symbol == NULL || !client->connected) {
         return 0;
     }
-
     /* Auto-assign order ID if not provided */
     if (order_id == 0) {
         order_id = client->next_order_id++;
     } else if (order_id >= client->next_order_id) {
         client->next_order_id = order_id + 1;
     }
-
     const void* data = NULL;
     size_t len = 0;
     if (!codec_encode_new_order(&client->codec, client->config.user_id,
@@ -399,71 +361,57 @@ uint32_t engine_client_send_order(engine_client_t* client,
                                 &data, &len)) {
         return 0;
     }
-
     client->last_send_time = engine_client_now_ns();
     if (!transport_send(&client->transport, data, len)) {
         return 0;
     }
-
     client->orders_sent++;
     if (client->config.verbose) {
         printf("[SEND] %s %s %u@%u (order_id=%u)\n",
                side == SIDE_BUY ? "BUY" : "SELL",
                symbol, quantity, price, order_id);
     }
-
     return order_id;
 }
-
 bool engine_client_send_cancel(engine_client_t* client, uint32_t order_id) {
     if (client == NULL || !client->connected) {
         return false;
     }
-
     const void* data = NULL;
     size_t len = 0;
     if (!codec_encode_cancel(&client->codec, client->config.user_id,
                              order_id, &data, &len)) {
         return false;
     }
-
     client->last_send_time = engine_client_now_ns();
     if (!transport_send(&client->transport, data, len)) {
         return false;
     }
-
     client->cancels_sent++;
     if (client->config.verbose) {
         printf("[SEND] CANCEL order_id=%u\n", order_id);
     }
-
     return true;
 }
-
 bool engine_client_send_flush(engine_client_t* client) {
     if (client == NULL || !client->connected) {
         return false;
     }
-
     const void* data = NULL;
     size_t len = 0;
     if (!codec_encode_flush(&client->codec, &data, &len)) {
         return false;
     }
-
     client->last_send_time = engine_client_now_ns();
     if (!transport_send(&client->transport, data, len)) {
         return false;
     }
-
     client->flushes_sent++;
     if (client->config.verbose) {
         printf("[SEND] FLUSH\n");
     }
-
     return true;
 }
-
 /* ============================================================
  * Response Handling
  * ============================================================ */
@@ -471,22 +419,18 @@ static void update_latency_stats(engine_client_t* client) {
     if (client->last_send_time == 0) {
         return;
     }
-
     uint64_t now = engine_client_now_ns();
     uint64_t latency = now - client->last_send_time;
     client->total_latency += latency;
     client->latency_samples++;
-
     if (latency < client->min_latency) {
         client->min_latency = latency;
     }
     if (latency > client->max_latency) {
         client->max_latency = latency;
     }
-
     client->last_recv_time = now;
 }
-
 static void process_response(engine_client_t* client,
                              const output_msg_t* msg,
                              bool is_multicast) {
@@ -496,7 +440,6 @@ static void process_response(engine_client_t* client,
     } else {
         client->multicast_received++;
     }
-
     /* Invoke appropriate callback */
     if (is_multicast && client->multicast_callback != NULL) {
         client->multicast_callback(msg, client->multicast_user_data);
@@ -504,17 +447,14 @@ static void process_response(engine_client_t* client,
         client->response_callback(msg, client->response_user_data);
     }
 }
-
 int engine_client_poll(engine_client_t* client) {
     if (client == NULL) {
         return 0;
     }
-
     char buffer[CLIENT_RECV_BUFFER_SIZE];
     size_t len = 0;
     output_msg_t msg;
     int count = 0;
-
     /* Poll TCP/UDP - bounded loop */
     if (client->connected && client->config.mode != MODE_MULTICAST_ONLY) {
         for (int i = 0; i < MAX_RECV_ATTEMPTS && transport_has_data(&client->transport); i++) {
@@ -527,14 +467,12 @@ int engine_client_poll(engine_client_t* client) {
             }
         }
     }
-
     /* Poll multicast - bounded loop */
     if (client->multicast_active) {
         struct pollfd pfd;
         pfd.fd = multicast_receiver_get_fd(&client->multicast);
         pfd.events = POLLIN;
         pfd.revents = 0;
-
         for (int i = 0; i < MAX_RECV_ATTEMPTS; i++) {
             if (poll(&pfd, 1, 0) <= 0 || !(pfd.revents & POLLIN)) {
                 break;
@@ -549,24 +487,20 @@ int engine_client_poll(engine_client_t* client) {
             }
         }
     }
-
     return count;
 }
-
 bool engine_client_recv(engine_client_t* client,
                         output_msg_t* msg,
                         int timeout_ms) {
     if (client == NULL || msg == NULL) {
         return false;
     }
-
     if (!client->connected && !client->multicast_active) {
         return false;
     }
-
     char buffer[CLIENT_RECV_BUFFER_SIZE];
     size_t len = 0;
-
+    bool quiet = client->config.quiet;
     /*
      * IMPORTANT: First check if there's already buffered data in the transport.
      * When multiple messages arrive in a single recv(), only one is extracted
@@ -584,7 +518,7 @@ bool engine_client_recv(engine_client_t* client,
                 } else {
                     /* DEBUG: transport gave us data but decode failed! */
                     dbg_recv_decode_fail++;
-                    if (dbg_recv_decode_fail <= 20) {
+                    if (!quiet && dbg_recv_decode_fail <= 20) {
                         fprintf(stderr, "[DBG-RECV] DECODE FAIL (buffered): len=%zu first_byte=0x%02x "
                                 "(total decode_fail=%llu)\n",
                                 len, len > 0 ? (unsigned char)buffer[0] : 0,
@@ -594,7 +528,7 @@ bool engine_client_recv(engine_client_t* client,
             } else {
                 /* transport_has_data was true but transport_recv failed */
                 dbg_recv_transport_fail++;
-                if (dbg_recv_transport_fail <= 20) {
+                if (!quiet && dbg_recv_transport_fail <= 20) {
                     fprintf(stderr, "[DBG-RECV] TRANSPORT FAIL (had data but recv failed) "
                             "(total=%llu)\n",
                             (unsigned long long)dbg_recv_transport_fail);
@@ -602,44 +536,36 @@ bool engine_client_recv(engine_client_t* client,
             }
         }
     }
-
     /* Build poll set */
     struct pollfd pfds[MAX_POLL_FDS];
     int nfds = 0;
-
     if (client->connected && client->config.mode != MODE_MULTICAST_ONLY) {
         pfds[nfds].fd = transport_get_fd(&client->transport);
         pfds[nfds].events = POLLIN;
         pfds[nfds].revents = 0;
         nfds++;
     }
-
     if (client->multicast_active) {
         pfds[nfds].fd = multicast_receiver_get_fd(&client->multicast);
         pfds[nfds].events = POLLIN;
         pfds[nfds].revents = 0;
         nfds++;
     }
-
     if (nfds == 0) {
         return false;
     }
-
     int ret = poll(pfds, (nfds_t)nfds, timeout_ms);
     if (ret <= 0) {
         dbg_recv_poll_timeout++;
         return false;
     }
-
     /* Check each fd - bounded by MAX_POLL_FDS */
     for (int i = 0; i < nfds; i++) {
         if (!(pfds[i].revents & POLLIN)) {
             continue;
         }
-
         bool is_multicast = client->multicast_active &&
                             pfds[i].fd == multicast_receiver_get_fd(&client->multicast);
-
         if (is_multicast) {
             if (!multicast_receiver_recv(&client->multicast, buffer,
                                          sizeof(buffer), &len, 0)) {
@@ -650,7 +576,7 @@ bool engine_client_recv(engine_client_t* client,
                                 sizeof(buffer), &len, 0)) {
                 /* DEBUG: poll said POLLIN but transport_recv failed */
                 dbg_recv_transport_fail++;
-                if (dbg_recv_transport_fail <= 20) {
+                if (!quiet && dbg_recv_transport_fail <= 20) {
                     fprintf(stderr, "[DBG-RECV] TRANSPORT FAIL (poll ready but recv failed) "
                             "revents=0x%x (total=%llu)\n",
                             pfds[i].revents,
@@ -659,7 +585,6 @@ bool engine_client_recv(engine_client_t* client,
                 continue;
             }
         }
-
         if (codec_decode_response(&client->codec, buffer, len, msg)) {
             process_response(client, msg, is_multicast);
             dbg_recv_poll_ok++;
@@ -668,7 +593,7 @@ bool engine_client_recv(engine_client_t* client,
         } else {
             /* DEBUG: got data from socket but decode failed! */
             dbg_recv_decode_fail++;
-            if (dbg_recv_decode_fail <= 20) {
+            if (!quiet && dbg_recv_decode_fail <= 20) {
                 fprintf(stderr, "[DBG-RECV] DECODE FAIL (from poll): len=%zu first_byte=0x%02x "
                         "(total decode_fail=%llu)\n",
                         len, len > 0 ? (unsigned char)buffer[0] : 0,
@@ -676,18 +601,14 @@ bool engine_client_recv(engine_client_t* client,
             }
         }
     }
-
     return false;
 }
-
 int engine_client_recv_all(engine_client_t* client, int timeout_ms) {
     if (client == NULL) {
         return 0;
     }
-
     output_msg_t msg;
     int count = 0;
-
     /*
      * First drain any buffered messages (no timeout needed).
      * This handles messages already received but not yet processed.
@@ -703,7 +624,6 @@ int engine_client_recv_all(engine_client_t* client, int timeout_ms) {
         }
         break;
     }
-
     /* Then poll for new messages with timeout */
     for (int i = count; i < MAX_RECV_ATTEMPTS; i++) {
         if (!engine_client_recv(client, &msg, timeout_ms)) {
@@ -712,13 +632,10 @@ int engine_client_recv_all(engine_client_t* client, int timeout_ms) {
         count++;
         timeout_ms = 1;  /* Very short timeout after first - just check for more */
     }
-
-    /* DEBUG: periodic stats */
-    dbg_recv_maybe_print();
-
+    /* DEBUG: periodic stats (only if not quiet) */
+    dbg_recv_maybe_print(client->config.quiet);
     return count;
 }
-
 bool engine_client_wait_for(engine_client_t* client,
                             output_msg_type_t type,
                             output_msg_t* msg,
@@ -726,10 +643,8 @@ bool engine_client_wait_for(engine_client_t* client,
     if (client == NULL || msg == NULL || timeout_ms < 0) {
         return false;
     }
-
     uint64_t start = engine_client_now_ns();
     uint64_t deadline = start + (uint64_t)timeout_ms * 1000000ULL;
-
     /* Bounded by timeout */
     for (int i = 0; i < MAX_RECV_ATTEMPTS; i++) {
         uint64_t now = engine_client_now_ns();
@@ -746,10 +661,8 @@ bool engine_client_wait_for(engine_client_t* client,
             }
         }
     }
-
     return false;
 }
-
 /* ============================================================
  * Utilities
  * ============================================================ */
@@ -759,7 +672,6 @@ transport_type_t engine_client_get_transport(const engine_client_t* client) {
     }
     return client->config.detected_transport;
 }
-
 encoding_type_t engine_client_get_encoding(const engine_client_t* client) {
     if (client == NULL) {
         return ENCODING_AUTO;
@@ -769,21 +681,18 @@ encoding_type_t engine_client_get_encoding(const engine_client_t* client) {
     }
     return client->config.encoding;
 }
-
 uint32_t engine_client_peek_next_order_id(const engine_client_t* client) {
     if (client == NULL) {
         return 0;
     }
     return client->next_order_id;
 }
-
 void engine_client_reset_order_id(engine_client_t* client, uint32_t start_id) {
     if (client == NULL) {
         return;
     }
     client->next_order_id = start_id;
 }
-
 void engine_client_reset_stats(engine_client_t* client) {
     if (client == NULL) {
         return;
@@ -798,14 +707,11 @@ void engine_client_reset_stats(engine_client_t* client) {
     client->min_latency = UINT64_MAX;
     client->max_latency = 0;
 }
-
 void engine_client_print_stats(const engine_client_t* client) {
     if (client == NULL) {
         return;
     }
-
     printf("\n=== Engine Client Statistics ===\n\n");
-
     printf("Connection:\n");
     printf("  Host:              %s:%u\n", client->config.host, client->config.port);
     printf("  Transport:         %s\n",
@@ -814,7 +720,6 @@ void engine_client_print_stats(const engine_client_t* client) {
            encoding_type_str(engine_client_get_encoding(client)));
     printf("  Connected:         %s\n", client->connected ? "yes" : "no");
     printf("\n");
-
     printf("Messages:\n");
     printf("  Orders sent:       %lu\n", (unsigned long)client->orders_sent);
     printf("  Cancels sent:      %lu\n", (unsigned long)client->cancels_sent);
@@ -824,7 +729,6 @@ void engine_client_print_stats(const engine_client_t* client) {
         printf("  Multicast recv:    %lu\n", (unsigned long)client->multicast_received);
     }
     printf("\n");
-
     if (client->latency_samples > 0) {
         uint64_t avg_ns = client->total_latency / client->latency_samples;
         printf("Latency (round-trip):\n");
@@ -839,7 +743,6 @@ void engine_client_print_stats(const engine_client_t* client) {
                (double)client->max_latency / 1000.0);
         printf("\n");
     }
-
     transport_print_stats(&client->transport);
     if (client->multicast_active) {
         printf("\n");
@@ -847,32 +750,30 @@ void engine_client_print_stats(const engine_client_t* client) {
     }
     printf("\n");
     codec_print_stats(&client->codec);
-
-    /* DEBUG: Print final recv debug stats */
-    fprintf(stderr, "\n[DBG-RECV] === FINAL RECV DEBUG SUMMARY ===\n");
-    fprintf(stderr, "[DBG-RECV] Total successful:  %llu\n", (unsigned long long)dbg_recv_total_ok);
-    fprintf(stderr, "[DBG-RECV] From buffer:       %llu\n", (unsigned long long)dbg_recv_buffered_ok);
-    fprintf(stderr, "[DBG-RECV] From poll:         %llu\n", (unsigned long long)dbg_recv_poll_ok);
-    fprintf(stderr, "[DBG-RECV] Decode failures:   %llu\n", (unsigned long long)dbg_recv_decode_fail);
-    fprintf(stderr, "[DBG-RECV] Transport failures:%llu\n", (unsigned long long)dbg_recv_transport_fail);
-    fprintf(stderr, "[DBG-RECV] Poll timeouts:     %llu\n", (unsigned long long)dbg_recv_poll_timeout);
-    fprintf(stderr, "[DBG-RECV] ================================\n\n");
+    /* DEBUG: Print final recv debug stats (only if not quiet) */
+    if (!client->config.quiet) {
+        fprintf(stderr, "\n[DBG-RECV] === FINAL RECV DEBUG SUMMARY ===\n");
+        fprintf(stderr, "[DBG-RECV] Total successful:  %llu\n", (unsigned long long)dbg_recv_total_ok);
+        fprintf(stderr, "[DBG-RECV] From buffer:       %llu\n", (unsigned long long)dbg_recv_buffered_ok);
+        fprintf(stderr, "[DBG-RECV] From poll:         %llu\n", (unsigned long long)dbg_recv_poll_ok);
+        fprintf(stderr, "[DBG-RECV] Decode failures:   %llu\n", (unsigned long long)dbg_recv_decode_fail);
+        fprintf(stderr, "[DBG-RECV] Transport failures:%llu\n", (unsigned long long)dbg_recv_transport_fail);
+        fprintf(stderr, "[DBG-RECV] Poll timeouts:     %llu\n", (unsigned long long)dbg_recv_poll_timeout);
+        fprintf(stderr, "[DBG-RECV] ================================\n\n");
+    }
 }
-
 uint64_t engine_client_get_avg_latency_ns(const engine_client_t* client) {
     if (client == NULL || client->latency_samples == 0) {
         return 0;
     }
     return client->total_latency / client->latency_samples;
 }
-
 uint64_t engine_client_get_min_latency_ns(const engine_client_t* client) {
     if (client == NULL || client->min_latency == UINT64_MAX) {
         return 0;
     }
     return client->min_latency;
 }
-
 uint64_t engine_client_get_max_latency_ns(const engine_client_t* client) {
     if (client == NULL) {
         return 0;

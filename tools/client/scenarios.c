@@ -5,6 +5,7 @@
  * Uses adaptive pacing to prevent TCP buffer overflow on large tests.
  *
  * DEBUG: Instrumented drain_until_trades() for bottleneck diagnosis.
+ *        Debug prints are suppressed when client->config.quiet is true.
  */
 #include "client/scenarios.h"
 #include <stdio.h>
@@ -13,16 +14,13 @@
 #include <unistd.h>
 #include <time.h>
 #include <signal.h>
-
 /* Global flag for graceful shutdown */
 static volatile sig_atomic_t g_running = 1;
-
 static void signal_handler(int sig) {
     (void)sig;
     g_running = 0;
     printf("\n[interrupted - shutting down]\n");
 }
-
 /* ============================================================
  * Scenario Registry
  * ============================================================ */
@@ -47,9 +45,7 @@ static const scenario_info_t SCENARIOS[] = {
     { 27, "match-multi-500m", "Dual-Proc: 500M pairs (1B orders)",     SCENARIO_CAT_MATCHING,     1000000000, false },
     { 0, NULL, NULL, 0, 0, false }  /* Sentinel */
 };
-
 static const int NUM_SCENARIOS = sizeof(SCENARIOS) / sizeof(SCENARIOS[0]) - 1;
-
 /* Symbols for dual-processor matching tests */
 static const char* DUAL_PROC_SYMBOLS[] = {
     /* Processor 0 (A-M) - 5 symbols */
@@ -58,7 +54,6 @@ static const char* DUAL_PROC_SYMBOLS[] = {
     "NVDA", "TSLA", "UBER", "SNAP", "ZM"
 };
 static const int NUM_DUAL_PROC_SYMBOLS = 10;
-
 /* ============================================================
  * Helper Functions
  * ============================================================ */
@@ -67,17 +62,14 @@ static void init_result(scenario_result_t* result) {
         memset(result, 0, sizeof(*result));
     }
 }
-
 static void finalize_result(scenario_result_t* result, engine_client_t* client) {
     if (!result) return;
     result->end_time_ns = engine_client_now_ns();
     result->total_time_ns = result->end_time_ns - result->start_time_ns;
-
     /* Copy latency stats from client */
     result->min_latency_ns = engine_client_get_min_latency_ns(client);
     result->avg_latency_ns = engine_client_get_avg_latency_ns(client);
     result->max_latency_ns = engine_client_get_max_latency_ns(client);
-
     /* Calculate throughput */
     if (result->total_time_ns > 0) {
         double seconds = (double)result->total_time_ns / 1e9;
@@ -85,7 +77,6 @@ static void finalize_result(scenario_result_t* result, engine_client_t* client) 
         result->messages_per_sec = (double)(result->orders_sent + result->responses_received) / seconds;
     }
 }
-
 static void sleep_ms(int ms) {
     struct timespec ts = {
         .tv_sec = ms / 1000,
@@ -93,7 +84,6 @@ static void sleep_ms(int ms) {
     };
     nanosleep(&ts, NULL);
 }
-
 /**
  * Simple drain for basic scenarios - just wait for silence.
  */
@@ -110,10 +100,10 @@ static void drain_responses(engine_client_t* client, int initial_delay_ms) {
         }
     }
 }
-
 /**
  * Aggressive drain until target trades reached or stalled.
  * DEBUG: Instrumented to track why drain stalls.
+ *        Debug prints suppressed when client->config.quiet is true.
  */
 static void drain_until_trades(engine_client_t* client,
                                 scenario_result_t* result,
@@ -122,7 +112,7 @@ static void drain_until_trades(engine_client_t* client,
     uint32_t last_trade_count = result->trades_executed;
     uint64_t stall_start = 0;
     bool stalling = false;
-
+    bool quiet = client->config.quiet;
     /* DEBUG counters */
     uint64_t drain_start = engine_client_now_ns();
     uint32_t drain_iterations = 0;
@@ -131,13 +121,11 @@ static void drain_until_trades(engine_client_t* client,
     uint32_t drain_zero_recv = 0;
     uint32_t drain_trades_at_start = result->trades_executed;
     uint64_t last_debug_time = drain_start;
-
     while (result->trades_executed < target_trades && g_running) {
         int count = engine_client_recv_all(client, 20);
         drain_iterations++;
         drain_recv_calls++;
         drain_msgs_total += (uint32_t)(count > 0 ? count : 0);
-
         if (count > 0) {
             stalling = false;
             drain_zero_recv = 0;
@@ -151,32 +139,34 @@ static void drain_until_trades(engine_client_t* client,
                 /* Start stall timer */
                 stalling = true;
                 stall_start = engine_client_now_ns();
-
-                /* DEBUG: Log when stall begins */
-                fprintf(stderr, "[DBG-DRAIN] Stall started: trades=%u/%u responses=%u "
-                        "consecutive_zero=%u total_iters=%u\n",
-                        result->trades_executed, target_trades,
-                        result->responses_received,
-                        drain_zero_recv, drain_iterations);
+                /* DEBUG: Log when stall begins (only if not quiet) */
+                if (!quiet) {
+                    fprintf(stderr, "[DBG-DRAIN] Stall started: trades=%u/%u responses=%u "
+                            "consecutive_zero=%u total_iters=%u\n",
+                            result->trades_executed, target_trades,
+                            result->responses_received,
+                            drain_zero_recv, drain_iterations);
+                }
             } else {
                 /* Check if stalled too long */
                 uint64_t stall_ns = engine_client_now_ns() - stall_start;
                 if (stall_ns > (uint64_t)max_stall_ms * 1000000ULL) {
-                    fprintf(stderr, "[DBG-DRAIN] Stall timeout after %.1f sec: trades=%u/%u "
-                            "responses=%u total_msgs_in_drain=%u iters=%u\n",
-                            (double)stall_ns / 1e9,
-                            result->trades_executed, target_trades,
-                            result->responses_received,
-                            drain_msgs_total, drain_iterations);
+                    if (!quiet) {
+                        fprintf(stderr, "[DBG-DRAIN] Stall timeout after %.1f sec: trades=%u/%u "
+                                "responses=%u total_msgs_in_drain=%u iters=%u\n",
+                                (double)stall_ns / 1e9,
+                                result->trades_executed, target_trades,
+                                result->responses_received,
+                                drain_msgs_total, drain_iterations);
+                    }
                     break;  /* Stalled too long, give up */
                 }
                 sleep_ms(5);
             }
         }
-
-        /* DEBUG: periodic log every 2 seconds */
+        /* DEBUG: periodic log every 2 seconds (only if not quiet) */
         uint64_t now = engine_client_now_ns();
-        if (now - last_debug_time >= 2000000000ULL) {
+        if (!quiet && now - last_debug_time >= 2000000000ULL) {
             double elapsed_sec = (double)(now - drain_start) / 1e9;
             fprintf(stderr, "[DBG-DRAIN] %.1fs | trades: %u/%u | responses: %u "
                     "| msgs_this_drain: %u | zero_streak: %u | stalling: %s "
@@ -189,11 +179,13 @@ static void drain_until_trades(engine_client_t* client,
                     stalling ? "YES" : "no",
                     transport_has_data(&client->transport));
             last_debug_time = now;
+        } else if (quiet && now - last_debug_time >= 2000000000ULL) {
+            /* In quiet mode, just update last_debug_time */
+            last_debug_time = now;
         }
     }
-
-    /* DEBUG: Summary before final squeeze */
-    {
+    /* DEBUG: Summary before final squeeze (only if not quiet) */
+    if (!quiet) {
         uint64_t now = engine_client_now_ns();
         double elapsed_sec = (double)(now - drain_start) / 1e9;
         uint32_t trades_gained = result->trades_executed - drain_trades_at_start;
@@ -202,11 +194,12 @@ static void drain_until_trades(engine_client_t* client,
                 elapsed_sec, trades_gained, drain_msgs_total,
                 drain_iterations, transport_has_data(&client->transport));
     }
-
     /* Final squeeze: if very close to target, try harder */
     uint32_t remaining = target_trades - result->trades_executed;
     if (remaining > 0 && remaining < 1000 && g_running) {
-        fprintf(stderr, "[DBG-DRAIN] Final squeeze: need %u more trades\n", remaining);
+        if (!quiet) {
+            fprintf(stderr, "[DBG-DRAIN] Final squeeze: need %u more trades\n", remaining);
+        }
         /* We're so close - give it extra attempts */
         for (int attempt = 0; attempt < 10 && result->trades_executed < target_trades && g_running; attempt++) {
             sleep_ms(100);  /* Give server time */
@@ -214,22 +207,24 @@ static void drain_until_trades(engine_client_t* client,
             for (int i = 0; i < 50 && g_running; i++) {
                 got += engine_client_recv_all(client, 50);
             }
-            fprintf(stderr, "[DBG-DRAIN] Squeeze attempt %d: got %d msgs, trades=%u/%u, has_data=%d\n",
-                    attempt, got, result->trades_executed, target_trades,
-                    transport_has_data(&client->transport));
+            if (!quiet) {
+                fprintf(stderr, "[DBG-DRAIN] Squeeze attempt %d: got %d msgs, trades=%u/%u, has_data=%d\n",
+                        attempt, got, result->trades_executed, target_trades,
+                        transport_has_data(&client->transport));
+            }
             if (got == 0) break;  /* Nothing coming */
         }
     }
-
-    /* DEBUG: Final state */
-    fprintf(stderr, "[DBG-DRAIN] === DRAIN COMPLETE: trades=%u/%u responses=%u "
-            "missing=%u has_transport_data=%d ===\n",
-            result->trades_executed, target_trades,
-            result->responses_received,
-            target_trades - result->trades_executed,
-            transport_has_data(&client->transport));
+    /* DEBUG: Final state (only if not quiet) */
+    if (!quiet) {
+        fprintf(stderr, "[DBG-DRAIN] === DRAIN COMPLETE: trades=%u/%u responses=%u "
+                "missing=%u has_transport_data=%d ===\n",
+                result->trades_executed, target_trades,
+                result->responses_received,
+                target_trades - result->trades_executed,
+                transport_has_data(&client->transport));
+    }
 }
-
 /**
  * Response callback that counts trades
  */
@@ -237,7 +232,6 @@ typedef struct {
     scenario_result_t* result;
     bool verbose;
 } callback_context_t;
-
 static void response_counter(const output_msg_t* msg, void* user_data) {
     callback_context_t* ctx = (callback_context_t*)user_data;
     if (ctx->result) {
@@ -246,7 +240,6 @@ static void response_counter(const output_msg_t* msg, void* user_data) {
             ctx->result->trades_executed++;
         }
     }
-
     if (ctx->verbose) {
         switch (msg->type) {
             case OUTPUT_MSG_ACK:
@@ -288,7 +281,6 @@ static void response_counter(const output_msg_t* msg, void* user_data) {
         }
     }
 }
-
 /* ============================================================
  * Scenario Registry Functions
  * ============================================================ */
@@ -300,16 +292,13 @@ const scenario_info_t* scenario_get_info(int scenario_id) {
     }
     return NULL;
 }
-
 bool scenario_is_valid(int scenario_id) {
     return scenario_get_info(scenario_id) != NULL;
 }
-
 bool scenario_requires_burst(int scenario_id) {
     const scenario_info_t* info = scenario_get_info(scenario_id);
     return info && info->requires_burst;
 }
-
 void scenario_print_list(void) {
     printf("Available scenarios:\n");
     printf("\n");
@@ -332,7 +321,6 @@ void scenario_print_list(void) {
         }
     }
 }
-
 void scenario_print_result(const scenario_result_t* result) {
     printf("\n");
     printf("=== Scenario Results ===\n");
@@ -343,7 +331,6 @@ void scenario_print_result(const scenario_result_t* result) {
     printf("  Responses:         %u\n", result->responses_received);
     printf("  Trades:            %u\n", result->trades_executed);
     printf("\n");
-
     /* Format time nicely */
     if (result->total_time_ns >= 60000000000ULL) {
         double minutes = (double)result->total_time_ns / 6e10;
@@ -387,7 +374,6 @@ void scenario_print_result(const scenario_result_t* result) {
         printf("\n");
     }
 }
-
 /* ============================================================
  * Basic Scenarios
  * ============================================================ */
@@ -395,10 +381,8 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
     printf("=== Scenario 1: Simple Orders ===\n\n");
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
-
     callback_context_t ctx = { .result = result, .verbose = true };
     engine_client_set_response_callback(client, response_counter, &ctx);
-
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid == 0) {
@@ -407,7 +391,6 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
         if (result) result->orders_sent++;
     }
     drain_responses(client, 150);
-
     printf("\nSending: SELL IBM 50@105\n");
     oid = engine_client_send_order(client, "IBM", 105, 50, SIDE_SELL, 0);
     if (oid == 0) {
@@ -416,59 +399,46 @@ bool scenario_simple_orders(engine_client_t* client, scenario_result_t* result) 
         if (result) result->orders_sent++;
     }
     drain_responses(client, 150);
-
     printf("\nSending: FLUSH\n");
     engine_client_send_flush(client);
     if (result) result->orders_sent++;
     drain_responses(client, 250);
-
     finalize_result(result, client);
     return true;
 }
-
 bool scenario_matching_trade(engine_client_t* client, scenario_result_t* result) {
     printf("=== Scenario 2: Matching Trade ===\n\n");
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
-
     callback_context_t ctx = { .result = result, .verbose = true };
     engine_client_set_response_callback(client, response_counter, &ctx);
-
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
     drain_responses(client, 150);
-
     printf("\nSending: SELL IBM 50@100 (should match!)\n");
     oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_SELL, 0);
     if (oid > 0 && result) result->orders_sent++;
     drain_responses(client, 200);
-
     finalize_result(result, client);
     return true;
 }
-
 bool scenario_cancel_order(engine_client_t* client, scenario_result_t* result) {
     printf("=== Scenario 3: Cancel Order ===\n\n");
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
-
     callback_context_t ctx = { .result = result, .verbose = true };
     engine_client_set_response_callback(client, response_counter, &ctx);
-
     printf("Sending: BUY IBM 50@100\n");
     uint32_t oid = engine_client_send_order(client, "IBM", 100, 50, SIDE_BUY, 0);
     if (oid > 0 && result) result->orders_sent++;
     drain_responses(client, 150);
-
     printf("\nSending: CANCEL order %u\n", oid);
     engine_client_send_cancel(client, oid);
     drain_responses(client, 150);
-
     finalize_result(result, client);
     return true;
 }
-
 /* ============================================================
  * Small Stress Test (Non-Matching, up to 100K)
  * ============================================================ */
@@ -476,29 +446,24 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
                           bool danger_burst, scenario_result_t* result) {
     (void)danger_burst;
     printf("=== Stress Test: %u Orders (non-matching) ===\n\n", count);
-
     /* Setup signal handler */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     g_running = 1;
-
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
-
     callback_context_t ctx = { .result = result, .verbose = false };
     engine_client_set_response_callback(client, response_counter, &ctx);
-
     /* Flush first */
     engine_client_send_flush(client);
     drain_responses(client, 100);
     if (result) result->responses_received = 0;
-
     /* Progress tracking */
     uint32_t progress_interval = count / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
-
+    bool quiet = client->config.quiet;
     for (uint32_t i = 0; i < count && g_running; i++) {
         uint32_t price = 100 + (i % 100);
         uint32_t oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
@@ -507,11 +472,9 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
         } else {
             if (result) result->orders_failed++;
         }
-
         /* Interleave receives */
         engine_client_recv_all(client, 0);
-
-        if (i > 0 && i / progress_interval > last_progress) {
+        if (!quiet && i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (i * 100) / count;
             uint64_t elapsed_ns = engine_client_now_ns() - start_time;
@@ -521,10 +484,10 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
                    pct, i, (unsigned long)elapsed_ms, (unsigned long)rate);
         }
     }
-
-    printf("\nSending FLUSH to clear book...\n");
+    if (!quiet) {
+        printf("\nSending FLUSH to clear book...\n");
+    }
     engine_client_send_flush(client);
-
     /* Simple drain */
     int empty_count = 0;
     while (empty_count < 30 && g_running) {
@@ -536,12 +499,10 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
             empty_count = 0;
         }
     }
-
     finalize_result(result, client);
     scenario_print_result(result);
     return true;
 }
-
 /* ============================================================
  * Matching Stress (Single Symbol) - ADAPTIVE PACING
  *
@@ -551,64 +512,54 @@ bool scenario_stress_test(engine_client_t* client, uint32_t count,
  * ============================================================ */
 bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
                               scenario_result_t* result) {
-    printf("=== Matching Stress Test: %u Trade Pairs ===\n\n", pairs);
-    printf("Sending %u buy/sell pairs (should generate %u trades)...\n\n", pairs, pairs);
-
+    bool quiet = client->config.quiet;
+    
+    if (!quiet) {
+        printf("=== Matching Stress Test: %u Trade Pairs ===\n\n", pairs);
+        printf("Sending %u buy/sell pairs (should generate %u trades)...\n\n", pairs, pairs);
+    }
     /* Setup signal handler for Ctrl+C */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     g_running = 1;
-
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
-
     callback_context_t ctx = { .result = result, .verbose = false };
     engine_client_set_response_callback(client, response_counter, &ctx);
-
     /* Flush first */
     engine_client_send_flush(client);
     drain_responses(client, 200);
     if (result) result->responses_received = 0;
-
     /* Progress tracking */
     uint32_t progress_interval = pairs / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
     uint64_t start_time = engine_client_now_ns();
-
     /* Adaptive pacing parameters */
     uint32_t max_deficit = 5000;   /* Max trades we can fall behind */
     uint32_t catchup_target = 1000; /* Drain until only this far behind */
-
     for (uint32_t i = 0; i < pairs && g_running; i++) {
         uint32_t price = 100 + (i % 50);
-
         /* Send buy */
         uint32_t buy_oid = engine_client_send_order(client, "IBM", price, 10, SIDE_BUY, 0);
         if (buy_oid > 0 && result) result->orders_sent++;
-
         /* Quick non-blocking receive */
         engine_client_recv_all(client, 0);
-
         /* Send matching sell */
         uint32_t sell_oid = engine_client_send_order(client, "IBM", price, 10, SIDE_SELL, 0);
         if (sell_oid > 0 && result) result->orders_sent++;
-
         /* Quick non-blocking receive */
         engine_client_recv_all(client, 0);
-
         /* ADAPTIVE PACING: If falling too far behind on trades, pause and drain */
         uint32_t pairs_sent = i + 1;
         uint32_t expected_trades = pairs_sent;  /* 1 trade per pair */
-
         if (expected_trades > result->trades_executed + max_deficit) {
             /* We're too far behind - drain until caught up */
             uint32_t target = expected_trades - catchup_target;
             drain_until_trades(client, result, target, 5000);  /* 5 sec max stall */
         }
-
         /* Progress indicator */
-        if (i > 0 && i / progress_interval > last_progress) {
+        if (!quiet && i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
             uint64_t elapsed_ns = engine_client_now_ns() - start_time;
@@ -621,28 +572,24 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
                    result->trades_executed, deficit);
         }
     }
-
-    if (!g_running) {
+    if (!g_running && !quiet) {
         printf("\n[interrupted at %u pairs]\n", result->orders_sent / 2);
     }
-
     /* Final drain - keep going until all trades received */
-    printf("\nDraining remaining responses...\n");
-    uint32_t remaining = pairs - result->trades_executed;
-    printf("  [sent %u pairs, have %u trades, need %u more]\n",
-           pairs, result->trades_executed, remaining);
-
+    if (!quiet) {
+        printf("\nDraining remaining responses...\n");
+        uint32_t remaining = pairs - result->trades_executed;
+        printf("  [sent %u pairs, have %u trades, need %u more]\n",
+               pairs, result->trades_executed, remaining);
+    }
     /* Give it plenty of time for final drain - 60 sec stall timeout */
     drain_until_trades(client, result, pairs, 60000);
-
     /* Report final status */
-    if (result->trades_executed < pairs) {
+    if (!quiet && result->trades_executed < pairs) {
         printf("  [final: %u/%u trades]\n", result->trades_executed, pairs);
     }
-
     finalize_result(result, client);
     scenario_print_result(result);
-
     /* Validation */
     if (result->trades_executed != pairs) {
         printf("⚠ WARNING: Expected %u trades, got %u (%.1f%%)\n\n",
@@ -651,60 +598,57 @@ bool scenario_matching_stress(engine_client_t* client, uint32_t pairs,
     } else {
         printf("✓ All %u trades executed successfully!\n\n", pairs);
     }
-
     return true;
 }
-
 /* ============================================================
  * Multi-Symbol Matching Stress (Dual Processor) - ADAPTIVE PACING
  * ============================================================ */
 bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pairs,
                                            scenario_result_t* result) {
-    printf("============================================================\n");
-    printf("  DUAL-PROCESSOR MATCHING STRESS TEST\n");
-    printf("============================================================\n\n");
-    printf("Trade Pairs:     %u\n", pairs);
-    printf("Total Orders:    %u\n", pairs * 2);
-    printf("Expected Trades: %u\n", pairs);
-    printf("Symbols:         10 (5 per processor)\n");
-    printf("  Processor 0:   AAPL, IBM, GOOGL, META, MSFT\n");
-    printf("  Processor 1:   NVDA, TSLA, UBER, SNAP, ZM\n");
-    printf("============================================================\n\n");
-
+    bool quiet = client->config.quiet;
+    
+    if (!quiet) {
+        printf("============================================================\n");
+        printf("  DUAL-PROCESSOR MATCHING STRESS TEST\n");
+        printf("============================================================\n\n");
+        printf("Trade Pairs:     %u\n", pairs);
+        printf("Total Orders:    %u\n", pairs * 2);
+        printf("Expected Trades: %u\n", pairs);
+        printf("Symbols:         10 (5 per processor)\n");
+        printf("  Processor 0:   AAPL, IBM, GOOGL, META, MSFT\n");
+        printf("  Processor 1:   NVDA, TSLA, UBER, SNAP, ZM\n");
+        printf("============================================================\n\n");
+    }
     init_result(result);
     if (result) result->start_time_ns = engine_client_now_ns();
-
     callback_context_t ctx = { .result = result, .verbose = false };
     engine_client_set_response_callback(client, response_counter, &ctx);
-
-    printf("Flushing existing orders...\n");
+    if (!quiet) {
+        printf("Flushing existing orders...\n");
+    }
     engine_client_send_flush(client);
     drain_responses(client, 500);
     if (result) result->responses_received = 0;
-
-    printf("Starting benchmark...\n\n");
-
+    if (!quiet) {
+        printf("Starting benchmark...\n\n");
+    }
     /* Setup signal handler */
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
     g_running = 1;
-
     uint32_t progress_interval = pairs / 20;
     if (progress_interval == 0) progress_interval = 1;
     uint32_t last_progress = 0;
     uint32_t proc0_count = 0;
     uint32_t proc1_count = 0;
     uint64_t start_time = engine_client_now_ns();
-
     /* Adaptive pacing - larger buffers for multi-symbol */
     uint32_t max_deficit = 10000;
     uint32_t catchup_target = 2000;
-
     for (uint32_t i = 0; i < pairs && g_running; i++) {
         int symbol_idx = i % NUM_DUAL_PROC_SYMBOLS;
         const char* symbol = DUAL_PROC_SYMBOLS[symbol_idx];
         uint32_t price = 100 + (i % 50);
-
         uint32_t buy_oid = engine_client_send_order(client, symbol, price, 10, SIDE_BUY, 0);
         if (buy_oid > 0) {
             if (result) result->orders_sent++;
@@ -712,7 +656,6 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             else proc1_count++;
         }
         engine_client_recv_all(client, 0);
-
         uint32_t sell_oid = engine_client_send_order(client, symbol, price, 10, SIDE_SELL, 0);
         if (sell_oid > 0) {
             if (result) result->orders_sent++;
@@ -720,15 +663,13 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             else proc1_count++;
         }
         engine_client_recv_all(client, 0);
-
         /* Adaptive pacing */
         uint32_t pairs_sent = i + 1;
         if (pairs_sent > result->trades_executed + max_deficit) {
             uint32_t target = pairs_sent - catchup_target;
             drain_until_trades(client, result, target, 5000);
         }
-
-        if (i > 0 && i / progress_interval > last_progress) {
+        if (!quiet && i > 0 && i / progress_interval > last_progress) {
             last_progress = i / progress_interval;
             uint32_t pct = (uint32_t)(((uint64_t)i * 100ULL) / pairs);
             uint64_t elapsed_ns = engine_client_now_ns() - start_time;
@@ -737,7 +678,6 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             uint64_t orders_sent = (uint64_t)i * 2;
             uint64_t rate = (elapsed_ms > 0) ? (orders_sent * 1000 / elapsed_ms) : 0;
             uint32_t deficit = pairs_sent - result->trades_executed;
-
             if (elapsed_sec >= 60) {
                 uint64_t mins = elapsed_sec / 60;
                 uint64_t secs = elapsed_sec % 60;
@@ -751,36 +691,31 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
             }
         }
     }
-
     if (result) {
         result->proc0_orders = proc0_count;
         result->proc1_orders = proc1_count;
     }
-
-    if (!g_running) {
+    if (!g_running && !quiet) {
         printf("\n[interrupted at %u pairs]\n", result->orders_sent / 2);
     }
-
     uint64_t send_elapsed_ns = engine_client_now_ns() - start_time;
     double send_elapsed_sec = (double)send_elapsed_ns / 1e9;
-
-    printf("\n");
-    printf("============================================================\n");
-    printf("  SEND COMPLETE\n");
-    printf("============================================================\n");
-    printf("Orders sent:     %u\n", result ? result->orders_sent : 0);
-    printf("Send time:       %.2f sec\n", send_elapsed_sec);
-    printf("Send rate:       %.2fM orders/sec\n",
-           (result ? result->orders_sent : 0) / send_elapsed_sec / 1e6);
-    printf("Trades so far:   %u\n", result->trades_executed);
-    printf("============================================================\n\n");
-
-    printf("Draining remaining responses...\n");
+    if (!quiet) {
+        printf("\n");
+        printf("============================================================\n");
+        printf("  SEND COMPLETE\n");
+        printf("============================================================\n");
+        printf("Orders sent:     %u\n", result ? result->orders_sent : 0);
+        printf("Send time:       %.2f sec\n", send_elapsed_sec);
+        printf("Send rate:       %.2fM orders/sec\n",
+               (result ? result->orders_sent : 0) / send_elapsed_sec / 1e6);
+        printf("Trades so far:   %u\n", result->trades_executed);
+        printf("============================================================\n\n");
+        printf("Draining remaining responses...\n");
+    }
     drain_until_trades(client, result, pairs, 60000);  /* 60 sec max */
-
     finalize_result(result, client);
     scenario_print_result(result);
-
     if (result->trades_executed != pairs) {
         printf("⚠ WARNING: Expected %u trades, got %u (%.1f%%)\n\n",
                pairs, result->trades_executed,
@@ -788,10 +723,8 @@ bool scenario_multi_symbol_matching_stress(engine_client_t* client, uint32_t pai
     } else {
         printf("✓ All %u trades executed successfully!\n\n", pairs);
     }
-
     return true;
 }
-
 /* ============================================================
  * Main Scenario Runner
  * ============================================================ */
@@ -805,17 +738,14 @@ bool scenario_run(engine_client_t* client,
         scenario_print_list();
         return false;
     }
-
     if (info->requires_burst && !danger_burst) {
         fprintf(stderr, "Scenario %d requires --danger-burst flag!\n", scenario_id);
         fprintf(stderr, "This scenario sends orders without throttling and may\n");
         fprintf(stderr, "cause server buffer overflows or parse errors.\n");
         return false;
     }
-
     engine_client_reset_stats(client);
     engine_client_reset_order_id(client, 1);
-
     switch (scenario_id) {
         case 1:  return scenario_simple_orders(client, result);
         case 2:  return scenario_matching_trade(client, result);
